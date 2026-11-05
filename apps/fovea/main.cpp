@@ -23,8 +23,7 @@ int main(int argc, char** argv) {
     const fovea::DisplayConfig& config = *result.config;
     std::printf("%zu views at %g Hz:\n", config.channels.size(), config.target_hz);
     for (std::size_t i = 0; i < config.channels.size(); ++i) {
-        const auto view = fovea::view_from_channel(config.channels[i], config.near_m,
-                                                   static_cast<std::uint32_t>(i));
+        const auto view = fovea::view_from_channel(config.channels[i], config, i);
         const auto& f = view.projection.frustum;
         std::printf("  %-8s monitor %d, %ux%u, yaw %g, frustum [%g, %g] x [%g, %g]\n",
                     view.name.c_str(), config.channels[i].monitor, view.render_width,

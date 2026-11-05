@@ -75,7 +75,9 @@ public:
     }
 
     // Reader side: the latest published snapshot. Sequence 0 means nothing
-    // has been published yet.
+    // has been published yet. The reference is valid only until the next
+    // latest() call, which hands the slot back to the writer: call it once
+    // per frame and pass the result on (FrameContext::scene).
     const SceneSnapshot& latest() noexcept { return buffer_.read(); }
 
 private:

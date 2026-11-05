@@ -37,7 +37,7 @@ struct PostChain {
 struct OutputTarget {
     enum class Kind : std::uint8_t { presenter_output, offscreen };
     Kind kind = Kind::presenter_output;
-    std::uint32_t index = 0;  // presenter output index
+    std::uint32_t index = 0;  // presenter output, or offscreen image, index
 };
 
 struct ViewDesc {
@@ -51,9 +51,11 @@ struct ViewDesc {
     std::uint32_t render_height = 0;
 };
 
-// The display view for a configured channel, drawn to presenter output
-// `output_index`.
-ViewDesc view_from_channel(const ChannelConfig& channel, double near_m, std::uint32_t output_index);
+// The display view for channel `index` of the config. Its target follows the
+// presenter: its own output with multi_swapchain, output 0 (the one spanned
+// surface) with spanned, an offscreen image with offscreen.
+ViewDesc view_from_channel(const ChannelConfig& channel, const DisplayConfig& config,
+                           std::size_t index);
 
 // Eye-frame vectors to body-frame vectors for this view.
 DQuat eye_to_body(const PoseSource& pose);

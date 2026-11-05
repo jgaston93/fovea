@@ -70,5 +70,30 @@ TEST(ConstantHeightTerrain, LineOfSightOverTheHorizon) {
                                       geodetic_to_ecef({0.0, dlon, 100.0})));
 }
 
+// Points on the ground (vehicles, lights) must be visible despite rounding
+// and the surface approximation; this failed for 21 of these 99 targets
+// before the endpoint tolerance.
+TEST(ConstantHeightTerrain, LineOfSightToAndFromPointsOnTheGround) {
+    int blocked_to = 0;
+    int blocked_from = 0;
+    for (double h : {0.0, 192.0, 3000.0}) {
+        const ConstantHeightTerrain terrain(h);
+        for (double lat = -80.0; lat <= 80.0; lat += 5.0) {
+            const DVec3 eye = geodetic_to_ecef({lat, 10.0, h + 1000.0});
+            const DVec3 ground = geodetic_to_ecef({lat, 10.02, h});
+            blocked_to += terrain.line_of_sight(eye, ground) ? 0 : 1;
+            blocked_from += terrain.line_of_sight(ground, eye) ? 0 : 1;
+        }
+    }
+    EXPECT_EQ(blocked_to, 0);
+    EXPECT_EQ(blocked_from, 0);
+}
+
+TEST(ConstantHeightTerrain, PointWellBelowTheGroundIsStillBlocked) {
+    const ConstantHeightTerrain terrain(0.0);
+    EXPECT_FALSE(terrain.line_of_sight(geodetic_to_ecef({0.0, 0.0, -1.0}),
+                                       geodetic_to_ecef({0.0, 0.0, 100.0})));
+}
+
 }  // namespace
 }  // namespace fovea

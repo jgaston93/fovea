@@ -29,6 +29,26 @@ TEST(FixedArray, PushPastCapacityFails) {
     EXPECT_TRUE(a.empty());
 }
 
+TEST(FixedArray, CopiesCarryTheLiveElements) {
+    FixedArray<int, 8> a;
+    ASSERT_TRUE(a.push_back(1));
+    ASSERT_TRUE(a.push_back(2));
+    FixedArray<int, 8> b = a;
+    ASSERT_EQ(b.size(), 2U);
+    EXPECT_EQ(b[1], 2);
+    FixedArray<int, 8> c;
+    ASSERT_TRUE(c.push_back(9));
+    ASSERT_TRUE(c.push_back(9));
+    ASSERT_TRUE(c.push_back(9));
+    c = a;
+    ASSERT_EQ(c.size(), 2U);
+    EXPECT_EQ(c[0], 1);
+    const FixedArray<int, 8>& same = c;
+    c = same;  // self-assignment is safe
+    EXPECT_EQ(c.size(), 2U);
+    EXPECT_EQ(c[1], 2);
+}
+
 TEST(FrameArena, AllocationsAreAlignedAndResetFreesThem) {
     FrameArena arena(1024);
     auto bytes = arena.allocate_array<std::uint8_t>(3);

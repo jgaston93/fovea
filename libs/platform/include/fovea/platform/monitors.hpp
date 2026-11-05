@@ -24,6 +24,9 @@ struct MonitorInfo {
 // Problems that stop the config's channels being placed on these monitors:
 // a monitor index that doesn't exist, or two channels on one monitor (each
 // channel gets its own fullscreen window). Empty when the config fits.
+// Applies to the multi_swapchain presenter only: offscreen uses no monitors,
+// and spanned places channels inside one driver-spanned surface (its rules
+// come with SpannedPresenter).
 std::vector<std::string> check_monitors(const DisplayConfig& config,
                                         std::span<const MonitorInfo> monitors);
 

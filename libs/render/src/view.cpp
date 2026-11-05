@@ -2,15 +2,25 @@
 
 namespace fovea {
 
-ViewDesc view_from_channel(const ChannelConfig& channel, double near_m,
-                           std::uint32_t output_index) {
+ViewDesc view_from_channel(const ChannelConfig& channel, const DisplayConfig& config,
+                           std::size_t index) {
     ViewDesc v;
     v.name = channel.name;
     v.pose.kind = PoseSource::Kind::ownship_eye;
     v.pose.offset_m = channel.eye_offset_m;
     v.pose.rotation = channel.view_rotation;
-    v.projection = {channel.frustum, near_m};
-    v.target = {OutputTarget::Kind::presenter_output, output_index};
+    v.projection = {channel.frustum, config.near_m};
+    switch (config.presenter) {
+        case PresenterKind::multi_swapchain:
+            v.target = {OutputTarget::Kind::presenter_output, static_cast<std::uint32_t>(index)};
+            break;
+        case PresenterKind::spanned:
+            v.target = {OutputTarget::Kind::presenter_output, 0};
+            break;
+        case PresenterKind::offscreen:
+            v.target = {OutputTarget::Kind::offscreen, static_cast<std::uint32_t>(index)};
+            break;
+    }
     v.render_width = channel.render_width;
     v.render_height = channel.render_height;
     return v;

@@ -23,8 +23,9 @@ fovea_target_defaults(fovea_unit_tests)
 
 gtest_discover_tests(fovea_unit_tests DISCOVERY_MODE PRE_TEST)
 
-# Library boundaries (architecture.md): the repository passes, and a planted
-# violation in each of two libraries is caught.
+# Library boundaries (architecture.md): the repository passes, and planted
+# violations (a GPU header, a GDAL header in a .inl, a fovea library outside
+# the graph, in .hpp/.inl/.h/.cpp files) are all caught.
 add_test(NAME IncludeRules.Repository
     COMMAND ${CMAKE_COMMAND} -DROOT=${PROJECT_SOURCE_DIR}
             -P ${PROJECT_SOURCE_DIR}/cmake/CheckIncludeRules.cmake)
@@ -32,7 +33,7 @@ add_test(NAME IncludeRules.CatchesPlantedViolations
     COMMAND ${CMAKE_COMMAND} -DROOT=${CMAKE_CURRENT_SOURCE_DIR}/include_rules
             -P ${PROJECT_SOURCE_DIR}/cmake/CheckIncludeRules.cmake)
 set_tests_properties(IncludeRules.CatchesPlantedViolations PROPERTIES
-    PASS_REGULAR_EXPRESSION "libs/core/include/fovea/core/bad.hpp: #include <vulkan/vulkan.h>.*libs/render/src/bad.cpp: #include \"fovea/net/host_adapter.hpp\"")
+    PASS_REGULAR_EXPRESSION "core/bad.hpp: #include <vulkan/vulkan.h>.*terrain/src/bad.inl: #include <cpl_conv.h>.*net/include/bad.h: #include \"fovea/terrain/terrain_query.hpp\".*render/src/bad.cpp: #include \"fovea/net/host_adapter.hpp\"")
 
 # The app loads the example config, and reports a bad one.
 add_test(NAME App.LoadsTheExampleConfig

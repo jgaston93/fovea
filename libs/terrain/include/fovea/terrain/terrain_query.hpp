@@ -38,7 +38,12 @@ public:
     virtual std::optional<TerrainHit> intersect(const DRay& ray, double max_distance_m) const = 0;
 
     // True if terrain does not block the straight line between a and b.
+    // Terrain within kEndpointTolerance of either end does not count, so a
+    // point sitting on the ground (a vehicle, a runway light) can see and be
+    // seen despite rounding and the database's own approximation.
     bool line_of_sight(const DVec3& a, const DVec3& b) const;
+
+    static constexpr double kEndpointTolerance = 0.1;  // m
 
 protected:
     TerrainQuery() = default;

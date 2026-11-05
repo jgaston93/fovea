@@ -9,10 +9,12 @@ namespace fovea {
 bool TerrainQuery::line_of_sight(const DVec3& a, const DVec3& b) const {
     const DVec3 d = b - a;
     const double length = glm::length(d);
-    if (length == 0.0) {
-        return !intersect({a, DVec3{0.0, 0.0, 1.0}}, 0.0).has_value();
+    if (length <= 2.0 * kEndpointTolerance) {
+        return true;  // the whole segment is within the tolerance
     }
-    return !intersect({a, d}, length).has_value();
+    const DVec3 unit = d / length;
+    return !intersect({a + unit * kEndpointTolerance, unit}, length - 2.0 * kEndpointTolerance)
+                .has_value();
 }
 
 std::optional<double> ConstantHeightTerrain::height_at(double /*lat_deg*/,

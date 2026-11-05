@@ -37,6 +37,15 @@ TEST(Monitors, SharedMonitorIsReported) {
     EXPECT_EQ(problems[0], "channels \"b\" and \"c\" both use monitor 1");
 }
 
+TEST(Monitors, OnlyMultiSwapchainIsChecked) {
+    DisplayConfig spanned = config_on({0, 0, 0});
+    spanned.presenter = PresenterKind::spanned;
+    EXPECT_TRUE(check_monitors(spanned, std::vector<MonitorInfo>(1)).empty());
+    DisplayConfig offscreen = config_on({0, 1, 2});
+    offscreen.presenter = PresenterKind::offscreen;
+    EXPECT_TRUE(check_monitors(offscreen, {}).empty());  // a headless machine
+}
+
 TEST(Monitors, NoMonitorsAtAll) {
     const auto problems = check_monitors(config_on({0}), {});
     ASSERT_EQ(problems.size(), 1U);

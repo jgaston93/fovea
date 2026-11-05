@@ -7,7 +7,6 @@
 
 #include <string_view>
 
-#include "fovea/core/scene.hpp"
 #include "fovea/render/frame.hpp"
 #include "fovea/render/view.hpp"
 
@@ -30,8 +29,9 @@ public:
     Module& operator=(const Module&) = delete;
 
     virtual void init(const ModuleContext& context) = 0;
-    // Once per frame on the render thread: no allocation, no I/O.
-    virtual void update(const FrameContext& frame, const SceneSnapshot& scene) = 0;
+    // Once per frame on the render thread: no allocation, no I/O. The scene
+    // is frame.scene.
+    virtual void update(const FrameContext& frame) = 0;
     // Once per view per frame.
     virtual void record(CommandRecorder& recorder, const ViewDesc& view) = 0;
     virtual void shutdown() = 0;

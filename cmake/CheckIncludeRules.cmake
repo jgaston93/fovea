@@ -8,18 +8,22 @@ if(NOT ROOT)
     message(FATAL_ERROR "set -DROOT=<repository root>")
 endif()
 
-set(third_party_gpu "vulkan/|volk\\.h|vk_mem_alloc|VkBootstrap|SDL")
+set(gpu "vulkan/|volk|vk_mem_alloc|VkBootstrap|SDL")
+# GDAL's headers: gdal*.h, cpl_*.h (its portability layer), ogr*.h.
+set(gdal "gdal|cpl_|ogr")
 
-# Library directory, then the include paths it must not use.
-set(rule_core "${third_party_gpu}|gdal|fovea/(terrain|platform|net|render)/")
-set(rule_terrain "${third_party_gpu}|gdal|fovea/(platform|net|render)/")
-set(rule_net "${third_party_gpu}|gdal|fovea/(platform|render)/")
-set(rule_platform "gdal|fovea/(net|render)/")
-set(rule_render "gdal|fovea/net/")
+# Library directory, then the include paths it must not use. Each library
+# may include only the fovea libraries it depends on in the graph.
+set(rule_core "${gpu}|${gdal}|fovea/(terrain|platform|net|render)/")
+set(rule_terrain "${gpu}|${gdal}|fovea/(platform|net|render)/")
+set(rule_net "${gpu}|${gdal}|fovea/(terrain|platform|render)/")
+set(rule_platform "${gdal}|fovea/(terrain|net|render)/")
+set(rule_render "${gdal}|fovea/(terrain|net)/")
 
 set(violations "")
 foreach(lib IN ITEMS core terrain net platform render)
-    file(GLOB_RECURSE sources "${ROOT}/libs/${lib}/*.hpp" "${ROOT}/libs/${lib}/*.cpp")
+    # Every C/C++ source or header: .h .hpp .c .cpp .inl .ipp and the like.
+    file(GLOB_RECURSE sources LIST_DIRECTORIES false "${ROOT}/libs/${lib}/*.[hci]*")
     foreach(source IN LISTS sources)
         file(STRINGS "${source}" lines REGEX "^[ \t]*#[ \t]*include")
         foreach(line IN LISTS lines)

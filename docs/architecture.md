@@ -77,57 +77,62 @@ The render path means everything the render thread does between frame start and 
 
 ## Core interfaces
 
-These are sketches of the intended shapes, not final signatures. Milestone 1 provides stubs for all of them.
+The headers are the reference; these are their shapes, as built in milestone 1 step 3. Keep this in step with them.
 
 ```cpp
-// libs/core — protocol-neutral scene state
-struct Pose { DVec3 ecef; Quat orientation; HostTime host_t; LocalTime recv_t; };
-struct EntityState { EntityId id; ModelId model; Pose cur, prev; ArticulationSet parts; bool active; };
+// libs/core/scene.hpp: protocol-neutral scene state
+struct Pose { DVec3 ecef; DQuat orientation; HostTime host_t; LocalTime recv_t; };
+struct EntityState { EntityId id; ModelId model; Pose cur, prev; FixedArray<Articulation, 8> parts; };
 struct SceneSnapshot {
   Pose eyepoint;
   FixedArray<EntityState, kMaxEntities> entities;
   EnvironmentState environment;
   uint64_t sequence;
 };
-class SceneStateWriter { public: SceneSnapshot& begin(); void publish(); };   // adapter side
-class SceneStateReader { public: const SceneSnapshot& latest(); };            // render side
+class SceneState {                       // one writer thread, one reader thread
+  SceneSnapshot& edit();                 // writer: working copy, kept between publishes
+  void publish();                        // writer: copies it to the reader
+  const SceneSnapshot& latest();         // reader: valid until the next latest()
+};
 
-// libs/terrain — CPU-only spatial queries
+// libs/net/host_adapter.hpp: CIGI now, DIS later; the only SceneState writer
+class HostAdapter { virtual bool poll(SceneState&) = 0; };
+
+// libs/terrain/terrain_query.hpp: CPU-only spatial queries
 class TerrainQuery {
-public:
   virtual std::optional<double> height_at(double lat, double lon) const = 0;  // m above WGS-84
-  virtual bool line_of_sight(const DVec3& a, const DVec3& b) const = 0;     // ECEF
-  virtual std::optional<Hit> intersect(const DRay&) const = 0;              // + material ID
+  virtual std::optional<TerrainHit> intersect(const DRay&, double max_distance_m) const = 0;
+  bool line_of_sight(const DVec3& a, const DVec3& b) const;  // via intersect, 0.1 m end tolerance
 };
 
-// libs/render — a View is the general rendering unit
+// libs/render/view.hpp: a View is the general rendering unit
 struct ViewDesc {
-  PoseSource pose;          // ownship eye + offset, entity-attached, or fixed
-  Projection projection;    // asymmetric frustum (angles) or screen-corner geometry
-  RenderMode mode;          // visual now; NVG/IR/lidar later
-  PostChain post;           // tone map + per-view effects
-  OutputTarget target;      // a Presenter output, or an offscreen image
-  Extent2D render_extent;   // independent of the output resolution
+  std::string name;
+  PoseSource pose;            // ownship eye + offset now; entity-attached or fixed later
+  Projection projection;      // asymmetric frustum (angles) + near plane
+  RenderMode mode;            // visual now; NVG/IR/lidar later
+  PostChain post;             // tone map + per-view effects
+  OutputTarget target;        // a Presenter output, or an offscreen image
+  uint32_t render_width, render_height;  // independent of the output resolution
 };
+ViewDesc view_from_channel(const ChannelConfig&, const DisplayConfig&, size_t index);
 
-// libs/render — Presenter hides "3 swapchains" vs "1 spanned surface" vs "offscreen"
+// libs/render/presenter.hpp: hides "3 swapchains" vs "1 spanned surface" vs "offscreen"
 class Presenter {
-public:
   virtual std::span<const OutputDesc> outputs() const = 0;
-  virtual FrameImages acquire(FrameContext&) = 0;        // one image per output
-  virtual void present(FrameContext&) = 0;              // back-to-back presents
-  virtual PresentTiming last_timing() const = 0;        // for missed-frame and sync stats
+  virtual void acquire(FrameContext&) = 0;                 // an image for every output
+  virtual void present(FrameContext&) = 0;                 // back-to-back presents
+  virtual PresentTiming last_timing(uint32_t output) const = 0;  // missed-frame and sync stats
 };
-// Implementations: MultiSwapchainPresenter, SpannedPresenter, OffscreenPresenter (headless/replay)
+// Implementations, from step 5: MultiSwapchainPresenter, SpannedPresenter, OffscreenPresenter
 
-// libs/render — compiled-in modules, enabled through config
+// libs/render/module.hpp: compiled-in modules, enabled through config
 class Module {
-public:
   virtual void init(const ModuleContext&) = 0;
-  virtual void update(const FrameContext&, const SceneSnapshot&) = 0;
-  virtual void record(CommandRecorder&, const View&) = 0;
+  virtual void update(const FrameContext&) = 0;            // the scene is frame.scene
+  virtual void record(CommandRecorder&, const ViewDesc&) = 0;
   virtual void shutdown() = 0;
-  virtual GpuBudget budget() const = 0;                 // declared; actual cost reported via stats
+  virtual GpuBudget budget() const = 0;                    // declared; actual cost reported via stats
 };
 ```
 
