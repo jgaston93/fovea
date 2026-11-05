@@ -69,6 +69,7 @@ TEST(Config, OptionalFieldsTakeDefaults) {
     EXPECT_EQ(r.config->near_m, 0.1);
     const ChannelConfig& ch = r.config->channels.at(0);
     EXPECT_EQ(ch.present_mode, PresentMode::fifo);
+    EXPECT_EQ(ch.entity, 0U);
     EXPECT_EQ(ch.eye_offset_m, DVec3(0.0));
     EXPECT_EQ(ch.view_rotation.yaw_deg, 0.0);
 }
@@ -95,6 +96,15 @@ TEST(Config, AllFieldsAreRead) {
     EXPECT_EQ(ch.view_rotation.yaw_deg, 45.0);
     EXPECT_EQ(ch.view_rotation.pitch_deg, -5.0);
     EXPECT_EQ(ch.view_rotation.roll_deg, 1.0);
+}
+
+TEST(Config, ViewpointEntityIsReadAndDefaultsToZero) {
+    EXPECT_EQ(parse(kMinimal).config->channels[0].entity, 0U);
+    const auto r = parse(minimal_with("monitor = 1", "monitor = 1\nentity = 42"));
+    ASSERT_TRUE(r.ok());
+    EXPECT_EQ(r.config->channels[0].entity, 42U);
+    expect_one_error(parse(minimal_with("monitor = 1", "monitor = 1\nentity = -3")), 5,
+                     "'channel[0].entity' must be between 0 and");
 }
 
 TEST(Config, SyntaxErrorReportsItsLine) {

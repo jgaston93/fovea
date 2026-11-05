@@ -35,8 +35,9 @@ struct ChannelConfig {
     PresentMode present_mode = PresentMode::fifo;
     std::uint32_t render_width = 0;
     std::uint32_t render_height = 0;
-    DVec3 eye_offset_m{0.0};  // from the design eye point, body axes
-    Euler view_rotation;      // view axis relative to the body, CIGI conventions and ranges
+    std::uint32_t entity = 0;  // the scene entity the viewpoint rides on (D-011)
+    DVec3 eye_offset_m{0.0};   // from the entity's origin, its body axes
+    Euler view_rotation;       // view axis relative to the entity's body (attitude.hpp ranges)
     Frustum frustum;
 };
 

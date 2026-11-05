@@ -1,8 +1,10 @@
 #pragma once
 
 // Protocol-neutral scene state (foundational decision 5): what the renderer
-// draws, written by host adapters (CIGI now, DIS later) and handed to the
-// render thread through a triple buffer. Nothing here knows about packets.
+// draws, written by host adapters (CIGI now, others later) and handed to the
+// render thread through a triple buffer. Nothing here knows about packets,
+// or what the entities are (D-011): a vehicle, a person, a sensor mount.
+// Views attach their viewpoint to an entity, or fix it in the world.
 
 #include <cstdint>
 
@@ -53,11 +55,21 @@ struct EnvironmentState {
 };
 
 struct SceneSnapshot {
-    Pose eyepoint;  // the ownship's design eye point
     FixedArray<EntityState, kMaxEntities> entities;
     EnvironmentState environment;
     std::uint64_t sequence = 0;  // incremented by every publish
 };
+
+// The entity with this id, or nullptr. A linear search: fine for the
+// tens of entities views attach to, once per view per frame.
+inline const EntityState* find_entity(const SceneSnapshot& scene, EntityId id) {
+    for (const EntityState& e : scene.entities) {
+        if (e.id == id) {
+            return &e;
+        }
+    }
+    return nullptr;
+}
 
 // One writer thread, one reader thread. Fixed size: publishing and reading
 // never allocate. About 1.5 MB, so create it on the heap, once.

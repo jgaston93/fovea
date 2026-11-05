@@ -12,6 +12,7 @@ TEST(View, FromChannelCarriesEveryField) {
     ChannelConfig ch;
     ch.name = "left";
     ch.monitor = 0;
+    ch.entity = 17;
     ch.render_width = 1280;
     ch.render_height = 720;
     ch.eye_offset_m = {0.1, -0.2, 0.0};
@@ -21,6 +22,8 @@ TEST(View, FromChannelCarriesEveryField) {
     config.near_m = 0.25;
     const ViewDesc v = view_from_channel(ch, config, 2);
     EXPECT_EQ(v.name, "left");
+    EXPECT_EQ(v.pose.kind, PoseSource::Kind::entity);
+    EXPECT_EQ(v.pose.entity, 17U);
     EXPECT_EQ(v.pose.offset_m, ch.eye_offset_m);
     EXPECT_EQ(v.pose.rotation.yaw_deg, -60.0);
     EXPECT_EQ(v.pose.rotation.pitch_deg, 2.0);

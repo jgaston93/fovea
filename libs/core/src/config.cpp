@@ -246,7 +246,7 @@ void check_frustum(Parser& p, const toml::node& node, const std::string& path, c
     }
 }
 
-// The CIGI ranges (attitude.hpp), with yaw allowed either way round.
+// The ranges in attitude.hpp, with yaw allowed either way round.
 void check_view_rotation(Parser& p, const toml::node& node, const std::string& path,
                          const Euler& e) {
     for (const auto& [name, deg, limit] :
@@ -262,8 +262,8 @@ void check_view_rotation(Parser& p, const toml::node& node, const std::string& p
 
 void parse_channel(Parser& p, const toml::table& t, const std::string& path, ChannelConfig& out) {
     p.check_keys(t,
-                 {"name", "monitor", "present_mode", "render_extent", "eye_offset", "view_rotation",
-                  "frustum"},
+                 {"name", "monitor", "entity", "present_mode", "render_extent", "eye_offset",
+                  "view_rotation", "frustum"},
                  path);
 
     if (const auto* n = p.required(t, "name", path)) {
@@ -277,6 +277,12 @@ void parse_channel(Parser& p, const toml::table& t, const std::string& path, Cha
     if (const auto* n = p.required(t, "monitor", path)) {
         if (auto v = p.integer(*n, path + ".monitor", 0, kMaxMonitor)) {
             out.monitor = static_cast<int>(*v);
+        }
+    }
+    if (const auto* n = t.get("entity")) {
+        if (auto v =
+                p.integer(*n, path + ".entity", 0, std::numeric_limits<std::uint32_t>::max())) {
+            out.entity = static_cast<std::uint32_t>(*v);
         }
     }
     if (const auto* n = t.get("present_mode")) {

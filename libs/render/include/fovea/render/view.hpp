@@ -9,16 +9,21 @@
 #include "fovea/core/attitude.hpp"
 #include "fovea/core/config.hpp"
 #include "fovea/core/math.hpp"
+#include "fovea/core/scene.hpp"
 
 namespace fovea {
 
-// Where the view's eye is. Only the ownship's eye point for now; attached to
-// an entity, or fixed in the world, come later.
+// Where the view's eye is (D-011): attached to an entity and moving with
+// it (a driver's or pilot's eye, a mounted camera), or fixed in the world
+// (a tower, a survey viewpoint).
 struct PoseSource {
-    enum class Kind : std::uint8_t { ownship_eye };
-    Kind kind = Kind::ownship_eye;
-    DVec3 offset_m{0.0};  // from the design eye point, body axes
-    Euler rotation;       // view axis relative to the body
+    enum class Kind : std::uint8_t { entity, world };
+    Kind kind = Kind::entity;
+    EntityId entity = 0;    // kind entity: the entity it rides on
+    DVec3 offset_m{0.0};    // kind entity: from the entity's origin, its body axes
+    Euler rotation;         // kind entity: view axis relative to the entity's body
+    DVec3 world_ecef{0.0};  // kind world: the eye's position
+    DQuat world_orientation{1.0, 0.0, 0.0, 0.0};  // kind world: eye frame to ECEF
 };
 
 struct Projection {
@@ -57,7 +62,7 @@ struct ViewDesc {
 ViewDesc view_from_channel(const ChannelConfig& channel, const DisplayConfig& config,
                            std::size_t index);
 
-// Eye-frame vectors to body-frame vectors for this view.
+// Eye-frame vectors to body-frame vectors, for an entity-attached view.
 DQuat eye_to_body(const PoseSource& pose);
 
 }  // namespace fovea

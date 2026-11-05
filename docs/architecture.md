@@ -48,8 +48,8 @@ Rules:
 ## Coordinates and precision
 
 - World positions are **ECEF in `double`** (WGS-84) on the CPU. Geodetic ↔ ECEF conversions live in `core`.
-- **Body frame** (ownship, entities, eye offsets): x forward, y right, z down, matching CIGI conventions. Orientation is yaw, pitch and roll in degrees at the interface and quaternions internally.
-- **GPU positions are camera-relative `float`.** Each frame, the render origin is the eyepoint's ECEF position. Tiles store vertices relative to a per-tile `double` origin, and the per-draw offset `(tile_origin - eye)` is computed in `double` and then narrowed.
+- **Body frame** (entities and the viewpoints on them): x forward, y right, z down, the common aerospace and vehicle convention (also CIGI's). Orientation is yaw, pitch and roll in degrees at the interface and quaternions internally.
+- **GPU positions are camera-relative `float`.** Each frame, each view's render origin is its own eye's ECEF position. Tiles store vertices relative to a per-tile `double` origin, and the per-draw offset `(tile_origin - eye)` is computed in `double` and then narrowed.
 - **Reverse-Z depth:** a `D32_SFLOAT` depth buffer cleared to 0, with an infinite far plane.
 
 ## Threads and data handoff
@@ -63,7 +63,7 @@ Rules:
 ```
 
 - **SceneState handoff** uses a wait-free triple buffer of a fixed-size snapshot. The writer publishes complete snapshots, and the render thread takes the latest one at the start of each frame. Neither side ever waits on the other.
-- **Snapshot contents:** the ownship eyepoint, a fixed-capacity entity table, and environment state (time of day, and later weather). Every sample carries two timestamps: host time from the protocol and local receive time from a monotonic clock. Each entity keeps its last two samples, so the renderer can interpolate or extrapolate without the network thread knowing about frames.
+- **Snapshot contents:** a fixed-capacity entity table (D-011: no entity is special; views attach their viewpoints to entities or fix them in the world), and environment state (time of day, and later weather). Every sample carries two timestamps: host time from the protocol and local receive time from a monotonic clock. Each entity keeps its last two samples, so the renderer can interpolate or extrapolate without the network thread knowing about frames.
 - **Paging** (milestone 3 and later): the render thread pushes visibility and prediction hints into an SPSC ring. The paging thread does the file I/O, decoding and staging, and submits copies on a dedicated transfer queue. Completions come back through another SPSC ring, along with the timeline semaphore value. The render thread uses a resource only after checking (not waiting on) that its semaphore has reached that value.
 - **Control and stats:** stats are written into a separate SPSC ring that a stats or control thread drains. Milestone 1 writes them to a log file. A later milestone exposes them, together with control commands, over a local socket for the external control UI. That traffic stays separate from CIGI.
 
@@ -84,8 +84,7 @@ The headers are the reference; these are their shapes, as built in milestone 1 s
 struct Pose { DVec3 ecef; DQuat orientation; HostTime host_t; LocalTime recv_t; };
 struct EntityState { EntityId id; ModelId model; Pose cur, prev; FixedArray<Articulation, 8> parts; };
 struct SceneSnapshot {
-  Pose eyepoint;
-  FixedArray<EntityState, kMaxEntities> entities;
+  FixedArray<EntityState, kMaxEntities> entities;   // no special "ownship" (D-011)
   EnvironmentState environment;
   uint64_t sequence;
 };
@@ -94,8 +93,9 @@ class SceneState {                       // one writer thread, one reader thread
   void publish();                        // writer: copies it to the reader
   const SceneSnapshot& latest();         // reader: valid until the next latest()
 };
+const EntityState* find_entity(const SceneSnapshot&, EntityId);
 
-// libs/net/host_adapter.hpp: CIGI now, DIS later; the only SceneState writer
+// libs/net/host_adapter.hpp: CIGI first, other protocols later; the only SceneState writer
 class HostAdapter { virtual bool poll(SceneState&) = 0; };
 
 // libs/terrain/terrain_query.hpp: CPU-only spatial queries
@@ -108,7 +108,7 @@ class TerrainQuery {
 // libs/render/view.hpp: a View is the general rendering unit
 struct ViewDesc {
   std::string name;
-  PoseSource pose;            // ownship eye + offset now; entity-attached or fixed later
+  PoseSource pose;            // riding on an entity (offset, rotation), or fixed in the world
   Projection projection;      // asymmetric frustum (angles) + near plane
   RenderMode mode;            // visual now; NVG/IR/lidar later
   PostChain post;             // tone map + per-view effects

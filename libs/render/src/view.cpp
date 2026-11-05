@@ -6,7 +6,8 @@ ViewDesc view_from_channel(const ChannelConfig& channel, const DisplayConfig& co
                            std::size_t index) {
     ViewDesc v;
     v.name = channel.name;
-    v.pose.kind = PoseSource::Kind::ownship_eye;
+    v.pose.kind = PoseSource::Kind::entity;
+    v.pose.entity = channel.entity;
     v.pose.offset_m = channel.eye_offset_m;
     v.pose.rotation = channel.view_rotation;
     v.projection = {channel.frustum, config.near_m};

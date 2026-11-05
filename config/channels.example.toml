@@ -1,9 +1,11 @@
-# Example display configuration: three side-by-side screens around the
-# pilot's eye point (docs/architecture.md, "Channel config schema").
+# Example display configuration: three side-by-side screens around one
+# viewpoint (docs/architecture.md, "Channel config schema").
 #
-# Angles are in degrees; offsets in metres. Body axes: x forward, y right,
-# z down. The frustum values are placeholders until the physical screen
-# geometry and eye point are measured.
+# Each channel's viewpoint rides on a scene entity (`entity`, default 0: the
+# host's main entity, such as CIGI's ownship), offset and rotated in that
+# entity's body axes: x forward, y right, z down. Angles are in degrees;
+# offsets in metres. The frustum values are placeholders until the physical
+# screen geometry and eye point are measured.
 
 [display]
 presenter = "multi_swapchain"   # or "spanned", "offscreen"
@@ -13,6 +15,7 @@ near_m = 0.1                    # reverse-Z, infinite far plane
 [[channel]]
 name = "left"
 monitor = 0                     # platform monitor index
+entity = 0                      # scene entity the viewpoint rides on
 present_mode = "fifo"           # or "mailbox", "immediate"
 render_extent = [1920, 1080]
 eye_offset = { x = 0.0, y = 0.0, z = 0.0 }

@@ -30,6 +30,20 @@ TEST(SceneState, ReaderSeesTheLatestPublishAndEditsKeepTheirState) {
     EXPECT_EQ(s.entities[0].id, 7U);
 }
 
+TEST(SceneState, FindEntityById) {
+    SceneSnapshot s;
+    EntityState a;
+    a.id = 3;
+    EntityState b;
+    b.id = 9;
+    b.model = 5;
+    ASSERT_TRUE(s.entities.push_back(a));
+    ASSERT_TRUE(s.entities.push_back(b));
+    ASSERT_NE(find_entity(s, 9), nullptr);
+    EXPECT_EQ(find_entity(s, 9)->model, 5U);
+    EXPECT_EQ(find_entity(s, 4), nullptr);
+}
+
 TEST(SceneState, UnpublishedEditsAreNotVisible) {
     auto scene = std::make_unique<SceneState>();
     scene->publish();

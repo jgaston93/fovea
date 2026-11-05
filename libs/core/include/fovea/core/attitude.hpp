@@ -5,8 +5,10 @@
 
 namespace fovea {
 
-// Attitude as CIGI states it, in degrees. Body axes: x forward, y right,
-// z down. Applied in the order yaw, pitch, roll (aerospace 3-2-1).
+// Orientation in degrees, in the common aerospace and vehicle convention
+// (also CIGI's). Body axes: x forward, y right, z down. Applied in the order
+// yaw, pitch, roll (3-2-1). It suits anything with a forward direction: a
+// vehicle, a vessel, a camera mount.
 //   yaw:   heading, clockwise from true north, [0, 360)
 //   pitch: positive nose up, [-90, 90]
 //   roll:  positive right wing down, (-180, 180]
