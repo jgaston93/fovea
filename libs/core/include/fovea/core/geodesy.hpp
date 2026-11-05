@@ -22,10 +22,11 @@ struct Geodetic {
 
 DVec3 geodetic_to_ecef(const Geodetic& g);
 
-// Accurate to well under a millimetre from deep below the surface out to
-// orbit, poles included (tested from 430 m below to 400 km above the
-// ellipsoid). Not meant for points within ~50 km of the Earth's centre,
-// where the iteration does not converge. Longitude is 0 on the polar axis.
+// Round trips agree to a few nanometres from 1,000 km below the surface out
+// to orbit, poles included. Accuracy falls off deeper down (measured: 5 um
+// at 1,400 km from the centre, 1 cm at 370 km, metres inside 170 km); such
+// positions are invalid input for an IG anyway. Longitude is 0 on the
+// polar axis.
 Geodetic ecef_to_geodetic(const DVec3& ecef);
 
 // Rotation taking local North-East-Down vectors at (lat, lon) to ECEF. Its

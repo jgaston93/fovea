@@ -39,7 +39,7 @@ TEST(Geodesy, AltitudeIsAlongTheEllipsoidNormal) {
 TEST(Geodesy, RoundTripIsExact) {
     for (double lat = -89.5; lat <= 89.5; lat += 8.5) {
         for (double lon = -179.0; lon <= 180.0; lon += 23.0) {
-            for (double alt : {-430.0, 0.0, 192.0, 3000.0, 30000.0, 400000.0}) {
+            for (double alt : {-1.0e6, -430.0, 0.0, 192.0, 3000.0, 30000.0, 400000.0}) {
                 const Geodetic back = ecef_to_geodetic(geodetic_to_ecef({lat, lon, alt}));
                 EXPECT_NEAR(back.lat_deg, lat, kDegTol) << lat << " " << lon << " " << alt;
                 EXPECT_NEAR(back.lon_deg, lon, kDegTol) << lat << " " << lon << " " << alt;
