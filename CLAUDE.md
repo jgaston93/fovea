@@ -4,14 +4,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Fovea is an open-source, cross-platform Vulkan image generator (IG) for real-time flight simulation, driven by a host over CIGI. The repository currently contains only the plan, `docs/fovea-plan.md`, which is the authoritative design handoff. No code, build system or tests exist yet. When they are added, update this file with the actual build, test and single-test commands. Don't guess them.
+Fovea is an open-source, cross-platform Vulkan image generator (IG) for real-time flight simulation, driven by a host over CIGI. `docs/fovea-plan.md` is the authoritative design handoff, `docs/architecture.md` turns it into concrete structure, and `docs/decisions.md` records design choices (D-xxx). The build, test and CI stack is in place. There's no IG code yet.
+
+## Commands
+
+Builds use CMake presets with Ninja. Each preset builds into `build/<preset>`.
+
+```sh
+cmake --preset debug && cmake --build --preset debug && ctest --preset debug
+# presets: debug, release, relwithdebinfo, asan (ASan+UBSan, -Og), asan-fast (-O1)
+ctest --preset debug -R 'Toolchain\.FloatingPointIsIeeeWithoutFastMath'   # one test
+CC=clang CXX=clang++ cmake --preset debug -B build/clang-debug --fresh     # Clang build
+```
+
+GCC (≥ 11), Clang (≥ 14) and MSVC (VS 2022) must all build without warnings, and warnings are errors. On Windows, configure from a VS developer prompt with `CC=cl CXX=cl` and the same presets (ASan presets are GCC/Clang only). Every target must call `fovea_target_defaults()` (`cmake/FoveaCompilerFlags.cmake`). Fast-math is forbidden. Dependencies go in `cmake/FoveaDependencies.cmake`, pinned by version and SHA-256, and are added only when code needs them. The test presets fail when no tests match (`noTestsAction: error`).
+
+The lint tools are pinned to CI's versions in a git-ignored venv:
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
+git ls-files '*.cpp' '*.hpp' | xargs .venv/bin/clang-format --dry-run --Werror
+.venv/bin/clang-tidy -p build/debug $(git ls-files 'apps/*.cpp' 'libs/*.cpp' 'tools/*.cpp')
+```
+
+CI (`.github/workflows/ci.yml`) runs GCC debug, release and asan-fast, Clang debug, Rocky Linux 9 with GCC 11, Windows MSVC debug and release, and the format and tidy checks. If a test takes more than about 1 s in Release, add it to `SLOW_TESTS` there. `full-verification.yml` runs nightly.
 
 The first session's tasks are listed in the plan under "First Claude Code session tasks". Milestone 1 is the skeleton: three-window rendering, off-axis frustums from config, a 60 Hz clock, frame-time logging and a display sync test.
 
 ## Planned layout and stack
 
 - `apps/fovea` (runtime IG), `apps/fovea-compiler` (offline terrain compiler), `libs/core`, `libs/render`, `libs/platform`, `libs/net`, `tools/cigi-test-host`, `config/`, `docs/`.
-- C++20, CMake, Vulkan 1.3, volk, VMA, vk-bootstrap, GLFW or SDL. Windows first, but Linux must also build. Warnings are treated as errors.
+- C++20, CMake, Vulkan 1.3, volk, VMA, vk-bootstrap, SDL3, toml++, Slang (see `docs/decisions.md`).
 - GDAL is used **only** in the compiler, never in the runtime.
 - Use one shader toolchain targeting SPIR-V (Slang or GLSL). Pick it before significant shader work starts.
 - Record design choices in `docs/decisions.md`. Summarize the architecture in `docs/architecture.md`.

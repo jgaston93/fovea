@@ -1,0 +1,20 @@
+# Build trees (CMake presets put everything under build/)
+/build/
+/compile_commands.json
+
+# Editor and tool caches
+/.cache/
+/.vscode/
+/.idea/
+*.swp
+
+# Python tooling
+__pycache__/
+*.pyc
+.venv/
+
+# Local, private notes for Claude Code (names, paths); never commit.
+/CLAUDE.local.md
+
+# CI compiler cache
+.ccache/

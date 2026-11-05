@@ -1,0 +1,121 @@
+name: Full verification
+
+# The slow end of verification, off the per-push path: every test under the
+# strict ASan+UBSan build (Debug, -Og, assertions on) and with Clang (Debug),
+# including the slow ones ci.yml runs on a PR in Release only; and
+# clang-tidy on every file. Nightly on main, and on demand from the Actions
+# tab. A failed scheduled run opens (or comments on) a GitHub issue.
+
+on:
+  schedule:
+    - cron: "23 7 * * *"  # daily, 07:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # One job for now. When the strict build's suite outgrows it, split it with
+  # a matrix part and `ctest -I <part>,,<n>` (every n-th test); each part must
+  # still select at least one test, as the presets fail on none.
+  asan:
+    name: Ubuntu GCC ASan+UBSan (strict), all tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      CC: gcc
+      CXX: g++
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Ninja and ccache
+        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-ubuntu-gcc-asan-${{ github.sha }}
+          restore-keys: ccache-ubuntu-gcc-asan-
+      - name: Configure
+        run: >-
+          cmake --preset asan
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build
+        run: cmake --build --preset asan
+      - name: Test (all, slow ones included)
+        run: ctest --preset asan --parallel "$(nproc)"
+
+  clang:
+    name: Ubuntu Clang Debug, all tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CC: clang
+      CXX: clang++
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Ninja and ccache
+        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-ubuntu-clang-debug-${{ github.sha }}
+          restore-keys: ccache-ubuntu-clang-debug-
+      - name: Configure
+        run: >-
+          cmake --preset debug
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build
+        run: cmake --build --preset debug
+      - name: Test (all, slow ones included)
+        run: ctest --preset debug --parallel "$(nproc)"
+
+  tidy:
+    name: clang-tidy, every file
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang-tidy-18
+      - name: Configure (for compile_commands.json)
+        run: cmake --preset debug
+      - name: clang-tidy
+        run: |
+          files=$(git ls-files 'apps/*.cpp' 'libs/*.cpp' 'tools/*.cpp')
+          if [ -z "$files" ]; then echo "no C++ files to check"; exit 0; fi
+          out=$(clang-tidy-18 -p build/debug --quiet $files 2>&1 | grep -E "warning:|error:" || true)
+          if [ -n "$out" ]; then echo "$out"; exit 1; fi
+
+  # A failed scheduled run opens an issue, or comments on the open one, so
+  # it can't go unnoticed. A job past its time limit ends cancelled, not
+  # failed, and failure() misses it, so the needed jobs' results are read
+  # instead.
+  report:
+    name: Report a failed nightly run
+    needs: [asan, clang, tidy]
+    if: >-
+      always() && github.event_name == 'schedule' &&
+      (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly full verification is failing"
+          body="Run: $RUN_URL ($(date -u +%Y-%m-%d))"
+          n=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body "Failed again. $body"
+          else
+            gh issue create --title "$title" --label ci --body "$body"
+          fi

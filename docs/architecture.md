@@ -1,0 +1,198 @@
+# Fovea Architecture
+
+This document turns `fovea-plan.md` into concrete structure: the library boundaries, the core interfaces, threading and memory rules, and the channel config schema. Design choices and their reasons are recorded in `decisions.md`.
+
+## Repository layout
+
+```
+apps/
+  fovea/              runtime IG executable
+  fovea-compiler/     offline terrain compiler (only consumer of GDAL)
+libs/
+  core/               math, time, logging, config, lock-free containers, SceneState
+  terrain/            database reader + TerrainQuery (CPU-only, no Vulkan)
+  platform/           SDL3 windows, monitors, input, high-res timers, thread setup
+  net/                UDP transport + CIGI codec + CIGI→SceneState adapter
+  render/             Vulkan device, Views, Presenters, frame graph, shaders
+tools/
+  cigi-test-host/     scripted CIGI host for testing
+config/               example runtime and channel configs
+shaders/              Slang sources, compiled to SPIR-V at build time
+docs/
+```
+
+`libs/terrain` is an addition to the plan's layout. It keeps foundational decision 1 (shared terrain queries) as a real library boundary, not just a convention.
+
+## Library dependency graph
+
+Arrows mean "depends on". The graph has no cycles, and CMake enforces it through target links.
+
+```
+core      ← (nothing; std + toml++ only)
+terrain   ← core
+platform  ← core            (+ SDL3, private)
+net       ← core
+render    ← core, platform  (+ volk, VMA, vk-bootstrap, private)
+
+apps/fovea           ← core, terrain, platform, net, render
+apps/fovea-compiler  ← core, terrain      (+ GDAL)
+tools/cigi-test-host ← core, net
+```
+
+Rules:
+- `core` and `terrain` never include Vulkan, SDL or GDAL headers. That lets a host link `terrain` to answer height-of-terrain queries from the same database the IG displays.
+- `net` never includes renderer headers. It writes only `SceneState`.
+- `render` never includes `net` headers. It reads only `SceneState`. That boundary is what keeps the renderer protocol-neutral.
+- Third-party dependencies are linked `PRIVATE` wherever their types don't appear in public headers.
+
+## Coordinates and precision
+
+- World positions are **ECEF in `double`** (WGS-84) on the CPU. Geodetic ↔ ECEF conversions live in `core`.
+- **Body frame** (ownship, entities, eye offsets): x forward, y right, z down, matching CIGI conventions. Orientation is yaw, pitch and roll in degrees at the interface and quaternions internally.
+- **GPU positions are camera-relative `float`.** Each frame, the render origin is the eyepoint's ECEF position. Tiles store vertices relative to a per-tile `double` origin, and the per-draw offset `(tile_origin - eye)` is computed in `double` and then narrowed.
+- **Reverse-Z depth:** a `D32_SFLOAT` depth buffer cleared to 0, with an infinite far plane.
+
+## Threads and data handoff
+
+```
+ Network thread ──writes──▶ SceneState (triple buffer) ──reads──▶ Render thread
+                                                                    ▲   │
+ Paging thread ◀──requests (SPSC ring)──────────────────────────────┼───┘
+       │                                                            │
+       └──GPU uploads (transfer queue, timeline semaphore)──completions (SPSC ring)
+```
+
+- **SceneState handoff** uses a wait-free triple buffer of a fixed-size snapshot. The writer publishes complete snapshots, and the render thread takes the latest one at the start of each frame. Neither side ever waits on the other.
+- **Snapshot contents:** the ownship eyepoint, a fixed-capacity entity table, and environment state (time of day, and later weather). Every sample carries two timestamps: host time from the protocol and local receive time from a monotonic clock. Each entity keeps its last two samples, so the renderer can interpolate or extrapolate without the network thread knowing about frames.
+- **Paging** (milestone 3 and later): the render thread pushes visibility and prediction hints into an SPSC ring. The paging thread does the file I/O, decoding and staging, and submits copies on a dedicated transfer queue. Completions come back through another SPSC ring, along with the timeline semaphore value. The render thread uses a resource only after checking (not waiting on) that its semaphore has reached that value.
+- **Control and stats:** stats are written into a separate SPSC ring that a stats or control thread drains. Milestone 1 writes them to a log file. A later milestone exposes them, together with control commands, over a local socket for the external control UI. That traffic stays separate from CIGI.
+
+## Render path rules
+
+The render path means everything the render thread does between frame start and the last present:
+- **No heap allocation.** Per-frame scratch memory comes from a linear arena that's reset every frame. Long-lived containers are given their size at init. Debug builds hook the global allocator to assert on allocations during the frame.
+- **No disk I/O and no blocking waits** except the one deliberate wait: the frame fence or present pacing at the top of the frame.
+- **Vulkan objects** (pipelines, descriptor heaps, pools) are created at init. Streamed resources are created on the paging thread.
+- **GPU-driven rendering:** bindless descriptors through descriptor indexing, one large descriptor set per resource kind, indirect draws, and a clustered light list. Milestone 1 builds the bindless setup even though the grid scene doesn't need it, so later work doesn't have to retrofit it.
+
+## Core interfaces
+
+These are sketches of the intended shapes, not final signatures. Milestone 1 provides stubs for all of them.
+
+```cpp
+// libs/core — protocol-neutral scene state
+struct Pose { DVec3 ecef; Quat orientation; HostTime host_t; LocalTime recv_t; };
+struct EntityState { EntityId id; ModelId model; Pose cur, prev; ArticulationSet parts; bool active; };
+struct SceneSnapshot {
+  Pose eyepoint;
+  FixedArray<EntityState, kMaxEntities> entities;
+  EnvironmentState environment;
+  uint64_t sequence;
+};
+class SceneStateWriter { public: SceneSnapshot& begin(); void publish(); };   // adapter side
+class SceneStateReader { public: const SceneSnapshot& latest(); };            // render side
+
+// libs/terrain — CPU-only spatial queries
+class TerrainQuery {
+public:
+  virtual std::optional<double> height_at(const GeoPoint&) const = 0;        // meters MSL
+  virtual bool line_of_sight(const DVec3& a, const DVec3& b) const = 0;     // ECEF
+  virtual std::optional<Hit> intersect(const DRay&) const = 0;              // + material ID
+};
+
+// libs/render — a View is the general rendering unit
+struct ViewDesc {
+  PoseSource pose;          // ownship eye + offset, entity-attached, or fixed
+  Projection projection;    // asymmetric frustum (angles) or screen-corner geometry
+  RenderMode mode;          // visual now; NVG/IR/lidar later
+  PostChain post;           // tone map + per-view effects
+  OutputTarget target;      // a Presenter output, or an offscreen image
+  Extent2D render_extent;   // independent of the output resolution
+};
+
+// libs/render — Presenter hides "3 swapchains" vs "1 spanned surface" vs "offscreen"
+class Presenter {
+public:
+  virtual std::span<const OutputDesc> outputs() const = 0;
+  virtual FrameImages acquire(FrameContext&) = 0;        // one image per output
+  virtual void present(FrameContext&) = 0;              // back-to-back presents
+  virtual PresentTiming last_timing() const = 0;        // for missed-frame and sync stats
+};
+// Implementations: MultiSwapchainPresenter, SpannedPresenter, OffscreenPresenter (headless/replay)
+
+// libs/render — compiled-in modules, enabled through config
+class Module {
+public:
+  virtual void init(const ModuleContext&) = 0;
+  virtual void update(const FrameContext&, const SceneSnapshot&) = 0;
+  virtual void record(CommandRecorder&, const View&) = 0;
+  virtual void shutdown() = 0;
+  virtual GpuBudget budget() const = 0;                 // declared; actual cost reported via stats
+};
+```
+
+Views write to images. Each output gets its view's render-resolution image, which is tone-mapped and scaled into it. A sensor view works the same way, with an offscreen target and no output.
+
+## Frame pacing and display sync
+
+- The frame clock is locked to 60 Hz. Each frame: wait for frame N−2's fence, take the latest SceneState, update modules, record all views, submit once, then present to every output back to back.
+- The present mode is set per output in config. The default is FIFO on all outputs. The milestone 1 sync test measures FIFO on every output against FIFO on one output with the others set to MAILBOX/IMMEDIATE, plus the driver's display-spanning mode through `SpannedPresenter`. Results go into `decisions.md`.
+- A missed frame is any frame whose present interval is more than 1.5× the target period. Present timing comes from `VK_KHR_present_wait`/`present_id` when available, and from CPU timestamps otherwise.
+- Stats recorded every frame: CPU frame time, GPU time per view and per module (timestamp queries), present interval, and missed frames. End-to-end latency (host timestamp to present) is added in milestone 2.
+
+## Channel config schema
+
+Each `[[channel]]` defines one display view and its output. Angles are in degrees and offsets in meters, in the body frame.
+
+```toml
+# config/channels.example.toml
+[display]
+presenter = "multi_swapchain"   # or "spanned", "offscreen"
+target_hz = 60
+near_m = 0.1                    # reverse-Z, infinite far
+
+[[channel]]
+name = "left"
+monitor = 0                     # platform monitor index
+present_mode = "fifo"
+render_extent = [1920, 1080]
+eye_offset = { x = 0.0, y = 0.0, z = 0.0 }
+view_rotation = { yaw = -60.0, pitch = 0.0, roll = 0.0 }
+frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
+
+[[channel]]
+name = "center"
+monitor = 1
+present_mode = "fifo"
+render_extent = [1920, 1080]
+eye_offset = { x = 0.0, y = 0.0, z = 0.0 }
+view_rotation = { yaw = 0.0, pitch = 0.0, roll = 0.0 }
+frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
+
+[[channel]]
+name = "right"
+monitor = 2
+present_mode = "fifo"
+render_extent = [1920, 1080]
+eye_offset = { x = 0.0, y = 0.0, z = 0.0 }
+view_rotation = { yaw = 60.0, pitch = 0.0, roll = 0.0 }
+frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
+```
+
+- The frustum half-angles may be asymmetric, which is how the horizon stays continuous across bezels. The example values are placeholders until the physical screen geometry is measured.
+- Planned alternative: `screen = { lower_left, lower_right, upper_left }` corners in the eye frame. The frustum is derived from them, which is easier for the measured setup to get right.
+- Config loading checks that monitor indices exist, that the angles produce a valid frustum, and that channel names are unique. It fails at startup with a clear message.
+
+## Headless and replay
+
+`OffscreenPresenter` renders the same views to images without a window. Combined with a replay adapter that writes recorded CIGI traffic into SceneState at its original timing, it enables golden-image comparisons and repeatable performance runs. Milestone 1 provides the offscreen presenter and a `--headless --frames N --dump <dir>` option. Replay arrives with CIGI in milestone 2.
+
+## Milestone 1 build order
+
+1. CMake skeleton, presets, dependency fetching, warnings, CI on GCC, Clang and Windows MSVC (D-008, D-009; done).
+2. `core`: math (doubles, ECEF/geodetic), monotonic time, logging, triple buffer, SPSC ring, frame arena, config structs and TOML loading with validation, plus unit tests.
+3. Interface stubs: `SceneState`, `TerrainQuery`, `View`, `Presenter`, `Module`.
+4. `platform`: monitor enumeration, borderless window per monitor, event pump.
+5. `render`: Vulkan 1.3 device (with validation in debug builds), bindless setup, `MultiSwapchainPresenter`, per-channel off-axis projection, the grid-and-horizon reference scene in Slang, and tone mapping.
+6. 60 Hz frame loop, timestamp queries, stats log, ImGui frame-timing overlay.
+7. `OffscreenPresenter` and the headless dump option, followed by the display sync test procedure and its results.

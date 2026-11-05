@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # The slow tests, as a ctest regex: on a PR they run in the Release jobs
+  # only (GCC and Rocky); the Debug, Clang and ASan jobs skip them, as those
+  # builds are several times slower and look for memory, UB and assertion
+  # faults that the fast tests reach through the same code. The nightly
+  # full-verification.yml runs every test under the strict ASan build (Debug,
+  # -Og) and Clang. Add a test here if it takes more than about 1 s in
+  # Release. Empty means none are skipped.
+  SLOW_TESTS: ""
+
+jobs:
+  ubuntu:
+    name: Ubuntu ${{ matrix.compiler }} ${{ matrix.preset }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { compiler: gcc, cc: gcc, cxx: g++, preset: debug }
+          - { compiler: gcc, cc: gcc, cxx: g++, preset: release }
+          # ASan+UBSan at -O1, assertions on: faster than the strict -Og
+          # build the nightly runs.
+          - { compiler: gcc, cc: gcc, cxx: g++, preset: asan-fast }
+          - { compiler: clang, cc: clang, cxx: clang++, preset: debug }
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Ninja and ccache
+        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
+      # Compiled objects (ours and the FetchContent dependencies) are reused
+      # between runs; ccache only reuses an object when the compiler, flags
+      # and preprocessed source match, so results are unchanged.
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-ubuntu-${{ matrix.compiler }}-${{ matrix.preset }}-${{ github.sha }}
+          restore-keys: ccache-ubuntu-${{ matrix.compiler }}-${{ matrix.preset }}-
+      - name: Configure
+        run: >-
+          cmake --preset ${{ matrix.preset }}
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+      # Release runs every test; Debug, Clang and ASan skip the slow ones
+      # (SLOW_TESTS above), which full-verification.yml runs nightly and
+      # on demand. An empty regex would exclude every test, so it is only
+      # passed when set.
+      - name: Test
+        run: >-
+          ctest --preset ${{ matrix.preset }} --parallel "$(nproc)"
+          ${{ matrix.preset != 'release' && env.SLOW_TESTS != '' && format('--exclude-regex "{0}"', env.SLOW_TESTS) || '' }}
+      - name: Compiler cache statistics
+        run: ccache --show-stats
+
+  # Rocky Linux 9 with its system GCC 11: the oldest supported compiler.
+  rhel9:
+    name: Rocky Linux 9 (system GCC 11) release
+    runs-on: ubuntu-24.04
+    container: rockylinux:9
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - name: Install toolchain
+        run: |
+          dnf -y install gcc-c++ cmake git dnf-plugins-core tar zstd epel-release
+          dnf config-manager --set-enabled crb
+          dnf -y install ninja-build ccache
+      - uses: actions/checkout@v5
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-rocky9-release-${{ github.sha }}
+          restore-keys: ccache-rocky9-release-
+      - name: Configure
+        run: >-
+          cmake --preset release
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build
+        run: cmake --build --preset release
+      - name: Test
+        run: ctest --preset release --parallel "$(nproc)"
+      - name: Compiler cache statistics
+        run: ccache --show-stats
+
+  # The primary target platform: MSVC from Visual Studio 2022 (D-009).
+  # msvc-dev-cmd sets up the developer environment, which also puts
+  # Visual Studio's own Ninja on PATH.
+  windows:
+    name: Windows MSVC ${{ matrix.preset }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [debug, release]
+    env:
+      CC: cl
+      CXX: cl
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }} --parallel 4
+
+  lint:
+    name: clang-format and clang-tidy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # the PR's base, for the changed files
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang-format-18 clang-tidy-18
+      - name: clang-format
+        run: git ls-files '*.cpp' '*.hpp' | xargs --no-run-if-empty clang-format-18 --dry-run --Werror
+      - name: Configure (for compile_commands.json)
+        run: cmake --preset debug
+      # On a PR: the .cpp files it changes, and the .cpp beside each header
+      # it changes (foo.hpp -> foo.cpp). A header change seen only through
+      # other files waits for the nightly full run (full-verification.yml).
+      # On a push to main: every file. Tests are not checked.
+      - name: clang-tidy
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          all=$(git ls-files 'apps/*.cpp' 'libs/*.cpp' 'tools/*.cpp')
+          if [ -n "$BASE_REF" ]; then
+            changed=$(git diff --name-only "origin/$BASE_REF...HEAD" | sed -e 's/\.hpp$/.cpp/' | sort -u)
+            files=$(comm -12 <(echo "$all" | sort) <(echo "$changed"))
+          else
+            files=$all
+          fi
+          if [ -z "$files" ]; then echo "no C++ files to check"; exit 0; fi
+          echo "$files"
+          out=$(clang-tidy-18 -p build/debug --quiet $files 2>&1 | grep -E "warning:|error:" || true)
+          if [ -n "$out" ]; then echo "$out"; exit 1; fi
