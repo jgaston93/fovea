@@ -16,7 +16,7 @@ GitHub's CI runners have no GPU. From PR 5 onward, the Linux CI jobs install Mes
 - Containers: `TripleBuffer<T>` (wait-free latest value), `SpscRing<T, N>`, `FrameArena` (a linear allocator reset every frame) and `FixedArray<T, N>`.
 - `tests/support/alloc_counter` from eyas, adapted for MSVC (`_aligned_malloc`). From here on, tests check that render-path code allocates nothing.
 - **Done when:** unit tests cover the geodesy round trip and known reference points (KHSV, the equator, the poles), the axis conventions, and the containers under two threads. This includes a stress test of the triple buffer, which runs under ASan and under a new `tsan` preset (ThreadSanitizer, added to the nightly run).
-- **Decision needed, D-010:** math library. Proposal: glm 1.0.1, which has `double` types, a Vulkan-style 0..1 depth convention, conventions that match the shader code, and is header-only. The alternative is a small hand-written math library, which means no dependency but more code to test.
+- **Math library:** glm 1.0.1 (D-010).
 
 ## PR 2: Config
 
@@ -70,7 +70,7 @@ GitHub's CI runners have no GPU. From PR 5 onward, the Linux CI jobs install Mes
 
 | Needed by | Input |
 |---|---|
-| PR 1 | Approve D-010 (math library) |
+| PR 1 | ~~Approve D-010 (math library)~~ glm, accepted |
 | PR 4 | Visual Studio 2022 and the Vulkan SDK installed on Windows; the three monitors connected |
 | PR 6 | Physical screen geometry and the eye-point position, which replace the placeholder frustum values (they can come later) |
 | PR 7 | Approve D-006 (Dear ImGui) |
