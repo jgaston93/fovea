@@ -121,6 +121,12 @@ TEST(Config, NoChannelsIsAnError) {
     EXPECT_NE(r.errors[0].message.find("no channels"), std::string::npos);
 }
 
+TEST(Config, EmptyChannelListIsNoChannels) {
+    const auto r = parse("channel = []\n");
+    ASSERT_EQ(r.errors.size(), 1U);
+    EXPECT_NE(r.errors[0].message.find("no channels"), std::string::npos);
+}
+
 TEST(Config, ChannelMustBeAListOfTables) {
     expect_one_error(parse(minimal_with("[[channel]]", "[channel]")), 2, "[[channel]]");
 }
@@ -138,6 +144,31 @@ TEST(Config, FrustumMustBeValid) {
     expect_one_error(parse(minimal_with("right = 30.0", "right = 90")), 6,
                      "'channel[0].frustum.right' must be strictly between -90 and 90");
     expect_one_error(parse(minimal_with("left = -30.0", "left = nan")), 6, "finite number");
+}
+
+TEST(Config, MessagesShowValuesExactly) {
+    expect_one_error(parse(minimal_with("left = -30.0", "left = 30.0000001")), 6,
+                     "left (30.0000001) must be less than right (30)");
+}
+
+TEST(Config, ViewRotationMustBeInTheCigiRanges) {
+    const std::string base = kMinimal + "view_rotation = { yaw = 0, pitch = 0, roll = 0 }\n";
+    const auto with = [&](const std::string& from, const std::string& to) {
+        std::string text = base;
+        return parse(text.replace(text.rfind(from), from.size(), to));
+    };
+    expect_one_error(
+        with("pitch = 0", "pitch = 100"), 7,
+        "'channel[0].view_rotation.pitch' must be between -90 and 90 degrees (got 100)");
+    expect_one_error(with("roll = 0", "roll = -181"), 7, "roll' must be between -180 and 180");
+    expect_one_error(with("yaw = 0", "yaw = 361"), 7, "yaw' must be between -360 and 360");
+    EXPECT_TRUE(with("yaw = 0", "yaw = -300").ok());
+}
+
+TEST(Config, MonitorOnlyNeedsToBeNonNegative) {
+    EXPECT_TRUE(parse(minimal_with("monitor = 1", "monitor = 64")).ok());
+    expect_one_error(parse(minimal_with("monitor = 1", "monitor = -1")), 4,
+                     "'channel[0].monitor' must be between 0 and");
 }
 
 TEST(Config, RenderExtentMustBeTwoSizesInRange) {
@@ -192,6 +223,12 @@ TEST(Config, MissingFileIsReported) {
     ASSERT_EQ(r.errors.size(), 1U);
     EXPECT_EQ(r.errors[0].line, 0U);
     EXPECT_NE(r.errors[0].message.find("cannot open"), std::string::npos);
+}
+
+TEST(Config, DirectoryIsReportedAsNotAFile) {
+    const auto r = load_display_config(FOVEA_SOURCE_DIR "/config");
+    ASSERT_EQ(r.errors.size(), 1U);
+    EXPECT_NE(r.errors[0].message.find("not a regular file"), std::string::npos);
 }
 
 TEST(Config, ErrorFormatsAsSourceLineColumn) {

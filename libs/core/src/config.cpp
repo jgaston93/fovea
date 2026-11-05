@@ -2,12 +2,16 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <fstream>
 #include <initializer_list>
+#include <limits>
 #include <span>
 #include <sstream>
+#include <system_error>
 #include <toml++/toml.hpp>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -18,12 +22,23 @@ namespace {
 // Largest render extent accepted; Vulkan guarantees 4096 and desktop GPUs
 // support 16384 (maxImageDimension2D).
 constexpr std::int64_t kMaxExtent = 16384;
-constexpr std::int64_t kMaxMonitor = 63;
+// Only the sign is checked here; whether the monitor exists is checked when
+// the windows are created.
+constexpr std::int64_t kMaxMonitor = std::numeric_limits<int>::max();
 
+// Shortest text that reads back as the same double, independent of locale,
+// so a message never shows two different values as equal.
 std::string format_number(double v) {
-    std::ostringstream out;
-    out << v;
-    return out.str();
+    std::array<char, 32> buf{};
+    const auto [end, ec] = std::to_chars(buf.data(), buf.data() + buf.size(), v);
+    return ec == std::errc{} ? std::string(buf.data(), end) : "?";
+}
+
+// UTF-8 on every platform; path::string() uses the ANSI code page on Windows
+// and throws for characters it cannot represent.
+std::string path_text(const std::filesystem::path& path) {
+    const std::u8string u = path.u8string();
+    return {reinterpret_cast<const char*>(u.data()), u.size()};
 }
 
 // Collects every problem with its location; the getters report a problem and
@@ -231,6 +246,20 @@ void check_frustum(Parser& p, const toml::node& node, const std::string& path, c
     }
 }
 
+// The CIGI ranges (attitude.hpp), with yaw allowed either way round.
+void check_view_rotation(Parser& p, const toml::node& node, const std::string& path,
+                         const Euler& e) {
+    for (const auto& [name, deg, limit] :
+         {std::tuple{"yaw", e.yaw_deg, 360.0}, std::tuple{"pitch", e.pitch_deg, 90.0},
+          std::tuple{"roll", e.roll_deg, 180.0}}) {
+        if (deg < -limit || deg > limit) {
+            p.error(node.source(), "'" + path + "." + name + "' must be between " +
+                                       format_number(-limit) + " and " + format_number(limit) +
+                                       " degrees (got " + format_number(deg) + ")");
+        }
+    }
+}
+
 void parse_channel(Parser& p, const toml::table& t, const std::string& path, ChannelConfig& out) {
     p.check_keys(t,
                  {"name", "monitor", "present_mode", "render_extent", "eye_offset", "view_rotation",
@@ -277,6 +306,7 @@ void parse_channel(Parser& p, const toml::table& t, const std::string& path, Cha
     if (const auto* n = t.get("view_rotation")) {
         if (auto v = number_fields<3>(p, *n, path + ".view_rotation", {"yaw", "pitch", "roll"})) {
             out.view_rotation = {(*v)[0], (*v)[1], (*v)[2]};
+            check_view_rotation(p, *n, path + ".view_rotation", out.view_rotation);
         }
     }
     if (const auto* n = p.required(t, "frustum", path)) {
@@ -314,11 +344,13 @@ ConfigResult parse_display_config(std::string_view text, std::string_view source
 
     const toml::node* channels = root.get("channel");
     const toml::array* list = channels != nullptr ? channels->as_array() : nullptr;
-    if (channels != nullptr && (list == nullptr || !list->is_array_of_tables())) {
+    if (channels == nullptr || (list != nullptr && list->empty())) {
+        // toml++ reports an empty array as not an array of tables, so this
+        // is checked first.
+        p.error("no channels: add at least one [[channel]] table");
+    } else if (list == nullptr || !list->is_array_of_tables()) {
         p.error(channels->source(),
                 "'channel' must be a list of tables: write each as [[channel]]");
-    } else if (list == nullptr || list->empty()) {
-        p.error("no channels: add at least one [[channel]] table");
     } else {
         std::unordered_map<std::string, std::uint32_t> first_line;
         for (std::size_t i = 0; i < list->size(); ++i) {
@@ -345,13 +377,21 @@ ConfigResult parse_display_config(std::string_view text, std::string_view source
 }
 
 ConfigResult load_display_config(const std::filesystem::path& file) {
+    const std::string name = path_text(file);
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(file, ec)) {
+        return {std::nullopt, {{name, 0, 0, "cannot open the file: not a regular file"}}};
+    }
     std::ifstream in(file, std::ios::binary);
     if (!in) {
-        return {std::nullopt, {{file.string(), 0, 0, "cannot open the file"}}};
+        return {std::nullopt, {{name, 0, 0, "cannot open the file"}}};
     }
     std::ostringstream text;
     text << in.rdbuf();
-    return parse_display_config(text.str(), file.string());
+    if (in.bad()) {
+        return {std::nullopt, {{name, 0, 0, "cannot read the file"}}};
+    }
+    return parse_display_config(text.str(), name);
 }
 
 }  // namespace fovea

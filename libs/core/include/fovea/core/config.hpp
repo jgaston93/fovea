@@ -31,12 +31,12 @@ struct Frustum {
 
 struct ChannelConfig {
     std::string name;
-    int monitor = 0;  // platform monitor index, checked when windows are created
+    int monitor = 0;  // platform monitor index, >= 0; existence is checked at window creation
     PresentMode present_mode = PresentMode::fifo;
     std::uint32_t render_width = 0;
     std::uint32_t render_height = 0;
     DVec3 eye_offset_m{0.0};  // from the design eye point, body axes
-    Euler view_rotation;      // view axis relative to the body, CIGI conventions
+    Euler view_rotation;      // view axis relative to the body, CIGI conventions and ranges
     Frustum frustum;
 };
 

@@ -1,10 +1,18 @@
 #include "fovea/core/projection.hpp"
 
+#include <cassert>
 #include <cmath>
 
 namespace fovea {
 
 DMat4 off_axis_projection(const Frustum& frustum, double near_m) {
+    // The config loader enforces these; a hand-built Frustum{} (all zeros)
+    // would otherwise give an inf/NaN matrix.
+    assert(frustum.left_deg < frustum.right_deg && frustum.bottom_deg < frustum.top_deg);
+    assert(frustum.left_deg > -90.0 && frustum.right_deg < 90.0);
+    assert(frustum.bottom_deg > -90.0 && frustum.top_deg < 90.0);
+    assert(near_m > 0.0);
+
     // Tangents of the edge angles. For an eye-frame point (x, y, z), the
     // horizontal tangent is y / x and the upward tangent is -z / x.
     const double l = std::tan(deg_to_rad(frustum.left_deg));

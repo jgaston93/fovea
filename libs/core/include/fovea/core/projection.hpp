@@ -15,6 +15,7 @@ namespace fovea {
 // falling towards 0 at infinity. The frustum edges map exactly to NDC -1
 // and +1.
 //
+// The frustum must be valid as the config loader requires (asserted).
 // Computed in double precision; the renderer narrows it to float.
 DMat4 off_axis_projection(const Frustum& frustum, double near_m);
 
