@@ -62,6 +62,7 @@ function(fovea_target_defaults target)
             /w14365  # signed/unsigned conversion (-Wsign-conversion)
             /w14826  # sign-extending conversion
             /w15262  # implicit fall-through (-Wimplicit-fallthrough)
+            /wd4324  # padding added for alignas (cache-line aligned atomics)
             # Strict IEEE semantics; since VS 2022, /fp:precise generates no
             # FMA contractions unless /fp:contract is also given.
             /fp:precise)

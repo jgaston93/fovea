@@ -20,6 +20,8 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(FoveaCompilerFlags)
 include(FoveaDependencies)
 
+add_subdirectory(libs/core)
+
 if(FOVEA_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)

@@ -7,6 +7,7 @@ Checks: >
   cert-*,
   -cert-err58-cpp,
   clang-analyzer-*,
+  -clang-analyzer-optin.performance.Padding,
   concurrency-*,
   misc-*,
   -misc-non-private-member-variables-in-classes,
@@ -27,4 +28,7 @@ Checks: >
 WarningsAsErrors: ''
 HeaderFilterRegex: '(apps|libs|tools|tests)/.*'
 FormatStyle: file
+# optin.performance.Padding is off: cache-line padding between atomics shared
+# by threads (core/containers.hpp) is deliberate, and it flags every class
+# that holds one.
 ...

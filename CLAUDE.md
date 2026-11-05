@@ -12,12 +12,15 @@ Builds use CMake presets with Ninja. Each preset builds into `build/<preset>`.
 
 ```sh
 cmake --preset debug && cmake --build --preset debug && ctest --preset debug
-# presets: debug, release, relwithdebinfo, asan (ASan+UBSan, -Og), asan-fast (-O1)
+# presets: debug, release, relwithdebinfo, asan (ASan+UBSan, -Og), asan-fast (-O1), tsan
+# tsan on WSL/Ubuntu 24.04 needs ASLR off: setarch "$(uname -m)" -R ctest --preset tsan
 ctest --preset debug -R 'Toolchain\.FloatingPointIsIeeeWithoutFastMath'   # one test
 CC=clang CXX=clang++ cmake --preset debug -B build/clang-debug --fresh     # Clang build
 ```
 
 GCC (≥ 11), Clang (≥ 14) and MSVC (VS 2022) must all build without warnings, and warnings are errors. On Windows, configure from a VS developer prompt with `CC=cl CXX=cl` and the same presets (ASan presets are GCC/Clang only). Every target must call `fovea_target_defaults()` (`cmake/FoveaCompilerFlags.cmake`). Fast-math is forbidden. Dependencies go in `cmake/FoveaDependencies.cmake`, pinned by version and SHA-256, and are added only when code needs them. The test presets fail when no tests match (`noTestsAction: error`).
+
+Each library keeps its public headers in `libs/<lib>/include/fovea/<lib>/` and its sources in `libs/<lib>/src/`. Tests go in `tests/unit/`, added to `tests/CMakeLists.txt`. Use `test::AllocationCounter` (`tests/support/alloc_counter.hpp`) to prove that render-path code allocates nothing.
 
 The lint tools are pinned to CI's versions in a git-ignored venv:
 

@@ -57,6 +57,16 @@
         "FOVEA_DEBUG_OPTIMIZATION": "-O1",
         "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -Wno-maybe-uninitialized"
       }
+    },
+    {
+      "name": "tsan",
+      "displayName": "Debug + ThreadSanitizer",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread"
+      }
     }
   ],
   "buildPresets": [
@@ -79,6 +89,10 @@
     {
       "name": "asan-fast",
       "configurePreset": "asan-fast"
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan"
     }
   ],
   "testPresets": [
@@ -116,6 +130,11 @@
       "name": "asan-fast",
       "inherits": "base",
       "configurePreset": "asan-fast"
+    },
+    {
+      "name": "tsan",
+      "inherits": "base",
+      "configurePreset": "tsan"
     }
   ]
 }
