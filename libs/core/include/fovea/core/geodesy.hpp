@@ -22,8 +22,10 @@ struct Geodetic {
 
 DVec3 geodetic_to_ecef(const Geodetic& g);
 
-// Exact to well under a millimetre everywhere, including at the poles and
-// the Earth's centre. Longitude is 0 on the polar axis.
+// Accurate to well under a millimetre from deep below the surface out to
+// orbit, poles included (tested from 430 m below to 400 km above the
+// ellipsoid). Not meant for points within ~50 km of the Earth's centre,
+// where the iteration does not converge. Longitude is 0 on the polar axis.
 Geodetic ecef_to_geodetic(const DVec3& ecef);
 
 // Rotation taking local North-East-Down vectors at (lat, lon) to ECEF. Its

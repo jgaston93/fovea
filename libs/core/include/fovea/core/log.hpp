@@ -51,8 +51,11 @@ public:
     Logger& operator=(const Logger&) = delete;
 
     // Starts the drain thread. Records written before start() are kept.
+    // Throws std::system_error if the thread cannot be created.
     void start(Sink sink);
-    // Stops the drain thread after it has written everything queued.
+    // Stops the drain thread after everything written before stop() has
+    // gone to the sink. Records written after it stay queued until the next
+    // start(), and are counted in dropped() if the Logger is destroyed first.
     void stop();
 
     // printf-style. Returns false if the record was dropped.
@@ -60,10 +63,12 @@ public:
     bool write(LogLevel level, FOVEA_PRINTF_FORMAT_STRING const char* format, ...) noexcept
         FOVEA_PRINTF_ATTRIBUTE(3, 4);
 
+    // Records lost: queue full, sink threw, or never drained.
     std::uint64_t dropped() const noexcept { return dropped_.load(std::memory_order_relaxed); }
 
 private:
     void drain();
+    void drain_queued();
 
     LocalTime origin_;
     MpmcQueue<LogRecord> queue_;

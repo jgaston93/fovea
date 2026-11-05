@@ -29,8 +29,8 @@ Geodetic ecef_to_geodetic(const DVec3& ecef) {
 
     // Fixed-point iteration on latitude, lat = atan2(z + e^2 N sin(lat), p).
     // It is well-conditioned at the poles (p = 0) and converges to double
-    // precision within a few steps for any altitude above the Earth's
-    // centre region; the fixed count keeps the cost constant.
+    // precision within a few steps anywhere but the Earth's centre region
+    // (within about e^2 a = 43 km); the fixed count keeps the cost constant.
     double lat = std::atan2(ecef.z, p * (1.0 - wgs84::kE2));
     for (int i = 0; i < 6; ++i) {
         const double sin_lat = std::sin(lat);

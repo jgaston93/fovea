@@ -1,5 +1,6 @@
 #include <atomic>
 #include <cstdint>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -53,6 +54,13 @@ TEST(FrameArena, FullArenaReturnsNothing) {
     EXPECT_EQ(arena.allocate(1, 1), nullptr);
 }
 
+TEST(FrameArena, HugeArrayRequestReturnsNothing) {
+    FrameArena arena(64);
+    // sizeof(double) * n would wrap around to 8 bytes.
+    EXPECT_TRUE(arena.allocate_array<double>(SIZE_MAX / 8 + 2).empty());
+    EXPECT_EQ(arena.used(), 0U);
+}
+
 TEST(SpscRing, FifoOrderAndCapacity) {
     SpscRing<int, 4> ring;
     for (int i = 0; i < 4; ++i) {
@@ -75,14 +83,18 @@ TEST(SpscRing, TwoThreadsPassEveryValueInOrder) {
             }
         }
     });
-    int expected = 0;
-    while (expected < kCount) {
+    // Checks count instead of ASSERT: returning early would leave the
+    // producer spinning on a full ring and the thread unjoined.
+    int received = 0;
+    int out_of_order = 0;
+    while (received < kCount) {
         if (auto v = ring.try_pop()) {
-            ASSERT_EQ(*v, expected);
-            ++expected;
+            out_of_order += (*v != received) ? 1 : 0;
+            ++received;
         }
     }
     producer.join();
+    EXPECT_EQ(out_of_order, 0);
 }
 
 TEST(MpmcQueue, FifoOrderAndCapacity) {
@@ -117,20 +129,31 @@ TEST(MpmcQueue, ManyProducersLoseNothingAndKeepEachOrder) {
     }
     std::vector<std::int64_t> last(kProducers, -1);
     int received = 0;
+    int bad = 0;
     std::uint64_t v = 0;
     while (received < kProducers * kPerProducer) {
         if (q.try_pop(v)) {
             const auto p = static_cast<std::size_t>(v >> 32);
             const auto i = static_cast<std::int64_t>(v & 0xffff'ffffU);
-            ASSERT_LT(p, last.size());
-            ASSERT_EQ(i, last[p] + 1);
-            last[p] = i;
+            if (p >= last.size() || i != last[p] + 1) {
+                ++bad;
+            } else {
+                last[p] = i;
+            }
             ++received;
         }
     }
     for (auto& t : producers) {
         t.join();
     }
+    EXPECT_EQ(bad, 0);
+}
+
+TEST(MpmcQueue, RejectsACapacityThatIsNotAPowerOfTwo) {
+    EXPECT_THROW(MpmcQueue<int>(0), std::invalid_argument);
+    EXPECT_THROW(MpmcQueue<int>(1), std::invalid_argument);
+    EXPECT_THROW(MpmcQueue<int>(1000), std::invalid_argument);
+    EXPECT_NO_THROW(MpmcQueue<int>(1024));
 }
 
 TEST(TripleBuffer, ReaderSeesTheLatestPublishedValue) {
@@ -172,20 +195,25 @@ TEST(TripleBuffer, ConcurrentReaderNeverSeesATornOrOlderValue) {
         done.store(true, std::memory_order_release);
     });
     std::uint64_t last = 0;
+    int older = 0;
+    int torn = 0;
     for (;;) {
         const bool finished = done.load(std::memory_order_acquire);
         const Snapshot& s = tb.read();
-        ASSERT_GE(s.sequence, last);
-        ASSERT_EQ(s.doubled, 2 * s.sequence);
+        older += (s.sequence < last) ? 1 : 0;
+        bool consistent = s.doubled == 2 * s.sequence;
         for (auto word : s.pattern) {
-            ASSERT_EQ(word, s.sequence);
+            consistent = consistent && word == s.sequence;
         }
+        torn += consistent ? 0 : 1;
         last = s.sequence;
         if (finished) {
             break;
         }
     }
     writer.join();
+    EXPECT_EQ(older, 0);
+    EXPECT_EQ(torn, 0);
     EXPECT_EQ(tb.read().sequence, kCount);
 }
 

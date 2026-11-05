@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -88,6 +89,9 @@ public:
     template <typename T>
         requires std::is_trivially_destructible_v<T> && std::is_default_constructible_v<T>
     std::span<T> allocate_array(std::size_t n) noexcept {
+        if (n > storage_.size() / sizeof(T)) {
+            return {};  // also keeps sizeof(T) * n from overflowing
+        }
         void* p = allocate(sizeof(T) * n, alignof(T));
         if (p == nullptr) {
             return {};
@@ -153,8 +157,9 @@ private:
 template <typename T>
 class MpmcQueue {
 public:
-    explicit MpmcQueue(std::size_t capacity) : cells_(capacity), mask_(capacity - 1) {
-        assert(capacity >= 2 && (capacity & (capacity - 1)) == 0);
+    // Throws std::invalid_argument unless capacity is a power of two >= 2.
+    explicit MpmcQueue(std::size_t capacity)
+        : cells_(checked_capacity(capacity)), mask_(capacity - 1) {
         for (std::size_t i = 0; i < capacity; ++i) {
             cells_[i].sequence.store(i, std::memory_order_relaxed);
         }
@@ -208,6 +213,13 @@ public:
     std::size_t capacity() const noexcept { return mask_ + 1; }
 
 private:
+    static std::size_t checked_capacity(std::size_t capacity) {
+        if (capacity < 2 || (capacity & (capacity - 1)) != 0) {
+            throw std::invalid_argument("MpmcQueue capacity must be a power of two >= 2");
+        }
+        return capacity;
+    }
+
     struct Cell {
         std::atomic<std::size_t> sequence{0};
         T value{};

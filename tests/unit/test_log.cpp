@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -95,6 +96,34 @@ TEST(Logger, WriteAllocatesNothing) {
         log.write(LogLevel::info, "frame %d took %.3f ms on %s", i, 16.6, "center");
     }
     EXPECT_EQ(counter.count(), 0U);
+}
+
+TEST(Logger, ThrowingSinkDropsTheRecordAndKeepsRunning) {
+    Logger log(16);
+    log.write(LogLevel::info, "first");
+    log.write(LogLevel::info, "second");
+    int calls = 0;
+    log.start([&calls](const LogRecord&) {
+        ++calls;
+        if (calls == 1) {
+            throw std::runtime_error("sink failed");
+        }
+    });
+    log.stop();
+    EXPECT_EQ(calls, 2);
+    EXPECT_EQ(log.dropped(), 1U);
+}
+
+TEST(Logger, CanBeRestarted) {
+    Logger log(16);
+    Collected out;
+    log.start(out.sink());
+    log.stop();
+    log.write(LogLevel::info, "between runs");
+    log.start(out.sink());
+    log.stop();
+    ASSERT_EQ(out.records.size(), 1U);
+    EXPECT_STREQ(out.records[0].text.data(), "between runs");
 }
 
 TEST(Logger, StreamSinkFormatsALine) {

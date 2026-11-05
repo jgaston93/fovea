@@ -35,21 +35,36 @@ Logger::Logger(std::size_t capacity) : origin_(now()), queue_(capacity) {}
 
 Logger::~Logger() {
     stop();
+    LogRecord record;
+    while (queue_.try_pop(record)) {
+        dropped_.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
+// start() and stop() are called from one controlling thread; only write()
+// is for any thread.
 void Logger::start(Sink sink) {
-    if (running_.exchange(true)) {
+    if (thread_.joinable()) {
         return;
     }
     sink_ = std::move(sink);
-    thread_ = std::thread([this] { drain(); });
+    running_.store(true, std::memory_order_release);
+    try {
+        thread_ = std::thread([this] { drain(); });
+    } catch (...) {
+        running_.store(false, std::memory_order_release);
+        throw;
+    }
 }
 
 void Logger::stop() {
-    if (!running_.exchange(false)) {
+    if (!thread_.joinable()) {
         return;
     }
+    running_.store(false, std::memory_order_release);
     thread_.join();
+    // Anything a writer pushed during the drain thread's last pass.
+    drain_queued();
 }
 
 // NOLINTNEXTLINE(cert-dcl50-cpp): see log.hpp
@@ -75,18 +90,27 @@ bool Logger::write(LogLevel level, const char* format, ...) noexcept {
 }
 
 void Logger::drain() {
-    LogRecord record;
     for (;;) {
         // Read the flag before draining, so everything pushed before stop()
         // is written by the last pass.
         const bool keep_running = running_.load(std::memory_order_acquire);
-        while (queue_.try_pop(record)) {
-            sink_(record);
-        }
+        drain_queued();
         if (!keep_running) {
             return;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+}
+
+void Logger::drain_queued() {
+    LogRecord record;
+    while (queue_.try_pop(record)) {
+        // A failing sink must not take the process down with it.
+        try {
+            sink_(record);
+        } catch (...) {
+            dropped_.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 }
 
