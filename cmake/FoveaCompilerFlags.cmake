@@ -66,6 +66,9 @@ function(fovea_target_defaults target)
             # Strict IEEE semantics; since VS 2022, /fp:precise generates no
             # FMA contractions unless /fp:contract is also given.
             /fp:precise)
+        # The standard C library is used as is; MSVC's non-standard "_s"
+        # replacements (C4996 on sscanf, fopen, ...) are not portable.
+        target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
         if(FOVEA_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE /WX)
         endif()
