@@ -14,6 +14,22 @@ function(fovea_mark_system_includes target)
     endif()
 endfunction()
 
+# --- glm 1.0.1 (header-only math, D-010) ---------------------------------------
+# glm's own CMake project is not needed, so SOURCE_SUBDIR points at a
+# directory without a CMakeLists.txt and we wrap the headers in our own
+# INTERFACE target, which also fixes glm's configuration for every user.
+FetchContent_Declare(glm
+    URL https://github.com/g-truc/glm/archive/refs/tags/1.0.1.tar.gz
+    URL_HASH SHA256=9f3174561fd26904b23f0db5e560971cbf9b3cbda0b280f04d5c379d03bf234c
+    SOURCE_SUBDIR do-not-configure)
+FetchContent_MakeAvailable(glm)
+
+add_library(fovea_glm INTERFACE)
+target_include_directories(fovea_glm SYSTEM INTERFACE "${glm_SOURCE_DIR}")
+target_compile_definitions(fovea_glm INTERFACE
+    GLM_FORCE_DEPTH_ZERO_TO_ONE  # Vulkan clip-space depth
+    GLM_FORCE_CTOR_INIT)         # vectors and matrices start zeroed / identity
+
 # --- GoogleTest 1.15.2 (tests only) -------------------------------------------
 if(FOVEA_BUILD_TESTS)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)

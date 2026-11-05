@@ -62,9 +62,13 @@ function(fovea_target_defaults target)
             /w14365  # signed/unsigned conversion (-Wsign-conversion)
             /w14826  # sign-extending conversion
             /w15262  # implicit fall-through (-Wimplicit-fallthrough)
+            /wd4324  # padding added for alignas (cache-line aligned atomics)
             # Strict IEEE semantics; since VS 2022, /fp:precise generates no
             # FMA contractions unless /fp:contract is also given.
             /fp:precise)
+        # The standard C library is used as is; MSVC's non-standard "_s"
+        # replacements (C4996 on sscanf, fopen, ...) are not portable.
+        target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
         if(FOVEA_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE /WX)
         endif()

@@ -1,7 +1,8 @@
 name: Full verification
 
 # The slow end of verification, off the per-push path: every test under the
-# strict ASan+UBSan build (Debug, -Og, assertions on) and with Clang (Debug),
+# strict ASan+UBSan build (Debug, -Og, assertions on), under ThreadSanitizer,
+# and with Clang (Debug),
 # including the slow ones ci.yml runs on a PR in Release only; and
 # clang-tidy on every file. Nightly on main, and on demand from the Actions
 # tab. A failed scheduled run opens (or comments on) a GitHub issue.
@@ -45,6 +46,38 @@ jobs:
         run: cmake --build --preset asan
       - name: Test (all, slow ones included)
         run: ctest --preset asan --parallel "$(nproc)"
+
+  tsan:
+    name: Ubuntu GCC ThreadSanitizer, all tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CC: gcc
+      CXX: g++
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Ninja and ccache
+        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
+      # Ubuntu 24.04's default mmap randomization (32 bits) puts mappings
+      # where TSan's shadow memory goes ("unexpected memory mapping").
+      - name: Reduce address-space randomization for TSan
+        run: sudo sysctl vm.mmap_rnd_bits=28
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-ubuntu-gcc-tsan-${{ github.sha }}
+          restore-keys: ccache-ubuntu-gcc-tsan-
+      - name: Configure
+        run: >-
+          cmake --preset tsan
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build
+        run: cmake --build --preset tsan
+      - name: Test
+        run: ctest --preset tsan --parallel "$(nproc)"
 
   clang:
     name: Ubuntu Clang Debug, all tests
@@ -97,7 +130,7 @@ jobs:
   # instead.
   report:
     name: Report a failed nightly run
-    needs: [asan, clang, tidy]
+    needs: [asan, tsan, clang, tidy]
     if: >-
       always() && github.event_name == 'schedule' &&
       (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
