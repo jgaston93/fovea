@@ -1,5 +1,4 @@
 #include <memory>
-#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -22,10 +21,12 @@ void escape(const void* p) {
 // allocations.
 TEST(AllocationCounter, CountsHeapAllocations) {
     AllocationCounter counter;
+    // Not std::vector: MSVC debug builds give each one a hidden extra
+    // allocation for iterator checking.
     auto p = std::make_unique<int>(1);
-    std::vector<double> v(16);
+    auto a = std::make_unique<double[]>(16);  // NOLINT(modernize-avoid-c-arrays)
     escape(p.get());
-    escape(v.data());
+    escape(a.get());
     EXPECT_EQ(counter.count(), 2U);
 }
 
