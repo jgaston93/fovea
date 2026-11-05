@@ -30,6 +30,16 @@ target_compile_definitions(fovea_glm INTERFACE
     GLM_FORCE_DEPTH_ZERO_TO_ONE  # Vulkan clip-space depth
     GLM_FORCE_CTOR_INIT)         # vectors and matrices start zeroed / identity
 
+# --- toml++ 3.4.0 (header-only config parsing, D-002; init time only) -----------
+FetchContent_Declare(tomlplusplus
+    URL https://github.com/marzer/tomlplusplus/archive/refs/tags/v3.4.0.tar.gz
+    URL_HASH SHA256=8517f65938a4faae9ccf8ebb36631a38c1cadfb5efa85d9a72e15b9e97d25155
+    SOURCE_SUBDIR do-not-configure)
+FetchContent_MakeAvailable(tomlplusplus)
+
+add_library(fovea_tomlplusplus INTERFACE)
+target_include_directories(fovea_tomlplusplus SYSTEM INTERFACE "${tomlplusplus_SOURCE_DIR}/include")
+
 # --- GoogleTest 1.15.2 (tests only) -------------------------------------------
 if(FOVEA_BUILD_TESTS)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)

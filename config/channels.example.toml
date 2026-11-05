@@ -1,0 +1,38 @@
+# Example display configuration: three side-by-side screens around the
+# pilot's eye point (docs/architecture.md, "Channel config schema").
+#
+# Angles are in degrees; offsets in metres. Body axes: x forward, y right,
+# z down. The frustum values are placeholders until the physical screen
+# geometry and eye point are measured.
+
+[display]
+presenter = "multi_swapchain"   # or "spanned", "offscreen"
+target_hz = 60
+near_m = 0.1                    # reverse-Z, infinite far plane
+
+[[channel]]
+name = "left"
+monitor = 0                     # platform monitor index
+present_mode = "fifo"           # or "mailbox", "immediate"
+render_extent = [1920, 1080]
+eye_offset = { x = 0.0, y = 0.0, z = 0.0 }
+view_rotation = { yaw = -60.0, pitch = 0.0, roll = 0.0 }
+frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
+
+[[channel]]
+name = "center"
+monitor = 1
+present_mode = "fifo"
+render_extent = [1920, 1080]
+eye_offset = { x = 0.0, y = 0.0, z = 0.0 }
+view_rotation = { yaw = 0.0, pitch = 0.0, roll = 0.0 }
+frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
+
+[[channel]]
+name = "right"
+monitor = 2
+present_mode = "fifo"
+render_extent = [1920, 1080]
+eye_offset = { x = 0.0, y = 0.0, z = 0.0 }
+view_rotation = { yaw = 60.0, pitch = 0.0, roll = 0.0 }
+frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
