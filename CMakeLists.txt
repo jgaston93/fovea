@@ -21,6 +21,11 @@ include(FoveaCompilerFlags)
 include(FoveaDependencies)
 
 add_subdirectory(libs/core)
+add_subdirectory(libs/terrain)
+add_subdirectory(libs/platform)
+add_subdirectory(libs/net)
+add_subdirectory(libs/render)
+add_subdirectory(apps/fovea)
 
 if(FOVEA_BUILD_TESTS)
     enable_testing()

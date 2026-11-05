@@ -95,7 +95,7 @@ class SceneStateReader { public: const SceneSnapshot& latest(); };            //
 // libs/terrain — CPU-only spatial queries
 class TerrainQuery {
 public:
-  virtual std::optional<double> height_at(const GeoPoint&) const = 0;        // meters MSL
+  virtual std::optional<double> height_at(double lat, double lon) const = 0;  // m above WGS-84
   virtual bool line_of_sight(const DVec3& a, const DVec3& b) const = 0;     // ECEF
   virtual std::optional<Hit> intersect(const DRay&) const = 0;              // + material ID
 };

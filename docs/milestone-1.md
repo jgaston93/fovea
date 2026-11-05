@@ -25,11 +25,11 @@ GitHub's CI runners have no GPU. From step 5 onward, the Linux CI jobs install M
 - Off-axis projection: build a reverse-Z projection with an infinite far plane from the frustum angles. This is CPU-only and tested here.
 - **Done when:** tests cover the example config, every validation error, and the projection's corner rays matching the configured angles.
 
-## Step 3: Interfaces and library layout
+## Step 3: Interfaces and library layout (done)
 
 - Create `libs/core`, `libs/terrain`, `libs/platform`, `libs/net` and `libs/render` as CMake targets, linked as the dependency graph in `architecture.md` allows. Add `apps/fovea` as a binary that loads the config and exits.
 - Stub interfaces: `SceneSnapshot` and its writer and reader, `TerrainQuery` (with a flat-earth implementation for tests), `View`/`ViewDesc`, `Presenter`, `Module`.
-- **Done when:** everything builds on all three compilers. A CMake check fails the build if `core` or `terrain` includes Vulkan or SDL headers, or if `render` and `net` include each other's headers.
+- **Done when:** everything builds on all three compilers. A ctest check (`cmake/CheckIncludeRules.cmake`) fails if `core` or `terrain` includes Vulkan or SDL headers, or if `render` and `net` include each other's headers.
 
 ## Step 4: Windows on every monitor (Windows hardware)
 
