@@ -1,0 +1,240 @@
+#include <string>
+
+#include <gtest/gtest.h>
+
+#include "fovea/core/config.hpp"
+
+namespace fovea {
+namespace {
+
+// The smallest valid config; line 1 is the empty line after R"(.
+const std::string kMinimal = R"(
+[[channel]]
+name = "center"
+monitor = 1
+render_extent = [1920, 1080]
+frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
+)";
+
+ConfigResult parse(const std::string& text) {
+    return parse_display_config(text, "test.toml");
+}
+
+// Text after replacing the first `from` in kMinimal with `to`.
+std::string minimal_with(const std::string& from, const std::string& to) {
+    std::string text = kMinimal;
+    const auto at = text.find(from);
+    EXPECT_NE(at, std::string::npos) << from;
+    return text.replace(at, from.size(), to);
+}
+
+// Expects exactly one error, on the given line, containing `text`.
+void expect_one_error(const ConfigResult& r, std::uint32_t line, const std::string& text) {
+    EXPECT_FALSE(r.ok());
+    ASSERT_EQ(r.errors.size(), 1U) << (r.errors.empty() ? "" : r.errors[0].to_string());
+    EXPECT_EQ(r.errors[0].line, line) << r.errors[0].to_string();
+    EXPECT_NE(r.errors[0].message.find(text), std::string::npos) << r.errors[0].to_string();
+}
+
+TEST(Config, ExampleFileLoads) {
+    const auto r = load_display_config(FOVEA_SOURCE_DIR "/config/channels.example.toml");
+    ASSERT_TRUE(r.ok()) << (r.errors.empty() ? "" : r.errors[0].to_string());
+    const DisplayConfig& c = *r.config;
+    EXPECT_EQ(c.presenter, PresenterKind::multi_swapchain);
+    EXPECT_EQ(c.target_hz, 60.0);
+    EXPECT_EQ(c.near_m, 0.1);
+    ASSERT_EQ(c.channels.size(), 3U);
+    const char* names[] = {"left", "center", "right"};  // NOLINT(modernize-avoid-c-arrays)
+    const double yaws[] = {-60.0, 0.0, 60.0};           // NOLINT(modernize-avoid-c-arrays)
+    for (std::size_t i = 0; i < 3; ++i) {
+        const ChannelConfig& ch = c.channels[i];
+        EXPECT_EQ(ch.name, names[i]);
+        EXPECT_EQ(ch.monitor, static_cast<int>(i));
+        EXPECT_EQ(ch.present_mode, PresentMode::fifo);
+        EXPECT_EQ(ch.render_width, 1920U);
+        EXPECT_EQ(ch.render_height, 1080U);
+        EXPECT_EQ(ch.view_rotation.yaw_deg, yaws[i]);
+        EXPECT_EQ(ch.frustum.left_deg, -30.0);
+        EXPECT_EQ(ch.frustum.right_deg, 30.0);
+        EXPECT_EQ(ch.frustum.top_deg, 17.0);
+        EXPECT_EQ(ch.frustum.bottom_deg, -17.0);
+    }
+}
+
+TEST(Config, OptionalFieldsTakeDefaults) {
+    const auto r = parse(kMinimal);
+    ASSERT_TRUE(r.ok());
+    EXPECT_EQ(r.config->presenter, PresenterKind::multi_swapchain);
+    EXPECT_EQ(r.config->target_hz, 60.0);
+    EXPECT_EQ(r.config->near_m, 0.1);
+    const ChannelConfig& ch = r.config->channels.at(0);
+    EXPECT_EQ(ch.present_mode, PresentMode::fifo);
+    EXPECT_EQ(ch.eye_offset_m, DVec3(0.0));
+    EXPECT_EQ(ch.view_rotation.yaw_deg, 0.0);
+}
+
+TEST(Config, IntegersAreAcceptedForNumbers) {
+    const auto r = parse(minimal_with("left = -30.0, right = 30.0", "left = -30, right = 30") +
+                         "eye_offset = { x = 1, y = -0.5, z = 0 }\n");
+    ASSERT_TRUE(r.ok()) << r.errors.at(0).to_string();
+    EXPECT_EQ(r.config->channels[0].frustum.left_deg, -30.0);
+    EXPECT_EQ(r.config->channels[0].eye_offset_m, DVec3(1.0, -0.5, 0.0));
+}
+
+TEST(Config, AllFieldsAreRead) {
+    const auto r = parse("[display]\npresenter = \"spanned\"\ntarget_hz = 59.94\nnear_m = 0.25\n" +
+                         minimal_with("monitor = 1", "monitor = 2\npresent_mode = \"mailbox\"") +
+                         "view_rotation = { yaw = 45, pitch = -5, roll = 1 }\n");
+    ASSERT_TRUE(r.ok()) << r.errors.at(0).to_string();
+    EXPECT_EQ(r.config->presenter, PresenterKind::spanned);
+    EXPECT_EQ(r.config->target_hz, 59.94);
+    EXPECT_EQ(r.config->near_m, 0.25);
+    const ChannelConfig& ch = r.config->channels[0];
+    EXPECT_EQ(ch.monitor, 2);
+    EXPECT_EQ(ch.present_mode, PresentMode::mailbox);
+    EXPECT_EQ(ch.view_rotation.yaw_deg, 45.0);
+    EXPECT_EQ(ch.view_rotation.pitch_deg, -5.0);
+    EXPECT_EQ(ch.view_rotation.roll_deg, 1.0);
+}
+
+TEST(Config, SyntaxErrorReportsItsLine) {
+    expect_one_error(parse(minimal_with("monitor = 1", "monitor = ")), 4, "");
+}
+
+TEST(Config, UnknownKeysAreReportedWhereTheyAre) {
+    expect_one_error(parse(minimal_with("monitor = 1", "monitor = 1\nmonitr = 2")), 5,
+                     "unknown key 'channel[0].monitr'");
+    expect_one_error(parse(minimal_with("top = 17.0", "top = 17.0, botom = 1")), 6,
+                     "unknown key 'channel[0].frustum.botom'");
+    expect_one_error(parse("chanel = 1\n" + kMinimal), 1, "unknown key 'chanel'");
+}
+
+TEST(Config, MissingRequiredFieldIsReportedAtItsTable) {
+    expect_one_error(parse(minimal_with("monitor = 1\n", "")), 2, "missing 'channel[0].monitor'");
+    expect_one_error(parse(minimal_with("top = 17.0, ", "")), 6,
+                     "missing 'channel[0].frustum.top'");
+}
+
+TEST(Config, NoChannelsIsAnError) {
+    const auto r = parse("[display]\ntarget_hz = 60\n");
+    ASSERT_EQ(r.errors.size(), 1U);
+    EXPECT_NE(r.errors[0].message.find("no channels"), std::string::npos);
+}
+
+TEST(Config, EmptyChannelListIsNoChannels) {
+    const auto r = parse("channel = []\n");
+    ASSERT_EQ(r.errors.size(), 1U);
+    EXPECT_NE(r.errors[0].message.find("no channels"), std::string::npos);
+}
+
+TEST(Config, ChannelMustBeAListOfTables) {
+    expect_one_error(parse(minimal_with("[[channel]]", "[channel]")), 2, "[[channel]]");
+}
+
+TEST(Config, DuplicateChannelNamesAreRejected) {
+    expect_one_error(parse(kMinimal + minimal_with("monitor = 1", "monitor = 2")), 9,
+                     "duplicate channel name \"center\" (first used on line 3)");
+}
+
+TEST(Config, FrustumMustBeValid) {
+    expect_one_error(parse(minimal_with("left = -30.0", "left = 31.0")), 6,
+                     "left (31) must be less than right (30)");
+    expect_one_error(parse(minimal_with("bottom = -17.0", "bottom = 20")), 6,
+                     "bottom (20) must be less than top (17)");
+    expect_one_error(parse(minimal_with("right = 30.0", "right = 90")), 6,
+                     "'channel[0].frustum.right' must be strictly between -90 and 90");
+    expect_one_error(parse(minimal_with("left = -30.0", "left = nan")), 6, "finite number");
+}
+
+TEST(Config, MessagesShowValuesExactly) {
+    expect_one_error(parse(minimal_with("left = -30.0", "left = 30.0000001")), 6,
+                     "left (30.0000001) must be less than right (30)");
+}
+
+TEST(Config, ViewRotationMustBeInTheCigiRanges) {
+    const std::string base = kMinimal + "view_rotation = { yaw = 0, pitch = 0, roll = 0 }\n";
+    const auto with = [&](const std::string& from, const std::string& to) {
+        std::string text = base;
+        return parse(text.replace(text.rfind(from), from.size(), to));
+    };
+    expect_one_error(
+        with("pitch = 0", "pitch = 100"), 7,
+        "'channel[0].view_rotation.pitch' must be between -90 and 90 degrees (got 100)");
+    expect_one_error(with("roll = 0", "roll = -181"), 7, "roll' must be between -180 and 180");
+    expect_one_error(with("yaw = 0", "yaw = 361"), 7, "yaw' must be between -360 and 360");
+    EXPECT_TRUE(with("yaw = 0", "yaw = -300").ok());
+}
+
+TEST(Config, MonitorOnlyNeedsToBeNonNegative) {
+    EXPECT_TRUE(parse(minimal_with("monitor = 1", "monitor = 64")).ok());
+    expect_one_error(parse(minimal_with("monitor = 1", "monitor = -1")), 4,
+                     "'channel[0].monitor' must be between 0 and");
+}
+
+TEST(Config, RenderExtentMustBeTwoSizesInRange) {
+    expect_one_error(parse(minimal_with("[1920, 1080]", "[0, 1080]")), 5,
+                     "'channel[0].render_extent[0]' must be between 1 and 16384 (got 0)");
+    expect_one_error(parse(minimal_with("[1920, 1080]", "[1920, 20000]")), 5,
+                     "must be between 1 and 16384 (got 20000)");
+    expect_one_error(parse(minimal_with("[1920, 1080]", "[1920]")), 5, "must be [width, height]");
+    expect_one_error(parse(minimal_with("[1920, 1080]", "\"1920x1080\"")), 5,
+                     "must be [width, height]");
+}
+
+TEST(Config, WrongTypesAreReported) {
+    expect_one_error(parse(minimal_with("monitor = 1", "monitor = \"one\"")), 4,
+                     "'channel[0].monitor' must be an integer");
+    expect_one_error(parse(minimal_with("name = \"center\"", "name = 3")), 3,
+                     "'channel[0].name' must be a string");
+    expect_one_error(parse(minimal_with("monitor = 1", "monitor = 1\neye_offset = 0")), 5,
+                     "'channel[0].eye_offset' must be a table");
+}
+
+TEST(Config, EnumValuesListTheChoices) {
+    expect_one_error(parse(minimal_with("monitor = 1", "monitor = 1\npresent_mode = \"vsync\"")), 5,
+                     "is \"vsync\"; expected one of: fifo, mailbox, immediate");
+}
+
+TEST(Config, DisplayValuesAreChecked) {
+    expect_one_error(parse("[display]\ntarget_hz = 0\n" + kMinimal), 2,
+                     "'display.target_hz' must be between 1 and 1000");
+    expect_one_error(parse("[display]\nnear_m = -1\n" + kMinimal), 2,
+                     "'display.near_m' must be greater than 0");
+}
+
+TEST(Config, EveryProblemIsReported) {
+    std::string text = minimal_with("monitor = 1", "monitor = -1");
+    text = text.replace(text.find("[1920, 1080]"), 12, "[0, 0]");
+    const auto r = parse(text + "colour = \"red\"\n");
+    EXPECT_FALSE(r.ok());
+    EXPECT_EQ(r.errors.size(), 4U);  // monitor, both extents, the unknown key
+}
+
+TEST(Config, ErrorsAreInFileOrder) {
+    // The unknown key (line 4) is found before the missing field (line 2).
+    const auto r = parse(minimal_with("monitor = 1", "monitr = 1"));
+    ASSERT_EQ(r.errors.size(), 2U);
+    EXPECT_EQ(r.errors[0].line, 2U);
+    EXPECT_EQ(r.errors[1].line, 4U);
+}
+
+TEST(Config, MissingFileIsReported) {
+    const auto r = load_display_config("no/such/file.toml");
+    ASSERT_EQ(r.errors.size(), 1U);
+    EXPECT_EQ(r.errors[0].line, 0U);
+    EXPECT_NE(r.errors[0].message.find("cannot open"), std::string::npos);
+}
+
+TEST(Config, DirectoryIsReportedAsNotAFile) {
+    const auto r = load_display_config(FOVEA_SOURCE_DIR "/config");
+    ASSERT_EQ(r.errors.size(), 1U);
+    EXPECT_NE(r.errors[0].message.find("not a regular file"), std::string::npos);
+}
+
+TEST(Config, ErrorFormatsAsSourceLineColumn) {
+    const ConfigError e{"a.toml", 3, 7, "bad"};
+    EXPECT_EQ(e.to_string(), "a.toml:3:7: bad");
+}
+
+}  // namespace
+}  // namespace fovea

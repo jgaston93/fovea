@@ -8,7 +8,7 @@ The milestone is split into eight steps, each its own pull request (step numbers
 
 GitHub's CI runners have no GPU. From step 5 onward, the Linux CI jobs install Mesa's software Vulkan driver (lavapipe) and run the renderer headless through `OffscreenPresenter`. Window and present behavior can only be checked on real hardware, so those checks are manual, done on the Windows machine and written up in the pull request.
 
-## Step 1: `libs/core` foundations
+## Step 1: `libs/core` foundations (done, #3)
 
 - Math: a `double` vector, quaternion and matrix library. Geodetic ↔ ECEF conversion (WGS-84), local ENU/NED frames at a point, and body-frame yaw/pitch/roll ↔ quaternion conversion using CIGI's axis conventions.
 - Time: a monotonic clock, `LocalTime`, and a fixed-period tick helper.
@@ -18,7 +18,7 @@ GitHub's CI runners have no GPU. From step 5 onward, the Linux CI jobs install M
 - **Done when:** unit tests cover the geodesy round trip and known reference points (KHSV, the equator, the poles), the axis conventions, and the containers under two threads. This includes a stress test of the triple buffer, which runs under ASan and under a new `tsan` preset (ThreadSanitizer, added to the nightly run).
 - **Math library:** glm 1.0.1 (D-010).
 
-## Step 2: Config
+## Step 2: Config (done)
 
 - Load `config/channels.example.toml` (the schema in `architecture.md`) into plain structs, using toml++ (D-002).
 - Validation, reported with file and line: unknown keys, missing fields, duplicate channel names, frustum angles that can't produce a valid frustum, and render extents that are zero or too large. Monitor indices are checked later, at window creation, because that's when the monitors are known.
