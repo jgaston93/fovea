@@ -19,6 +19,8 @@ struct MonitorInfo {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     double refresh_hz = 0.0;
+    double pixel_density = 1.0;  // pixels per desktop unit (display scaling)
+    bool primary = false;
 };
 
 // Problems that stop the config's channels being placed on these monitors:

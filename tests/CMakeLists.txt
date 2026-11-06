@@ -9,6 +9,7 @@ add_executable(fovea_unit_tests
     unit/test_geodesy.cpp
     unit/test_log.cpp
     unit/test_monitors.cpp
+    unit/test_platform.cpp
     unit/test_projection.cpp
     unit/test_scene.cpp
     unit/test_terrain.cpp
@@ -35,10 +36,22 @@ add_test(NAME IncludeRules.CatchesPlantedViolations
 set_tests_properties(IncludeRules.CatchesPlantedViolations PROPERTIES
     PASS_REGULAR_EXPRESSION "core/bad.hpp: #include <vulkan/vulkan.h>.*terrain/src/bad.inl: #include <cpl_conv.h>.*net/include/bad.h: #include \"fovea/terrain/terrain_query.hpp\".*render/src/bad.cpp: #include \"fovea/net/host_adapter.hpp\"")
 
-# The app loads the example config, and reports a bad one.
-add_test(NAME App.LoadsTheExampleConfig
-    COMMAND fovea ${PROJECT_SOURCE_DIR}/config/channels.example.toml)
-set_tests_properties(App.LoadsTheExampleConfig PROPERTIES
-    PASS_REGULAR_EXPRESSION "3 views at 60 Hz")
+# The app on SDL's dummy display (no real monitors needed): it opens its
+# window and exits after the time limit, rejects a config that needs more
+# monitors than there are, and reports an unreadable config.
+set(dummy_display "SDL_VIDEO_DRIVER=dummy")
+add_test(NAME App.OpensItsWindowsAndExits
+    COMMAND fovea --seconds 0.2 ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
+set_tests_properties(App.OpensItsWindowsAndExits PROPERTIES
+    ENVIRONMENT ${dummy_display} TIMEOUT 20
+    PASS_REGULAR_EXPRESSION "only +monitor 0 \\(window on 0, [0-9]+x[0-9]+ px\\)")
+add_test(NAME App.RejectsAConfigNeedingMoreMonitors
+    COMMAND fovea --seconds 0.2 ${PROJECT_SOURCE_DIR}/config/channels.example.toml)
+set_tests_properties(App.RejectsAConfigNeedingMoreMonitors PROPERTIES
+    ENVIRONMENT ${dummy_display} TIMEOUT 20
+    PASS_REGULAR_EXPRESSION "channel \"center\" uses monitor 1, but there are only 1")
 add_test(NAME App.ReportsABadConfig COMMAND fovea ${PROJECT_SOURCE_DIR}/config)
-set_tests_properties(App.ReportsABadConfig PROPERTIES WILL_FAIL TRUE)
+set_tests_properties(App.ReportsABadConfig PROPERTIES WILL_FAIL TRUE TIMEOUT 20)
+add_test(NAME App.ListsMonitors COMMAND fovea --list-monitors)
+set_tests_properties(App.ListsMonitors PROPERTIES
+    ENVIRONMENT ${dummy_display} TIMEOUT 20 PASS_REGULAR_EXPRESSION "1 monitors \\(dummy\\)")
