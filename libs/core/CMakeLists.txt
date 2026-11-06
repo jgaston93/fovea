@@ -8,6 +8,7 @@ add_library(fovea_core STATIC
     src/config.cpp
     src/geodesy.cpp
     src/image_file.cpp
+    src/stb_implementation.cpp
     src/log.cpp
     src/projection.cpp
     src/time.cpp)

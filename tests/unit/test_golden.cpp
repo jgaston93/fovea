@@ -20,11 +20,13 @@ namespace {
 // with the PNGs in tests/data/golden. FOVEA_UPDATE_GOLDEN=1 rewrites them
 // (on lavapipe, as CI renders) instead of comparing.
 //
-// GPUs differ in rounding and antialiasing, so the comparison allows small
-// differences: kThreshold per channel, on at most kMaxFractionOver of the
-// pixels (measured on lavapipe against the RTX 5070 Ti; see PR text).
-constexpr std::uint8_t kThreshold = 24;
-constexpr double kMaxFractionOver = 0.005;
+// GPUs differ in rounding, so the comparison allows small differences:
+// kThreshold per channel, on at most kMaxFractionOver of the pixels.
+// Measured, the RTX 5070 Ti differs from these lavapipe images by at most 1
+// level (mean 0.08 to 0.22); a 0.5 degree yaw change puts several percent
+// of pixels over the threshold.
+constexpr std::uint8_t kThreshold = 4;
+constexpr double kMaxFractionOver = 0.001;
 
 const std::filesystem::path kGoldenDir = FOVEA_SOURCE_DIR "/tests/data/golden";
 

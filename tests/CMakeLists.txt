@@ -82,8 +82,20 @@ add_test(NAME App.OffscreenRendersTheScene
 set_tests_properties(App.OffscreenRendersTheScene PROPERTIES
     ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver" TIMEOUT 60
     PASS_REGULAR_EXPRESSION "offscreen \"only\": 1024x768, middle rgb.*0 validation messages")
+# --headless with an on-screen config: no windows, one PNG per channel.
+add_test(NAME App.HeadlessDumpsEachChannel
+    COMMAND fovea --headless --frames 2 --dump headless-dump
+        ${PROJECT_SOURCE_DIR}/config/channels.example.toml)
+set_tests_properties(App.HeadlessDumpsEachChannel PROPERTIES
+    ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver" TIMEOUT 60
+    PASS_REGULAR_EXPRESSION "wrote headless-dump.left\\.png.*wrote headless-dump.center\\.png.*wrote headless-dump.right\\.png.*0 validation messages")
+add_test(NAME App.DumpNeedsHeadless
+    COMMAND fovea --dump out ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
+set_tests_properties(App.DumpNeedsHeadless PROPERTIES
+    TIMEOUT 20 PASS_REGULAR_EXPRESSION "--frames and --dump need --headless")
 if(NOT DEFINED ENV{FOVEA_REQUIRE_VULKAN})
-    set_tests_properties(App.OffscreenRendersWithoutADisplay App.OffscreenRendersTheScene PROPERTIES
+    set_tests_properties(App.OffscreenRendersWithoutADisplay App.OffscreenRendersTheScene
+        App.HeadlessDumpsEachChannel PROPERTIES
         SKIP_REGULAR_EXPRESSION "no Vulkan loader found|no GPU with Vulkan 1.3")
 endif()
 add_test(NAME App.StatsNeedsTheScene
