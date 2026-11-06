@@ -4,10 +4,12 @@ The goal from `fovea-plan.md`: build a small scripted CIGI test host, receive it
 
 Like milestone 1, each step is its own pull request, reviewed and merged once CI passes. Steps 1 to 3 and 5 to 6 need no display and run in WSL and CI (loopback UDP, lavapipe). Steps 4 and 7 need the Windows machine.
 
-## Decisions needed first
+## Decisions (accepted 2026-11-06)
 
-- **CIGI version (D-013, proposed: 3.3).** CIGI 3.3 is the version most hosts and IGs implement, and its interface control document is freely available. CIGI 4.0 (SISO-STD-013-2014) changes packet sizes and IDs and is less widely supported. The codec keeps version-specific layouts in one place, so 4.0 can be added later beside 3.3.
-- **Codec (D-014, proposed: Fovea's own).** Only a handful of packets are needed for this milestone. The Boeing CIGI Class Library is LGPL, old C++ and allocates per packet. Fovea's codec is a few hundred lines of fixed-size encode and decode, tested byte for byte against the ICD's layouts.
+The packet layouts come from the CIGI 3.3 ICD and its errata, fetched by `tools/fetch-cigi-icd.sh` into `docs/reference/` (git-ignored, hash-checked), never from memory.
+
+- **CIGI version (D-013: 3.3).** CIGI 3.3 is the version most hosts and IGs implement, and its interface control document is freely available. CIGI 4.0 (SISO-STD-013-2014) changes packet sizes and IDs and is less widely supported. The codec keeps version-specific layouts in one place, so 4.0 can be added later beside 3.3.
+- **Codec (D-014: Fovea's own).** Only a handful of packets are needed for this milestone. The Boeing CIGI Class Library is LGPL, old C++ and allocates per packet. Fovea's codec is a few hundred lines of fixed-size encode and decode, tested byte for byte against the ICD's layouts.
 - **UDP sockets.** A thin non-blocking UDP socket (Winsock or BSD sockets) in one file of `libs/net`, the only platform-specific code there. No networking library.
 
 ## Step 1: CIGI 3.3 codec
@@ -55,6 +57,6 @@ Like milestone 1, each step is its own pull request, reviewed and merged once CI
 
 | Needed by | Input |
 |---|---|
-| Step 1 | Approve D-013 (CIGI 3.3) and D-014 (own codec) |
+| Step 1 | ~~Approve D-013 (CIGI 3.3) and D-014 (own codec)~~ accepted |
 | Step 4 | A list of manoeuvres you care about, if any beyond the defaults |
 | Later | A real host to connect to, if you have one in mind (a simulator or your own program), and its CIGI version |
