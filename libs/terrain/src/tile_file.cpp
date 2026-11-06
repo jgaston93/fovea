@@ -6,7 +6,6 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
-#include <iterator>
 #include <system_error>
 
 namespace fovea {
@@ -97,8 +96,9 @@ std::vector<std::uint8_t> encode_tile(const TileFile& tile) {
     for (std::uint32_t i = 0; i < count; ++i) {
         const TileLayer& l = tile.layers[i];
         const std::size_t entry = kHeaderSize + i * kEntrySize;
-        std::copy_n(l.name.begin(), std::min(l.name.size(), kNameSize - 1),
-                    out.begin() + static_cast<std::ptrdiff_t>(entry));
+        for (std::size_t c = 0; c < std::min(l.name.size(), kNameSize - 1); ++c) {
+            out[entry + c] = static_cast<std::uint8_t>(l.name[c]);
+        }
         put(out, entry + 16, l.format);
         put(out, entry + 20, crc32(l.data));
         put(out, entry + 24, static_cast<std::uint64_t>(offset));
@@ -176,12 +176,17 @@ bool write_tile(const std::filesystem::path& file, const TileFile& tile) {
 }
 
 TileResult read_tile(const std::filesystem::path& file, const std::optional<TileKey>& expected) {
-    std::ifstream in(file, std::ios::binary);
+    std::ifstream in(file, std::ios::binary | std::ios::ate);
     if (!in) {
         return fail(TileError::cannot_read, "cannot read " + file.string());
     }
-    const std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(in),
-                                          std::istreambuf_iterator<char>()};
+    const std::streamoff size = in.tellg();
+    std::vector<std::uint8_t> bytes(size > 0 ? static_cast<std::size_t>(size) : 0);
+    in.seekg(0);
+    if (!in.read(reinterpret_cast<char*>(bytes.data()),
+                 static_cast<std::streamsize>(bytes.size()))) {
+        return fail(TileError::cannot_read, "cannot read " + file.string());
+    }
     TileResult r = decode_tile(bytes, expected);
     if (r.error != TileError::none) {
         r.detail = file.string() + ": " + r.detail;
