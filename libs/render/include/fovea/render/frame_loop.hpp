@@ -89,8 +89,9 @@ struct FrameSummary {
     // With a rig: views drawn with their eye at or below the grid (a host
     // below the origin's altitude), counted per view per frame.
     std::uint64_t views_below_ground = 0;
-    // With a rig and its first view's entity present: frames, and the mean
-    // sample and arrival ages (FrameRecord).
+    // With a rig, frames while the first view's entity has a live host (its
+    // newest sample under half a second old), and the mean sample and
+    // arrival ages over them (FrameRecord).
     std::uint64_t entity_frames = 0;
     double sample_age_mean_ms = 0.0;
     double recv_age_mean_ms = 0.0;

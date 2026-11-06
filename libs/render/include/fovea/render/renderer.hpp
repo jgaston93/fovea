@@ -144,6 +144,7 @@ struct OverlayContent {
     std::uint32_t gpu_outputs = 0;
     std::array<float, kMaxTimedOutputs> gpu_ms{};  // the latest GPU times per output
     std::string_view note;                         // an optional extra line
+    float host_age_ms = -1.0F;  // the host's newest sample, at frame start; negative: no host
 };
 
 // One Renderer at a time (Vulkan entry points are process-wide in volk);

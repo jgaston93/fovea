@@ -322,7 +322,8 @@ TEST(RideEntities, SmoothingRemovesTheJudderOfDriftingClocks) {
             SceneView out = reference_scene_view(v, s);
             (void)ride_entities(rig, *snapshot, std::span<SceneView>(&out, 1), at(t));
             const Vec4 ray = out.clip_to_local * Vec4(0.0F, 0.0F, 1.0F, 1.0F);
-            const double heading = glm::degrees(std::atan2(double{ray.y}, double{ray.x}));
+            const double heading =
+                glm::degrees(std::atan2(static_cast<double>(ray.y), static_cast<double>(ray.x)));
             if (f > 0) {
                 min_step = std::min(min_step, heading - last_heading);
                 max_step = std::max(max_step, heading - last_heading);

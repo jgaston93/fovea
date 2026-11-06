@@ -10,6 +10,9 @@ namespace fovea {
 
 namespace {
 
+// A host whose newest sample is older than this has stopped sending.
+constexpr double kLiveHostMs = 500.0;
+
 double ms_between(LocalTime a, LocalTime b) {
     return std::chrono::duration<double, std::milli>(b - a).count();
 }
@@ -92,6 +95,9 @@ const FrameRecord& FrameLoop::step() {
         overlay_.gpu_outputs = last_.gpu_outputs;
         overlay_.gpu_ms = last_.gpu_ms;
         overlay_.note = options_.overlay_note;
+        overlay_.host_age_ms = last_.recv_age_ms > 0.0 && last_.recv_age_ms < kLiveHostMs
+                                   ? static_cast<float>(last_.sample_age_ms)
+                                   : -1.0F;
         overlay = &overlay_;
     }
     const std::uint32_t drawn = renderer_.draw_scene_frame(views_, overlay);
@@ -118,6 +124,10 @@ const FrameRecord& FrameLoop::step() {
         if (const EntityState* e = find_entity(scene, options_.rig->views[0].pose.entity)) {
             r.sample_age_ms = ms_between(e->cur.sample_t, started);
             r.recv_age_ms = ms_between(e->cur.recv_t, started);
+        }
+        // The means cover frames while the host is sending: not before its
+        // first sample, nor after it stops (when the newest only ages).
+        if (r.recv_age_ms > 0.0 && r.recv_age_ms < kLiveHostMs) {
             ++summary_.entity_frames;
             const auto k = static_cast<double>(summary_.entity_frames);
             summary_.sample_age_mean_ms += (r.sample_age_ms - summary_.sample_age_mean_ms) / k;
