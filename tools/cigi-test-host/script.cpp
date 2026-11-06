@@ -121,6 +121,7 @@ public:
         std::stable_sort(errors_.begin(), errors_.end(),
                          [](const auto& a, const auto& b) { return a.first < b.first; });
         std::vector<std::string> out;
+        out.reserve(errors_.size());
         for (auto& e : errors_) {
             out.push_back(std::move(e.second));
         }
