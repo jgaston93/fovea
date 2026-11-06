@@ -391,6 +391,10 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
             }
         }
         print_summary(loop->summary());
+        if (renderer->overlay_skipped_frames() > 0) {
+            std::printf("overlay: left out of %llu frames (a texture upload was pending)\n",
+                        static_cast<unsigned long long>(renderer->overlay_skipped_frames()));
+        }
         return finish(*renderer);
     }
     if (renderer) {

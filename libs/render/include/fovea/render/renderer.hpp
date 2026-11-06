@@ -9,6 +9,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "fovea/core/config.hpp"
@@ -103,6 +104,7 @@ struct OverlayContent {
     double work_mean_ms = 0.0;
     std::uint32_t gpu_outputs = 0;
     std::array<float, kMaxTimedOutputs> gpu_ms{};  // the latest GPU times per output
+    std::string_view note;                         // an optional extra line
 };
 
 // One Renderer at a time (Vulkan entry points are process-wide in volk);
@@ -156,6 +158,12 @@ public:
 
     // True once the overlay is enabled and its textures are on the GPU.
     bool overlay_ready() const;
+
+    // Frames drawn without the overlay because ImGui wanted a texture
+    // uploaded (new content, such as a glyph never drawn before). Drawing
+    // never uploads: ImGui's backend would block the render thread with
+    // vkQueueWaitIdle, so the overlay is left out of that frame instead.
+    std::uint64_t overlay_skipped_frames() const;
 
     // Offscreen outputs only: the last frame's pixels, RGBA8, row by row.
     // Waits for the GPU to finish it.

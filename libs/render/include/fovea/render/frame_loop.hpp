@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <exception>
 #include <span>
+#include <string_view>
 #include <thread>
 
 #include "fovea/core/log.hpp"
@@ -24,6 +25,9 @@
 namespace fovea {
 
 struct FrameLoopOptions {
+    FrameLoopOptions() = default;
+    FrameLoopOptions(double rate) : rate_hz(rate) {}  // implicit: FrameLoopOptions{60.0}, {rate}
+
     double rate_hz = 60.0;
     // A frame starting more than this many periods after the previous one
     // counts as missed (architecture.md: 1.5). The gap is measured, not the
@@ -32,6 +36,7 @@ struct FrameLoopOptions {
     double missed_after_periods = 1.5;
     // Fill the debug overlay each frame (the renderer must have one enabled).
     bool overlay = false;
+    std::string_view overlay_note;  // an extra overlay line (must outlive the loop)
 };
 
 // Recent frame intervals for the overlay's graph.

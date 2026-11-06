@@ -75,6 +75,7 @@ const FrameRecord& FrameLoop::step() {
         overlay_.work_mean_ms = summary_.work_mean_ms;
         overlay_.gpu_outputs = last_.gpu_outputs;
         overlay_.gpu_ms = last_.gpu_ms;
+        overlay_.note = options_.overlay_note;
         overlay = &overlay_;
     }
     const std::uint32_t drawn = renderer_.draw_scene_frame(views_, overlay);

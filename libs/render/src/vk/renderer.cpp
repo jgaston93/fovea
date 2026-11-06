@@ -204,7 +204,11 @@ void imgui_free(void* p, void* /*user*/) {
 }
 
 // Builds this frame's overlay and draws it over the target.
-void overlay_frame(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
+// Returns false, drawing nothing, when ImGui wants a texture created or
+// updated: its backend would upload it with vkQueueWaitIdle, blocking the
+// render thread. enable_overlay uploads everything the overlay normally
+// shows, so this means new content (a glyph never drawn before).
+bool overlay_frame(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
                    const OverlayContent& content) {
     ImGui_ImplVulkan_NewFrame();
     ImGuiIO& io = ImGui::GetIO();
@@ -213,7 +217,18 @@ void overlay_frame(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
     ImGui::NewFrame();
     build_overlay_ui(content);
     ImGui::Render();
-    draw_overlay(cmd, target, extent, ImGui::GetDrawData());
+    const auto& textures = ImGui::GetPlatformIO().Textures;
+    const bool pending = std::any_of(textures.begin(), textures.end(), [](const ImTextureData* t) {
+        return t->Status != ImTextureStatus_OK;
+    });
+    if (pending) {
+        return false;
+    }
+    // Null: the backend may not touch textures at all while drawing.
+    ImDrawData* data = ImGui::GetDrawData();
+    data->Textures = nullptr;
+    draw_overlay(cmd, target, extent, data);
+    return true;
 }
 
 // Draws the fullscreen triangle into one colour target with dynamic rendering.
@@ -346,6 +361,7 @@ struct Renderer::Impl {
     std::uint32_t overlay_output = 0;
     VkFormat overlay_format = VK_FORMAT_UNDEFINED;  // ImGui's pipeline reads it by pointer
     ImGuiContext* imgui = nullptr;
+    std::uint64_t overlay_skipped = 0;  // frames without the overlay: a texture was pending
 
     // Present pacing (VK_KHR_present_id / present_wait), when supported.
     bool present_wait = false;
@@ -1085,7 +1101,10 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
             // made for (a rebuild could, rarely, change it).
             if (overlay && request.overlay != nullptr && i == overlay_output &&
                 s.chain.image_format == overlay_format) {
-                overlay_frame(f.cmd, s.views[image_index[i]], s.chain.extent, *request.overlay);
+                if (!overlay_frame(f.cmd, s.views[image_index[i]], s.chain.extent,
+                                   *request.overlay)) {
+                    ++overlay_skipped;
+                }
             }
             transition(f.cmd, image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
@@ -1136,7 +1155,9 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
             tonemap_into(o.view, {o.width, o.height}, kOffscreenFormat, i);
             if (overlay && request.overlay != nullptr && swapchains.size() + i == overlay_output) {
-                overlay_frame(f.cmd, o.view, {o.width, o.height}, *request.overlay);
+                if (!overlay_frame(f.cmd, o.view, {o.width, o.height}, *request.overlay)) {
+                    ++overlay_skipped;
+                }
             }
             transition(f.cmd, o.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1450,6 +1471,10 @@ void Renderer::enable_overlay(std::uint32_t output) {
     }
     m.overlay = true;
     m.overlay_output = output;
+}
+
+std::uint64_t Renderer::overlay_skipped_frames() const {
+    return impl_->overlay_skipped;
 }
 
 bool Renderer::overlay_ready() const {

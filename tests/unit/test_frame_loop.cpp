@@ -208,6 +208,30 @@ TEST(FrameLoop, SteadyFramesWithTheOverlayAllocateNothing) {
     EXPECT_EQ(counter.count(), 0U);
 }
 
+TEST(FrameLoop, OverlayNeverUploadsWhileDrawing) {
+    // A glyph the font upload in enable_overlay didn't cover (outside
+    // printable ASCII) makes ImGui want a texture update. Drawing must not do
+    // it (ImGui's backend would block on vkQueueWaitIdle): the overlay is
+    // left out of those frames, counted, and the texture stays pending.
+    auto r = make_offscreen(1);
+    FOVEA_NEED_VULKAN(r);
+    r->enable_overlay(0);
+    ASSERT_TRUE(r->overlay_ready());
+    auto scene = std::make_unique<SceneState>();
+    const auto v = views(1);
+    FrameLoopOptions options{1000.0};
+    options.overlay = true;
+    options.overlay_note = "altitude 120\u00b0";  // a degree sign
+    FrameLoop loop(*r, *scene, v, options);
+    for (int i = 0; i < 5; ++i) {
+        (void)loop.step();
+    }
+    EXPECT_EQ(r->overlay_skipped_frames(), 5U);
+    EXPECT_FALSE(r->overlay_ready());  // nobody uploaded it
+    EXPECT_EQ(loop.summary().frames, 5U);
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
 TEST(FrameLoop, StatsAreCsvOneLinePerFrame) {
     auto r = make_offscreen(2);
     FOVEA_NEED_VULKAN(r);

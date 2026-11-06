@@ -60,10 +60,11 @@ jobs:
       CXX: g++
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
-      # GPU tests run on lavapipe with validation; a missing driver or
-      # layer fails them instead of skipping.
+      # GPU tests run on lavapipe, without the validation layer: it is not
+      # built with TSan, which then reports races between its own threads.
+      # (Every other job runs with it.)
       FOVEA_REQUIRE_VULKAN: "1"
-      FOVEA_REQUIRE_VALIDATION: "1"
+      VK_LOADER_LAYERS_DISABLE: VK_LAYER_KHRONOS_validation
     steps:
       - uses: actions/checkout@v5
       - name: Install Ninja, ccache, SDL's X11 dependencies and lavapipe

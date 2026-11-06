@@ -18,6 +18,9 @@ void build_overlay_ui(const OverlayContent& c) {
     ImGui::Text("missed %llu of %llu", static_cast<unsigned long long>(c.missed),
                 static_cast<unsigned long long>(c.frames));
     ImGui::Text("CPU work %.2f ms", c.work_mean_ms);
+    if (!c.note.empty()) {
+        ImGui::TextUnformatted(c.note.data(), c.note.data() + c.note.size());
+    }
     for (std::uint32_t i = 0; i < c.gpu_outputs; ++i) {
         ImGui::Text("GPU output %u: %.3f ms", i, static_cast<double>(c.gpu_ms[i]));
     }
