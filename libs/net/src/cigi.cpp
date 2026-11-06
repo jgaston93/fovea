@@ -223,7 +223,7 @@ bool MessageReader::next(Packet& packet) {
     }
     const std::size_t left = message_.size() - offset_;
     // A size under 2 can't hold its own header (and would never advance).
-    const std::size_t size = left >= 2 ? message_[offset_ + 1] : 0;
+    const std::size_t size = left >= 2 ? std::size_t{message_[offset_ + 1]} : std::size_t{0};
     if (size < 2 || size > left) {
         error_ = MessageError::bad_packet_size;
         return false;
