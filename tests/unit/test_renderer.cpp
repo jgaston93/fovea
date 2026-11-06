@@ -74,6 +74,15 @@ TEST(Renderer, ReportsTheGpu) {
     EXPECT_GE(r->gpu().api_major * 10 + r->gpu().api_minor, 13U);
 }
 
+TEST(Renderer, OnlyOneAtATime) {
+    auto first = make_offscreen({{4, 4}});
+    FOVEA_NEED_VULKAN(first);
+    EXPECT_THROW((void)Renderer::offscreen(std::vector<OffscreenOutput>{{4, 4}}),
+                 std::runtime_error);
+    first.reset();
+    EXPECT_NE(make_offscreen({{4, 4}}), nullptr);  // free again once the first is gone
+}
+
 TEST(Renderer, ReadBackNeedsAFrameAndAnOffscreenOutput) {
     auto r = make_offscreen({{4, 4}});
     FOVEA_NEED_VULKAN(r);

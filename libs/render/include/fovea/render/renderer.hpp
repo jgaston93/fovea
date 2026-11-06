@@ -52,6 +52,8 @@ struct OffscreenOutput {
     std::uint32_t height = 0;
 };
 
+// One Renderer at a time (Vulkan entry points are process-wide in volk);
+// creating a second while one is alive throws std::runtime_error.
 class Renderer {
 public:
     // One swapchain per window (the multi_swapchain presenter). The windows
@@ -76,8 +78,10 @@ public:
 
     // One frame: clears output i to colours[i] on the GPU, then presents
     // every on-screen output in a single present call. Waits only for the
-    // frame two frames back to finish, and for vsync with FIFO.
-    void draw_clear_frame(std::span<const Rgb8> colours);
+    // frame two frames back to finish, and for vsync with FIFO. Returns the
+    // number of outputs drawn: 0 when every window is minimized, in which
+    // case nothing paced the call and the caller should wait.
+    std::uint32_t draw_clear_frame(std::span<const Rgb8> colours);
 
     // Offscreen outputs only: the last frame's pixels, RGBA8, row by row.
     // Waits for the GPU to finish it.

@@ -11,8 +11,10 @@
 #include <VkBootstrap.h>
 #include <vk_mem_alloc.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -32,6 +34,10 @@ constexpr std::uint32_t kFramesInFlight = 2;
 constexpr VkFormat kSwapchainFormat = VK_FORMAT_B8G8R8A8_UNORM;
 constexpr VkFormat kOffscreenFormat = VK_FORMAT_R8G8B8A8_UNORM;
 constexpr const char* kValidationLayer = "VK_LAYER_KHRONOS_validation";
+
+// volk keeps the Vulkan entry points in process-wide variables, so a second
+// live Renderer would replace the first one's: one at a time.
+std::atomic<bool> g_renderer_alive{false};
 
 [[noreturn]] void fail(const std::string& what) {
     throw std::runtime_error(what);
@@ -55,11 +61,26 @@ VkPresentModeKHR vk_present_mode(PresentMode mode) {
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
-VkClearColorValue clear_value(Rgb8 c) {
+// One sRGB-encoded channel (0..1) to linear: for *_SRGB targets, which encode
+// on write, so the stored bytes still come out as the colour asked for.
+float srgb_to_linear(float c) {
+    return c <= 0.04045F ? c / 12.92F : std::pow((c + 0.055F) / 1.055F, 2.4F);
+}
+
+bool is_srgb(VkFormat f) {
+    return f == VK_FORMAT_B8G8R8A8_SRGB || f == VK_FORMAT_R8G8B8A8_SRGB ||
+           f == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
+}
+
+VkClearColorValue clear_value(Rgb8 c, bool srgb_target) {
+    const auto channel = [srgb_target](std::uint8_t v) {
+        const float f = static_cast<float>(v) / 255.0F;
+        return srgb_target ? srgb_to_linear(f) : f;
+    };
     VkClearColorValue v{};
-    v.float32[0] = static_cast<float>(c.r) / 255.0F;
-    v.float32[1] = static_cast<float>(c.g) / 255.0F;
-    v.float32[2] = static_cast<float>(c.b) / 255.0F;
+    v.float32[0] = channel(c.r);
+    v.float32[1] = channel(c.g);
+    v.float32[2] = channel(c.b);
     v.float32[3] = 1.0F;
     return v;
 }
@@ -142,6 +163,18 @@ struct Renderer::Impl {
     std::vector<OffscreenImage> offscreen;
     std::array<Frame, kFramesInFlight> frames{};
     std::uint64_t frame_number = 0;
+    bool owns_alive_flag = false;
+
+    // Per-frame scratch, sized once for the swapchain count: the render path
+    // allocates nothing (architecture.md, "Render path rules").
+    std::vector<std::uint32_t> image_index;
+    std::vector<VkSemaphoreSubmitInfo> waits;
+    std::vector<VkSemaphoreSubmitInfo> signals;
+    std::vector<VkSwapchainKHR> present_chains;
+    std::vector<std::uint32_t> present_indices;
+    std::vector<VkSemaphore> present_waits;
+    std::vector<std::size_t> present_which;
+    std::vector<VkResult> present_results;
 
     Impl() = default;
     Impl(const Impl&) = delete;
@@ -154,8 +187,10 @@ struct Renderer::Impl {
     void build_swapchain(Swapchain& s) const;
     void destroy_swapchain(Swapchain& s) const;
     void create_offscreen(OffscreenOutput o);
+    void claim();
+    void size_scratch();
     Frame& begin_frame();
-    void draw(std::span<const Rgb8> colours);
+    std::uint32_t draw(std::span<const Rgb8> colours);
 };
 
 void Renderer::Impl::create_instance(const std::vector<std::string>& extensions,
@@ -176,7 +211,12 @@ void Renderer::Impl::create_instance(const std::vector<std::string>& extensions,
     }
     info.validation = validation != Validation::off && have_layer;
     if (info.validation) {
+        // Synchronization validation too: it checks barriers against the
+        // commands themselves, so hazards that an in-order driver such as
+        // lavapipe hides at run time are still reported.
         builder.enable_validation_layers(true)
+            .add_validation_feature_enable(
+                VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT)
             .set_debug_callback(&on_validation)
             .set_debug_callback_user_data_pointer(&messages)
             .set_debug_messenger_severity(VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
@@ -216,11 +256,46 @@ void Renderer::Impl::create_device(bool present) {
     } else {
         selector.require_present(false);
     }
-    auto chosen = selector.select();
-    if (!chosen) {
-        fail("no GPU with Vulkan 1.3 and the features Fovea needs: " + chosen.error().message());
+    auto candidates = selector.select_devices();
+    if (!candidates || candidates->empty()) {
+        fail("no GPU with Vulkan 1.3 and the features Fovea needs" +
+             (candidates ? std::string() : ": " + candidates.error().message()));
     }
-    physical = chosen.value();
+    // Among the GPUs that can draw and present to every window from one
+    // queue, the first discrete one, else the first.
+    const auto reaches_every_window = [&](const vkb::PhysicalDevice& d) {
+        const auto families = d.get_queue_families();
+        for (std::uint32_t q = 0; q < families.size(); ++q) {
+            if ((families[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0) {
+                continue;
+            }
+            bool all = true;
+            for (const Swapchain& s : swapchains) {
+                VkBool32 ok = VK_FALSE;
+                all = all &&
+                      vkGetPhysicalDeviceSurfaceSupportKHR(d.physical_device, q, s.surface, &ok) ==
+                          VK_SUCCESS &&
+                      ok == VK_TRUE;
+            }
+            if (all) {
+                return true;
+            }
+        }
+        return false;
+    };
+    std::vector<vkb::PhysicalDevice> usable;
+    for (const vkb::PhysicalDevice& d : *candidates) {
+        if (reaches_every_window(d)) {
+            usable.push_back(d);
+        }
+    }
+    if (usable.empty()) {
+        fail("no GPU can present to every window from one queue");
+    }
+    const auto discrete = std::find_if(usable.begin(), usable.end(), [](const auto& d) {
+        return d.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+    });
+    physical = discrete != usable.end() ? *discrete : usable.front();
 
     auto built = vkb::DeviceBuilder(physical).build();
     if (!built) {
@@ -298,6 +373,10 @@ void Renderer::Impl::create_frames() {
 
 void Renderer::Impl::build_swapchain(Swapchain& s) const {
     const auto size = s.window->pixel_size();
+    if (size.width == 0 || size.height == 0) {
+        s.needs_rebuild = true;  // minimized or not sized yet: build when drawable
+        return;
+    }
     vkb::SwapchainBuilder builder(device, s.surface);
     builder.set_desired_format({kSwapchainFormat, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR})
         .set_desired_present_mode(s.present_mode)
@@ -371,27 +450,54 @@ void Renderer::Impl::create_offscreen(OffscreenOutput o) {
     offscreen.push_back(img);
 }
 
+void Renderer::Impl::claim() {
+    if (g_renderer_alive.exchange(true)) {
+        fail("only one Renderer may exist at a time");
+    }
+    owns_alive_flag = true;
+}
+
+void Renderer::Impl::size_scratch() {
+    const std::size_t n = swapchains.size();
+    image_index.resize(n);
+    waits.resize(n);
+    signals.resize(n);
+    present_chains.resize(n);
+    present_indices.resize(n);
+    present_waits.resize(n);
+    present_which.resize(n);
+    present_results.resize(n);
+}
+
 Frame& Renderer::Impl::begin_frame() {
     Frame& f = frames[frame_number % kFramesInFlight];
     check(vkWaitForFences(device.device, 1, &f.done, VK_TRUE, UINT64_MAX), "vkWaitForFences");
     return f;
 }
 
-void Renderer::Impl::draw(std::span<const Rgb8> colours) {
+std::uint32_t Renderer::Impl::draw(std::span<const Rgb8> colours) {
     Frame& f = begin_frame();
 
     // Acquire an image from every swapchain that has a drawable size.
-    std::vector<std::uint32_t> image_index(swapchains.size(), UINT32_MAX);
+    std::fill(image_index.begin(), image_index.end(), UINT32_MAX);
     for (std::size_t i = 0; i < swapchains.size(); ++i) {
         Swapchain& s = swapchains[i];
         const auto size = s.window->pixel_size();
         if (size.width == 0 || size.height == 0) {
             continue;  // minimized
         }
+        // A resize that the driver doesn't report as out of date.
+        if (s.chain.swapchain != VK_NULL_HANDLE &&
+            (size.width != s.chain.extent.width || size.height != s.chain.extent.height)) {
+            s.needs_rebuild = true;
+        }
         for (int attempt = 0; attempt < 2; ++attempt) {
             if (s.needs_rebuild) {
                 check(vkDeviceWaitIdle(device.device), "vkDeviceWaitIdle");
                 build_swapchain(s);
+                if (s.chain.swapchain == VK_NULL_HANDLE) {
+                    break;  // still not drawable
+                }
             }
             const VkResult r =
                 vkAcquireNextImageKHR(device.device, s.chain.swapchain, UINT64_MAX, f.acquired[i],
@@ -410,7 +516,6 @@ void Renderer::Impl::draw(std::span<const Rgb8> colours) {
         }
     }
 
-    check(vkResetFences(device.device, 1, &f.done), "vkResetFences");
     check(vkResetCommandBuffer(f.cmd, 0), "vkResetCommandBuffer");
     VkCommandBufferBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -418,8 +523,7 @@ void Renderer::Impl::draw(std::span<const Rgb8> colours) {
     check(vkBeginCommandBuffer(f.cmd, &begin), "vkBeginCommandBuffer");
 
     const VkImageSubresourceRange all{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    std::vector<VkSemaphoreSubmitInfo> waits;
-    std::vector<VkSemaphoreSubmitInfo> signals;
+    std::uint32_t wait_count = 0;
     for (std::size_t i = 0; i < swapchains.size(); ++i) {
         if (image_index[i] == UINT32_MAX) {
             continue;
@@ -431,28 +535,47 @@ void Renderer::Impl::draw(std::span<const Rgb8> colours) {
         transition(f.cmd, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                    VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, 0, VK_PIPELINE_STAGE_2_CLEAR_BIT,
                    VK_ACCESS_2_TRANSFER_WRITE_BIT);
-        const VkClearColorValue c = clear_value(i < colours.size() ? colours[i] : Rgb8{});
+        const VkClearColorValue c =
+            clear_value(i < colours.size() ? colours[i] : Rgb8{}, is_srgb(s.chain.image_format));
         vkCmdClearColorImage(f.cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &c, 1, &all);
         transition(f.cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_CLEAR_BIT,
                    VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
-        VkSemaphoreSubmitInfo w{};
+        VkSemaphoreSubmitInfo& w = waits[wait_count];
+        w = {};
         w.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
         w.semaphore = f.acquired[i];
         w.stageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
-        waits.push_back(w);
-        VkSemaphoreSubmitInfo sig{};
+        VkSemaphoreSubmitInfo& sig = signals[wait_count];
+        sig = {};
         sig.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
         sig.semaphore = s.rendered[image_index[i]];
         sig.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-        signals.push_back(sig);
+        ++wait_count;
+    }
+    if (!offscreen.empty()) {
+        // The offscreen images and readback buffers are shared by both frames
+        // in flight: order this frame's transfers after the previous frame's
+        // (its copy reads the image and writes the buffer).
+        VkMemoryBarrier2 prev{};
+        prev.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        prev.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        prev.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        prev.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        prev.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        VkDependencyInfo d{};
+        d.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        d.memoryBarrierCount = 1;
+        d.pMemoryBarriers = &prev;
+        vkCmdPipelineBarrier2(f.cmd, &d);
     }
     for (std::size_t i = 0; i < offscreen.size(); ++i) {
         const OffscreenImage& o = offscreen[i];
+        // After the previous frame's copy out of this image (write after read).
         transition(f.cmd, o.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                   VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                   VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, 0, VK_PIPELINE_STAGE_2_CLEAR_BIT,
                    VK_ACCESS_2_TRANSFER_WRITE_BIT);
-        const VkClearColorValue c = clear_value(i < colours.size() ? colours[i] : Rgb8{});
+        const VkClearColorValue c = clear_value(i < colours.size() ? colours[i] : Rgb8{}, false);
         vkCmdClearColorImage(f.cmd, o.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &c, 1, &all);
         transition(f.cmd, o.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
@@ -485,50 +608,53 @@ void Renderer::Impl::draw(std::span<const Rgb8> colours) {
     cmd.commandBuffer = f.cmd;
     VkSubmitInfo2 submit{};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-    submit.waitSemaphoreInfoCount = static_cast<std::uint32_t>(waits.size());
+    submit.waitSemaphoreInfoCount = wait_count;
     submit.pWaitSemaphoreInfos = waits.data();
     submit.commandBufferInfoCount = 1;
     submit.pCommandBufferInfos = &cmd;
-    submit.signalSemaphoreInfoCount = static_cast<std::uint32_t>(signals.size());
+    submit.signalSemaphoreInfoCount = wait_count;
     submit.pSignalSemaphoreInfos = signals.data();
+    // Reset only now, with the commands recorded: a failure while recording
+    // must not leave this frame's fence unsignalled for the next wait.
+    check(vkResetFences(device.device, 1, &f.done), "vkResetFences");
     check(vkQueueSubmit2(queue, 1, &submit, f.done), "vkQueueSubmit2");
 
     // Every acquired swapchain in one present call: the outputs flip
     // together as far as the driver allows (the display sync test measures
     // how far that is).
-    std::vector<VkSwapchainKHR> chains;
-    std::vector<std::uint32_t> indices;
-    std::vector<VkSemaphore> rendered;
-    std::vector<std::size_t> which;
+    std::uint32_t presenting = 0;
     for (std::size_t i = 0; i < swapchains.size(); ++i) {
         if (image_index[i] != UINT32_MAX) {
-            chains.push_back(swapchains[i].chain.swapchain);
-            indices.push_back(image_index[i]);
-            rendered.push_back(swapchains[i].rendered[image_index[i]]);
-            which.push_back(i);
+            present_chains[presenting] = swapchains[i].chain.swapchain;
+            present_indices[presenting] = image_index[i];
+            present_waits[presenting] = swapchains[i].rendered[image_index[i]];
+            present_which[presenting] = i;
+            present_results[presenting] = VK_SUCCESS;
+            ++presenting;
         }
     }
-    if (!chains.empty()) {
-        std::vector<VkResult> results(chains.size(), VK_SUCCESS);
+    if (presenting > 0) {
         VkPresentInfoKHR present{};
         present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        present.waitSemaphoreCount = static_cast<std::uint32_t>(rendered.size());
-        present.pWaitSemaphores = rendered.data();
-        present.swapchainCount = static_cast<std::uint32_t>(chains.size());
-        present.pSwapchains = chains.data();
-        present.pImageIndices = indices.data();
-        present.pResults = results.data();
+        present.waitSemaphoreCount = presenting;
+        present.pWaitSemaphores = present_waits.data();
+        present.swapchainCount = presenting;
+        present.pSwapchains = present_chains.data();
+        present.pImageIndices = present_indices.data();
+        present.pResults = present_results.data();
         const VkResult r = vkQueuePresentKHR(queue, &present);
         if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR && r != VK_ERROR_OUT_OF_DATE_KHR) {
             check(r, "vkQueuePresentKHR");
         }
-        for (std::size_t k = 0; k < results.size(); ++k) {
-            if (results[k] == VK_SUBOPTIMAL_KHR || results[k] == VK_ERROR_OUT_OF_DATE_KHR) {
-                swapchains[which[k]].needs_rebuild = true;
+        for (std::uint32_t k = 0; k < presenting; ++k) {
+            if (present_results[k] == VK_SUBOPTIMAL_KHR ||
+                present_results[k] == VK_ERROR_OUT_OF_DATE_KHR) {
+                swapchains[present_which[k]].needs_rebuild = true;
             }
         }
     }
     ++frame_number;
+    return presenting + static_cast<std::uint32_t>(offscreen.size());
 }
 
 Renderer::Impl::~Impl() {
@@ -561,6 +687,9 @@ Renderer::Impl::~Impl() {
         }
         vkb::destroy_instance(instance);
     }
+    if (owns_alive_flag) {
+        g_renderer_alive = false;
+    }
 }
 
 Renderer::Renderer(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -573,6 +702,7 @@ std::unique_ptr<Renderer> Renderer::for_windows(Platform& platform,
         fail("no windows to render to");
     }
     auto impl = std::make_unique<Impl>();
+    impl->claim();
     impl->create_instance(platform.vulkan_instance_extensions(), options.validation);
     for (const WindowOutput& o : outputs) {
         Swapchain s;
@@ -585,8 +715,9 @@ std::unique_ptr<Renderer> Renderer::for_windows(Platform& platform,
     }
     impl->create_device(true);
     for (Swapchain& s : impl->swapchains) {
-        impl->build_swapchain(s);
+        impl->build_swapchain(s);  // deferred while a window has no size
     }
+    impl->size_scratch();
     impl->create_frames();
     return std::unique_ptr<Renderer>(new Renderer(std::move(impl)));
 }
@@ -597,11 +728,13 @@ std::unique_ptr<Renderer> Renderer::offscreen(std::span<const OffscreenOutput> o
         fail("no offscreen outputs to render to");
     }
     auto impl = std::make_unique<Impl>();
+    impl->claim();
     impl->create_instance({}, options.validation);
     impl->create_device(false);
     for (const OffscreenOutput& o : outputs) {
         impl->create_offscreen(o);
     }
+    impl->size_scratch();
     impl->create_frames();
     return std::unique_ptr<Renderer>(new Renderer(std::move(impl)));
 }
@@ -614,8 +747,8 @@ std::uint32_t Renderer::output_count() const {
     return static_cast<std::uint32_t>(impl_->swapchains.size() + impl_->offscreen.size());
 }
 
-void Renderer::draw_clear_frame(std::span<const Rgb8> colours) {
-    impl_->draw(colours);
+std::uint32_t Renderer::draw_clear_frame(std::span<const Rgb8> colours) {
+    return impl_->draw(colours);
 }
 
 std::vector<std::uint8_t> Renderer::read_back_rgba(std::uint32_t output) {

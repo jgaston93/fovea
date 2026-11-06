@@ -63,8 +63,9 @@ set_tests_properties(App.IdentifyFillsTheWindows PROPERTIES
     ENVIRONMENT ${dummy_display} TIMEOUT 20
     PASS_REGULAR_EXPRESSION "Identifying: red" FAIL_REGULAR_EXPRESSION "cannot fill")
 # Offscreen rendering on Vulkan with no display at all: the clear colour
-# comes back from the GPU. Skipped where there is no Vulkan driver (CI has
-# lavapipe and sets FOVEA_REQUIRE_VULKAN, so it runs there).
+# comes back from the GPU. Skipped where there is no Vulkan driver, unless
+# FOVEA_REQUIRE_VULKAN is set when CMake configures (CI sets it for every
+# step); ctest can't read the variable at run time for this decision.
 add_test(NAME App.OffscreenRendersWithoutADisplay
     COMMAND fovea ${CMAKE_CURRENT_SOURCE_DIR}/data/offscreen.toml)
 set_tests_properties(App.OffscreenRendersWithoutADisplay PROPERTIES

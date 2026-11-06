@@ -245,7 +245,14 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
             if (platform.poll_events().quit) {
                 break;
             }
-            renderer->draw_clear_frame(clears);
+            if (renderer->draw_clear_frame(clears) == 0) {
+                // Every window minimized: nothing paced the frame, so sleep
+                // for about one instead of spinning.
+                if (platform.wait_events(16).quit) {
+                    break;
+                }
+                continue;
+            }
             ++frames;
             continue;
         }
