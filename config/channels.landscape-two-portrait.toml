@@ -42,3 +42,10 @@ frustum = { left = -15.0, right = 15.0, top = 25.5, bottom = -25.5 }    # covers
 # host_address = "127.0.0.1"   # where Start of Frame goes; set both, or neither
 # host_port = 8005             #   (neither: back to wherever the host sends from)
 # geoid_height_m = 0.0         # the geoid above the WGS-84 ellipsoid, here
+
+# [reference_scene] origin: the ground grid is the level plane through this
+# point, and a host's entities fly over it (milestone 2). Latitude and
+# longitude in degrees, altitude in metres above sea level; 0, 0, 0 if left
+# out. Set it to where the host flies, e.g. an airport's reference point:
+# [reference_scene]
+# origin = { lat = 34.6, lon = -86.8, alt = 190.0 }

@@ -16,6 +16,7 @@
 #include <span>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include "fovea/core/frame_events.hpp"
 #include "fovea/core/log.hpp"
@@ -41,6 +42,11 @@ struct FrameLoopOptions {
     // Each frame's start goes here (for a host adapter's Start of Frame);
     // if the ring is full, the frame start is dropped. Must outlive the loop.
     FrameStartRing* frame_starts = nullptr;
+    // Views riding the scene's entities: when set, the loop's views are
+    // recomputed from each frame's scene (ride_entities), starting from the
+    // ones given. Must outlive the loop, and have as many views as the loop
+    // (the constructor throws std::invalid_argument otherwise).
+    const ViewRig* rig = nullptr;
 };
 
 // Recent frame intervals for the overlay's graph.
@@ -74,6 +80,9 @@ struct FrameSummary {
     std::uint64_t gpu_samples = 0;
     std::array<double, kMaxTimedOutputs> gpu_mean_ms{};
     std::array<double, kMaxTimedOutputs> gpu_max_ms{};
+    // With a rig: views drawn with their eye at or below the grid (a host
+    // below the origin's altitude), counted per view per frame.
+    std::uint64_t views_below_ground = 0;
 };
 
 class FrameLoop {
@@ -111,7 +120,8 @@ private:
 
     Renderer& renderer_;
     SceneState& scene_;
-    std::span<const SceneView> views_;
+    std::span<const SceneView> views_;  // what's drawn: the given views, or rigged_
+    std::vector<SceneView> rigged_;     // with a rig: this frame's views
     FrameLoopOptions options_;
     Logger* stats_;
     LocalTime start_;

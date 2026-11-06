@@ -256,28 +256,6 @@ void parse_host(Parser& p, const toml::table& t, HostConfig& out) {
     }
 }
 
-void parse_reference_scene(Parser& p, const toml::table& t, ReferenceScene& out) {
-    p.check_keys(t, {"eye_height_m", "grid_spacing_m", "exposure_ev"}, "reference_scene");
-    if (const auto* n = t.get("eye_height_m")) {
-        if (auto v = p.number(*n, "reference_scene.eye_height_m")) {
-            check_range(p, *n, "reference_scene.eye_height_m", *v, 0.0, 100000.0, true);
-            out.eye_height_m = *v;
-        }
-    }
-    if (const auto* n = t.get("grid_spacing_m")) {
-        if (auto v = p.number(*n, "reference_scene.grid_spacing_m")) {
-            check_range(p, *n, "reference_scene.grid_spacing_m", *v, 0.0, 100000.0, true);
-            out.grid_spacing_m = *v;
-        }
-    }
-    if (const auto* n = t.get("exposure_ev")) {
-        if (auto v = p.number(*n, "reference_scene.exposure_ev")) {
-            check_range(p, *n, "reference_scene.exposure_ev", *v, -20.0, 20.0, false);
-            out.exposure_ev = *v;
-        }
-    }
-}
-
 // Reads the listed numeric fields of an inline table, all required.
 template <std::size_t N>
 std::optional<std::array<double, N>> number_fields(Parser& p, const toml::node& node,
@@ -298,6 +276,36 @@ std::optional<std::array<double, N>> number_fields(Parser& p, const toml::node& 
         values[i] = v.value_or(0.0);
     }
     return ok ? std::optional(values) : std::nullopt;
+}
+
+void parse_reference_scene(Parser& p, const toml::table& t, ReferenceScene& out) {
+    p.check_keys(t, {"eye_height_m", "grid_spacing_m", "exposure_ev", "origin"}, "reference_scene");
+    if (const auto* n = t.get("origin")) {
+        if (auto v = number_fields<3>(p, *n, "reference_scene.origin", {"lat", "lon", "alt"})) {
+            check_range(p, *n, "reference_scene.origin.lat", (*v)[0], -90.0, 90.0, false);
+            check_range(p, *n, "reference_scene.origin.lon", (*v)[1], -180.0, 180.0, false);
+            check_range(p, *n, "reference_scene.origin.alt", (*v)[2], -1000.0, 10000.0, false);
+            out.origin = {(*v)[0], (*v)[1], (*v)[2]};
+        }
+    }
+    if (const auto* n = t.get("eye_height_m")) {
+        if (auto v = p.number(*n, "reference_scene.eye_height_m")) {
+            check_range(p, *n, "reference_scene.eye_height_m", *v, 0.0, 100000.0, true);
+            out.eye_height_m = *v;
+        }
+    }
+    if (const auto* n = t.get("grid_spacing_m")) {
+        if (auto v = p.number(*n, "reference_scene.grid_spacing_m")) {
+            check_range(p, *n, "reference_scene.grid_spacing_m", *v, 0.0, 100000.0, true);
+            out.grid_spacing_m = *v;
+        }
+    }
+    if (const auto* n = t.get("exposure_ev")) {
+        if (auto v = p.number(*n, "reference_scene.exposure_ev")) {
+            check_range(p, *n, "reference_scene.exposure_ev", *v, -20.0, 20.0, false);
+            out.exposure_ev = *v;
+        }
+    }
 }
 
 void check_frustum(Parser& p, const toml::node& node, const std::string& path, const Frustum& f) {

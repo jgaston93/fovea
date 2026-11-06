@@ -235,6 +235,18 @@ TEST(Config, HostSectionIsChecked) {
                      "host.geoid_height_m");
 }
 
+TEST(Config, ReferenceSceneOrigin) {
+    const auto r =
+        parse(kMinimal + "[reference_scene]\norigin = { lat = 34.6, lon = -86.8, alt = 190.0 }\n");
+    ASSERT_TRUE(r.ok()) << r.errors[0].to_string();
+    EXPECT_DOUBLE_EQ(r.config->reference_scene.origin.lat_deg, 34.6);
+    EXPECT_DOUBLE_EQ(r.config->reference_scene.origin.lon_deg, -86.8);
+    EXPECT_DOUBLE_EQ(r.config->reference_scene.origin.alt_m, 190.0);
+    expect_one_error(
+        parse(kMinimal + "[reference_scene]\norigin = { lat = 95.0, lon = 0.0, alt = 0.0 }\n"), 8,
+        "reference_scene.origin.lat");
+}
+
 TEST(Config, FrustumMustBeValid) {
     expect_one_error(parse(minimal_with("left = -30.0", "left = 31.0")), 6,
                      "left (31) must be less than right (30)");

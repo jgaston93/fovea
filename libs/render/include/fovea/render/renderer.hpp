@@ -14,6 +14,7 @@
 
 #include "fovea/core/config.hpp"
 #include "fovea/core/math.hpp"
+#include "fovea/core/scene.hpp"
 #include "fovea/platform/platform.hpp"
 #include "fovea/render/view.hpp"
 
@@ -73,13 +74,37 @@ struct SceneView {
     float exposure = 1.0F;    // linear multiplier before tone mapping
 };
 
-// The reference scene for a view, with the eyepoint level and facing north
-// (no host moves it until milestone 2) and the view's own rotation.
-SceneView reference_scene_view(const ViewDesc& view, const ReferenceScene& scene);
+// The reference scene for a view with no host: its body level and facing
+// north, eye_height_m above the ground origin, and the view's own offset and
+// rotation. `geoid_height_m`: the geoid above the ellipsoid ([host]).
+SceneView reference_scene_view(const ViewDesc& view, const ReferenceScene& scene,
+                               double geoid_height_m = 0.0);
 
 // The reference scene for every channel of a config, in channel order (what
 // the app draws, and the golden-image test).
 std::vector<SceneView> reference_scene_views(const DisplayConfig& config);
+
+// The display view for each channel of a config, in channel order.
+std::vector<ViewDesc> views_from_config(const DisplayConfig& config);
+
+// Views that ride the scene's entities (milestone 2 step 3): each frame,
+// each view's eye is placed from its entity's latest pose and the channel's
+// offset and rotation, in double precision. The reference grid follows the
+// Earth's curve at the origin's altitude, so level flight at a constant
+// altitude stays level and at its height at any distance. A world-fixed
+// view stays put; a view whose entity is missing or inactive keeps its last
+// view (the no-host pose until its entity first appears).
+struct ViewRig {
+    std::span<const ViewDesc> views;  // must outlive the rig's users
+    ReferenceScene scene;
+    double geoid_height_m = 0.0;
+};
+
+// Updates out[i] for each of the rig's views (as many as both hold), and
+// returns how many eyes were at or below the grid (drawn from just above
+// it). No allocation: for the render thread.
+std::size_t ride_entities(const ViewRig& rig, const SceneSnapshot& snapshot,
+                          std::span<SceneView> out);
 
 // Up to this many outputs get GPU timings.
 inline constexpr std::size_t kMaxTimedOutputs = 8;

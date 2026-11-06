@@ -12,6 +12,8 @@
 
 #include <gtest/gtest.h>
 
+#include "fovea/core/attitude.hpp"
+#include "fovea/core/geodesy.hpp"
 #include "fovea/core/log.hpp"
 #include "fovea/core/scene.hpp"
 #include "fovea/render/frame_loop.hpp"
@@ -291,6 +293,56 @@ TEST(FrameLoop, ReportsEachFrameStart) {
     }
     EXPECT_EQ(loop.summary().frames, 73U);
     EXPECT_EQ(frame_starts.try_pop()->frame, 3U);
+}
+
+TEST(FrameLoop, ARiggedViewFollowsItsEntity) {
+    // The host pitches the entity down, then up: the middle of the image
+    // goes from ground to sky (both away from the horizon line).
+    auto r = make_offscreen(1);
+    FOVEA_NEED_VULKAN(r);
+    ChannelConfig ch;
+    ch.render_width = 64;
+    ch.render_height = 64;
+    ch.frustum = {-30.0, 30.0, 17.0, -17.0};
+    const std::vector<ViewDesc> descs = {view_from_channel(ch, DisplayConfig{}, 0)};
+    const ViewRig rig{descs, ReferenceScene{}, 0.0};
+    auto scene = std::make_unique<SceneState>();
+    const auto v = views(1);
+    FrameLoopOptions options{1000.0};
+    options.rig = &rig;
+    FrameLoop loop(*r, *scene, v, options);
+
+    auto middle_after = [&](double pitch_deg) {
+        SceneSnapshot& s = scene->edit();
+        s.entities.clear();
+        EntityState e;
+        const Geodetic at{0.0, 0.0, 50.0};
+        e.cur.ecef = geodetic_to_ecef(at);
+        e.cur.orientation = body_to_ecef(at, Euler{0.0, pitch_deg, 0.0});
+        (void)s.entities.push_back(e);
+        scene->publish();
+        (void)loop.step();
+        const auto px = r->read_back_rgba(0);
+        const std::size_t mid = (32U * 64U + 32U) * 4U;
+        return std::array<int, 3>{px[mid], px[mid + 1], px[mid + 2]};
+    };
+    const auto down = middle_after(-45.0);
+    const auto up = middle_after(45.0);
+    EXPECT_LT(down[2], down[1]) << "ground: less blue than green";
+    EXPECT_GT(up[2], up[1]) << "sky: more blue than green";
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
+TEST(FrameLoop, ARigMustMatchTheViews) {
+    auto r = make_offscreen(1);
+    FOVEA_NEED_VULKAN(r);
+    auto scene = std::make_unique<SceneState>();
+    const auto v = views(1);
+    const std::vector<ViewDesc> two(2);
+    const ViewRig rig{two, ReferenceScene{}, 0.0};
+    FrameLoopOptions options{1000.0};
+    options.rig = &rig;
+    EXPECT_THROW(FrameLoop(*r, *scene, v, options), std::invalid_argument);
 }
 
 TEST(FrameLoop, RunsOnItsOwnThreadAndSeesNewScenes) {
