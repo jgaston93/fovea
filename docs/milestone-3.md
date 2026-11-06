@@ -34,6 +34,7 @@ For a first area of about 20 x 20 km around KHSV (34.55-34.72 N, 86.90-86.65 W):
 
 - `libs/terrain`: tile keys and the quadtree (geodetic bounds, neighbours, parents), the tile file format (D-018) with a writer and a reader, and a `TerrainQuery` over a database: height at a point (bilinear in the finest loaded tile) and ray intersection.
 - **Done when:** tests round-trip tiles through files, reject damaged ones, and answer height and ray queries on synthetic databases exactly; no GDAL, no Vulkan.
+- **Result:** `fovea/terrain/tile_key.hpp` (the quadtree: bounds, the tile at a point, parent, children, neighbours across the antimeridian), `tile_file.hpp` (the tile file: a 32-byte header, a 48-byte entry per named layer with its CRC-32, 8-byte-aligned data; the elevation layer as a float32 grid of ellipsoid heights, south-west first, edges shared; atomic writes), and `database.hpp` (`manifest.toml`, `tiles/<level>/<x>/<y>.fvt`, and `DatabaseTerrain`: height from the finest tile that reads cleanly, falling back to coarser ones and listing the problems; rays marched in half-height steps and bisected to a millimetre). Tests on synthetic databases written by the same code: a tilted plane comes back to 0.2 mm (float32) from either level, a damaged fine tile falls back to the coarse one and is reported, rays onto flat terrain match the exact ellipsoid intersection to a centimetre, and a ridge blocks the line of sight. A planted bug in the bilinear weights, the level order or the checksum check each fails a test.
 
 ## Step 3: The compiler: elevation
 

@@ -1,0 +1,17 @@
+# A Fovea terrain database (D-018); written by fovea-compiler.
+schema = 1
+name = "plane_fine_only"
+
+[area]
+south = 34.619999999999997
+north = 34.640000000000001
+west = -86.780000000000001
+east = -86.760000000000005
+
+[elevation]
+samples = 17
+
+[[level]]
+level = 13
+x = [4242, 4243]
+y = [5671, 5672]
