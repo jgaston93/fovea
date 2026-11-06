@@ -288,6 +288,31 @@ TEST(ReferenceScene, LinesContinueAcrossTheSharedEdge) {
     EXPECT_EQ(horizon_row(images[0], kW - 1), horizon_row(images[1], 0));
 }
 
+TEST(ReferenceScene, EyeOffsetMovesTheEye) {
+    // A channel 8 m above a 2 m eye sees what a 10 m eye sees; one moved 5 m
+    // east (half a grid cell) sees the grid shifted.
+    auto r = make_offscreen({{kW, kH}, {kW, kH}, {kW, kH}});
+    FOVEA_NEED_VULKAN(r);
+    const Frustum f{-30.0, 30.0, 17.0, -17.0};
+    ReferenceScene low;
+    low.eye_height_m = 2.0;
+    ReferenceScene high;
+    high.eye_height_m = 10.0;
+    ViewDesc raised = channel_view({}, f);
+    raised.pose.offset_m = {0.0, 0.0, -8.0};
+    ViewDesc moved = channel_view({}, f);
+    moved.pose.offset_m = {0.0, 5.0, 0.0};
+    r->draw_scene_frame(std::vector<SceneView>{reference_scene_view(raised, low),
+                                               reference_scene_view(channel_view({}, f), high),
+                                               reference_scene_view(moved, high)});
+    const auto raised_px = r->read_back_rgba(0);
+    const auto high_px = r->read_back_rgba(1);
+    const auto moved_px = r->read_back_rgba(2);
+    EXPECT_EQ(raised_px, high_px);
+    EXPECT_NE(moved_px, high_px);
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
 TEST(ReferenceScene, RepeatedFramesAreIdentical) {
     auto r = make_offscreen({{kW, kH}});
     FOVEA_NEED_VULKAN(r);

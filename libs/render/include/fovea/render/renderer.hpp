@@ -43,8 +43,9 @@ struct Rgb8 {
 };
 
 // An on-screen output: a window with its own swapchain. The scene renders
-// at render_width x render_height (0: the window's size) and is scaled to
-// the window by the tone-map pass.
+// at render_width x render_height (0: the window's size when the Renderer is
+// made; it stays that size if the window is resized) and is scaled to the
+// window by the tone-map pass.
 struct WindowOutput {
     const Window* window = nullptr;
     PresentMode present_mode = PresentMode::fifo;
@@ -64,9 +65,10 @@ struct SceneView {
     // Clip space to the local level frame (x north, y east, z down): the
     // eye's orientation times the inverse of the channel's projection.
     Mat4 clip_to_local{1.0F};
-    float eye_height_m = 2.0F;
+    float eye_height_m = 2.0F;  // the eye above the ground, offset included
     float grid_spacing_m = 10.0F;
-    float exposure = 1.0F;  // linear multiplier before tone mapping
+    Vec3 eye_offset_m{0.0F};  // the eye's offset in the level frame (z unused)
+    float exposure = 1.0F;    // linear multiplier before tone mapping
 };
 
 // The reference scene for a view, with the eyepoint level and facing north

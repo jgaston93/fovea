@@ -53,7 +53,7 @@ struct ScenePush {
     Mat4 clip_to_local{1.0F};
     float eye_height_m = 0.0F;
     float grid_spacing_m = 0.0F;
-    float unused[2] = {};  // NOLINT(modernize-avoid-c-arrays): matches the shader's float2
+    float eye_offset_m[2] = {};  // NOLINT(modernize-avoid-c-arrays): the shader's float2
 };
 static_assert(sizeof(ScenePush) == 80, "must match ScenePush in reference_scene.slang");
 
@@ -217,7 +217,6 @@ struct Swapchain {
     const Window* window = nullptr;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
-    VkExtent2D render_extent{};  // 0x0: the window's size
     vkb::Swapchain chain;
     std::vector<VkImage> images;
     std::vector<VkImageView> views;
@@ -367,17 +366,11 @@ void Renderer::Impl::create_device(bool present) {
     f12.descriptorBindingPartiallyBound = VK_TRUE;
     f12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 
-    // Slang compiles SV_VertexID with SPIR-V's DrawParameters capability.
-    VkPhysicalDeviceVulkan11Features f11{};
-    f11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
-    f11.shaderDrawParameters = VK_TRUE;
-
     vkb::PhysicalDeviceSelector selector(instance);
     selector.set_minimum_version(1, 3)
         .prefer_gpu_device_type(vkb::PreferredDeviceType::discrete)
         .set_required_features_13(f13)
-        .set_required_features_12(f12)
-        .set_required_features_11(f11);
+        .set_required_features_12(f12);
     if (present) {
         selector.set_surface(swapchains.front().surface)
             .add_required_extension(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
@@ -825,6 +818,8 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t i, const Scen
     push.clip_to_local = view.clip_to_local;
     push.eye_height_m = view.eye_height_m;
     push.grid_spacing_m = view.grid_spacing_m;
+    push.eye_offset_m[0] = view.eye_offset_m.x;
+    push.eye_offset_m[1] = view.eye_offset_m.y;
     vkCmdPushConstants(cmd, scene_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
     draw_fullscreen(cmd, t.view, t.extent);
     transition(cmd, t.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -1121,8 +1116,12 @@ std::unique_ptr<Renderer> Renderer::for_windows(Platform& platform,
         s.surface = reinterpret_cast<VkSurfaceKHR>(o.window->create_vulkan_surface(
             reinterpret_cast<std::uintptr_t>(impl->instance.instance)));
         const auto size = o.window->pixel_size();
-        render_extents.push_back({o.render_width != 0 ? o.render_width : size.width,
-                                  o.render_height != 0 ? o.render_height : size.height});
+        const VkExtent2D extent{o.render_width != 0 ? o.render_width : size.width,
+                                o.render_height != 0 ? o.render_height : size.height};
+        if (extent.width == 0 || extent.height == 0) {
+            fail("a window without a size needs an explicit render size");
+        }
+        render_extents.push_back(extent);
         impl->swapchains.push_back(std::move(s));
     }
     impl->create_device(true);

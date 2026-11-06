@@ -12,9 +12,10 @@ struct Fullscreen {
     float2 ndc;  // Vulkan NDC: x right, y down, in [-1, 1]
 };
 
-// One triangle covering the screen: (-1,-1), (3,-1), (-1,3).
+// One triangle covering the screen: (-1,-1), (3,-1), (-1,3). Vulkan's own
+// vertex index, which (unlike SV_VertexID) needs no DrawParameters feature.
 [shader("vertex")]
-Fullscreen vs_fullscreen(uint id: SV_VertexID) {
+Fullscreen vs_fullscreen(uint id: SV_VulkanVertexID) {
     const float2 p = float2(float((id << 1) & 2), float(id & 2));
     Fullscreen o;
     o.ndc = p * 2.0 - 1.0;
@@ -29,7 +30,7 @@ struct ScenePush {
     float4x4 clip_to_local;
     float eye_height_m;
     float grid_spacing_m;
-    float2 unused;
+    float2 eye_offset_m;  // the eye's offset north and east of the ground origin
 };
 [[vk::push_constant]] ConstantBuffer<ScenePush> scene;
 
@@ -39,11 +40,13 @@ static const float3 kGround = float3(0.16, 0.18, 0.12);
 static const float3 kGridLine = float3(0.85, 0.85, 0.80);
 static const float3 kHorizonLine = float3(1.00, 0.85, 0.50);
 
-// Coverage of a 1-pixel-wide line at every integer of g, antialiased with
-// the screen-space derivative, and faded out where lines get denser than a
-// few pixels apart (towards the horizon) instead of aliasing.
-float grid_lines(float2 g) {
-    const float2 w = max(fwidth(g), float2(1e-6));
+// Coverage of a line at every integer of g: full on the line, falling to
+// zero one pixel either side (so one pixel wide at half coverage),
+// antialiased with the screen-space width w of one unit of g, and faded out
+// where lines get denser than a few pixels apart (towards the horizon)
+// instead of aliasing.
+float grid_lines(float2 g, float2 w_raw) {
+    const float2 w = max(w_raw, float2(1e-6));
     const float2 distance_px = abs(frac(g + 0.5) - 0.5) / w;
     const float line = 1.0 - saturate(min(distance_px.x, distance_px.y));
     const float fade = saturate(1.0 - (max(w.x, w.y) - 0.15) * 4.0);
@@ -57,18 +60,26 @@ float4 fs_scene(Fullscreen i) : SV_Target {
     const float4 p = mul(scene.clip_to_local, float4(i.ndc, 1.0, 1.0));
     const float3 ray = normalize(p.xyz / p.w);
 
+    // Derivatives (fwidth) are taken outside any branch: inside one that
+    // neighbouring pixels take differently, as along the horizon, they are
+    // undefined. The ground point is computed for every pixel and used only
+    // below the horizon.
+    const float t = scene.eye_height_m / max(ray.z, 1e-6);
+    const float2 ground_m = scene.eye_offset_m + ray.xy * t;  // north, east
+    const float2 g = ground_m / scene.grid_spacing_m;
+    const float2 g_width = fwidth(g);
+    const float ray_z_width = fwidth(ray.z);
+
     float3 colour;
     if (ray.z > 0.0) {
         // Below the horizon: the ground plane, eye_height_m below the eye.
-        const float t = scene.eye_height_m / ray.z;
-        const float2 ground_m = ray.xy * t;  // north, east
-        colour = lerp(kGround, kGridLine, grid_lines(ground_m / scene.grid_spacing_m));
+        colour = lerp(kGround, kGridLine, grid_lines(g, g_width));
     } else {
         const float up = saturate(-ray.z);
         colour = lerp(kSkyHorizon, kSkyZenith, sqrt(up));
     }
-    // The horizon line: where the ray is level, about one pixel wide.
-    const float level = abs(ray.z) / max(fwidth(ray.z), 1e-6);
+    // The horizon line: where the ray is level, as wide as a grid line.
+    const float level = abs(ray.z) / max(ray_z_width, 1e-6);
     colour = lerp(colour, kHorizonLine, 1.0 - saturate(level));
     return float4(colour, 1.0);
 }
