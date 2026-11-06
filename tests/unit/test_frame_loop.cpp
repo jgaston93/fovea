@@ -23,9 +23,11 @@ namespace fovea {
 namespace {
 
 // Offscreen outputs: no display, so the loop paces itself.
-std::unique_ptr<Renderer> make_offscreen(std::uint32_t outputs) {
+std::unique_ptr<Renderer> make_offscreen(std::uint32_t outputs, bool validation = true) {
     RendererOptions options;
-    if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
+    if (!validation) {
+        options.validation = Validation::off;
+    } else if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
         options.validation = Validation::required;
     }
     try {
@@ -125,7 +127,10 @@ TEST(FrameLoop, ALateFrameCountsAsMissed) {
 TEST(FrameLoop, SteadyFramesAllocateNothing) {
     // The render path rule (architecture.md): after warm-up, a frame
     // allocates nothing on the render thread, stats logging included.
-    auto r = make_offscreen(2);
+    // Without the validation layer: it allocates on the calling thread (about
+    // 640 times a frame on Linux, where its operator new is ours), and it is
+    // a debugging aid, not part of the render path.
+    auto r = make_offscreen(2, false);
     FOVEA_NEED_VULKAN(r);
     auto scene = std::make_unique<SceneState>();
     Logger stats(256);  // not started: records queue up, then are dropped
