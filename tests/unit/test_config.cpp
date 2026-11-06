@@ -196,6 +196,45 @@ TEST(Config, ChannelNamesAreFileNames) {
     EXPECT_TRUE(parse(minimal_with("\"center\"", "\"Left-2_wide.v1\"")).ok());
 }
 
+TEST(Config, HostSectionIsOptional) {
+    const auto r = parse(kMinimal);
+    ASSERT_TRUE(r.ok());
+    EXPECT_FALSE(r.config->host.has_value());
+}
+
+TEST(Config, HostSectionReadsItsFields) {
+    const auto r = parse(kMinimal + R"(
+[host]
+protocol = "cigi"
+port = 8004
+host_address = "192.168.1.20"
+host_port = 8005
+geoid_height_m = -29.5
+)");
+    ASSERT_TRUE(r.ok()) << r.errors[0].to_string();
+    ASSERT_TRUE(r.config->host.has_value());
+    const HostConfig& h = *r.config->host;
+    EXPECT_EQ(h.protocol, HostProtocol::cigi);
+    EXPECT_EQ(h.port, 8004);
+    EXPECT_EQ(h.host_address, 0xC0A80114U);
+    EXPECT_EQ(h.host_port, 8005);
+    EXPECT_DOUBLE_EQ(h.geoid_height_m, -29.5);
+}
+
+TEST(Config, HostSectionIsChecked) {
+    const std::string head = kMinimal + "[host]\n";  // [host] is line 7
+    expect_one_error(parse(head + "port = 8004\n"), 7, "missing 'host.protocol'");
+    expect_one_error(parse(head + "protocol = \"dis\"\nport = 8004\n"), 8, "cigi");
+    expect_one_error(parse(head + "protocol = \"cigi\"\nport = 0\n"), 9, "host.port");
+    expect_one_error(
+        parse(head + "protocol = \"cigi\"\nport = 8004\nhost_address = \"1.2.3\"\nhost_port = 1\n"),
+        10, "IPv4 address");
+    expect_one_error(parse(head + "protocol = \"cigi\"\nport = 8004\nhost_port = 8005\n"), 10,
+                     "go together");
+    expect_one_error(parse(head + "protocol = \"cigi\"\nport = 8004\ngeoid_height_m = 400\n"), 10,
+                     "host.geoid_height_m");
+}
+
 TEST(Config, FrustumMustBeValid) {
     expect_one_error(parse(minimal_with("left = -30.0", "left = 31.0")), 6,
                      "left (31) must be less than right (30)");

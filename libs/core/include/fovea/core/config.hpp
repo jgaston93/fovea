@@ -49,12 +49,30 @@ struct ReferenceScene {
     double exposure_ev = 0.0;      // tone-mapping exposure, in stops
 };
 
+// [host]: where a host program's messages arrive. Without it, nothing
+// listens and the views stay where the config puts them.
+enum class HostProtocol : std::uint8_t { cigi };
+
+struct HostConfig {
+    HostProtocol protocol = HostProtocol::cigi;
+    std::uint16_t port = 0;  // UDP port host messages arrive on
+    // Where Start of Frame goes: both set, or neither (then the address the
+    // host's messages come from). A host that waits for Start of Frame before
+    // sending needs them.
+    std::optional<std::uint32_t> host_address;  // IPv4, host byte order
+    std::uint16_t host_port = 0;
+    // The geoid (mean sea level) above the WGS-84 ellipsoid, added to the
+    // host's sea-level altitudes; a constant until a geoid model arrives.
+    double geoid_height_m = 0.0;
+};
+
 struct DisplayConfig {
     PresenterKind presenter = PresenterKind::multi_swapchain;
     double target_hz = 60.0;
     double near_m = 0.1;
     std::vector<ChannelConfig> channels;
     ReferenceScene reference_scene;
+    std::optional<HostConfig> host;
 };
 
 // One problem in a config file. Line and column are 1-based; 0 when the

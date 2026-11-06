@@ -5,6 +5,7 @@ add_executable(fovea_unit_tests
     unit/test_alloc_counter.cpp
     unit/test_attitude.cpp
     unit/test_cigi.cpp
+    unit/test_cigi_adapter.cpp
     unit/test_config.cpp
     unit/test_containers.cpp
     unit/test_geodesy.cpp

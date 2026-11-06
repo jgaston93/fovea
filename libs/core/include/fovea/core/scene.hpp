@@ -7,6 +7,7 @@
 // Views attach their viewpoint to an entity, or fix it in the world.
 
 #include <cstdint>
+#include <utility>
 
 #include "fovea/core/attitude.hpp"
 #include "fovea/core/containers.hpp"
@@ -18,6 +19,7 @@ namespace fovea {
 // Time as the host states it, in seconds; its origin is the host's.
 struct HostTime {
     double seconds = 0.0;
+    bool valid = false;  // the host stamped this sample (CIGI: Timestamp Valid)
 };
 
 using EntityId = std::uint32_t;
@@ -43,6 +45,9 @@ inline constexpr std::size_t kMaxEntities = 1024;
 struct EntityState {
     EntityId id = 0;
     ModelId model = 0;
+    // An inactive entity is kept (its model stays loaded) but not drawn, and
+    // views can't ride it until it is active again.
+    bool active = true;
     // The last two samples, so the renderer can interpolate or extrapolate
     // to its own frame time without the writer knowing about frames.
     Pose cur;
@@ -69,6 +74,11 @@ inline const EntityState* find_entity(const SceneSnapshot& scene, EntityId id) {
         }
     }
     return nullptr;
+}
+
+// The writer's (adapter's) version, on the working snapshot.
+inline EntityState* find_entity(SceneSnapshot& scene, EntityId id) {
+    return const_cast<EntityState*>(find_entity(std::as_const(scene), id));
 }
 
 // One writer thread, one reader thread. Fixed size: publishing and reading

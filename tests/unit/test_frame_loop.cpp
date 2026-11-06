@@ -263,6 +263,36 @@ TEST(FrameLoop, StatsAreCsvOneLinePerFrame) {
     EXPECT_EQ(lines[5].rfind("4,", 0), 0U);
 }
 
+TEST(FrameLoop, ReportsEachFrameStart) {
+    // For the host link's Start of Frame: one record per frame, in order, at
+    // the frame's start; when the ring is full the newest are dropped, and
+    // the loop doesn't wait.
+    auto r = make_offscreen(1);
+    FOVEA_NEED_VULKAN(r);
+    auto scene = std::make_unique<SceneState>();
+    const auto v = views(1);
+    FrameStartRing frame_starts;
+    FrameLoopOptions options{1000.0};
+    options.frame_starts = &frame_starts;
+    FrameLoop loop(*r, *scene, v, options);
+    const LocalTime before = now();
+    for (int i = 0; i < 3; ++i) {
+        (void)loop.step();
+    }
+    for (std::uint64_t i = 0; i < 3; ++i) {
+        const auto f = frame_starts.try_pop();
+        ASSERT_TRUE(f.has_value());
+        EXPECT_EQ(f->frame, i);
+        EXPECT_GE(f->t, before);
+    }
+    EXPECT_FALSE(frame_starts.try_pop().has_value());
+    for (int i = 0; i < 70; ++i) {  // more than the ring holds (64)
+        (void)loop.step();
+    }
+    EXPECT_EQ(loop.summary().frames, 73U);
+    EXPECT_EQ(frame_starts.try_pop()->frame, 3U);
+}
+
 TEST(FrameLoop, RunsOnItsOwnThreadAndSeesNewScenes) {
     auto r = make_offscreen(1);
     FOVEA_NEED_VULKAN(r);

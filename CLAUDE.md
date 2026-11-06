@@ -25,6 +25,7 @@ ctest --preset debug -R 'Toolchain\.FloatingPointIsIeeeWithoutFastMath'   # one 
 ./build/debug/apps/fovea/fovea --clear --seconds 10 config/<file>.toml     # GPU-clear each channel's window
 ./build/debug/apps/fovea/fovea --identify --seconds 10 config/<file>.toml  # same, filled in software
 ./build/debug/apps/fovea/fovea tests/data/offscreen.toml                   # headless Vulkan, no display
+# a [host] section (see config/channels.example.toml) makes fovea listen for CIGI 3.3 over UDP
 ./build/debug/apps/fovea/fovea --headless --dump out config/<file>.toml    # any config headless, out/<channel>.png
 FOVEA_UPDATE_GOLDEN=1 ctest --preset debug -R Golden                       # rewrite tests/data/golden (on lavapipe)
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json FOVEA_REQUIRE_VULKAN=1 ctest --preset debug  # GPU tests on lavapipe
@@ -88,5 +89,5 @@ Modules are compiled in behind stable interfaces and enabled through config. Don
 - Use public data and generic models only. Don't commit proprietary or restricted code, data or assets. Sensor modes use generic, publicly documented behavior.
 - Never commit terrain databases or raw source data. Commit source manifests, download scripts and compiler settings instead.
 - Keep a data attribution file listing each source, its license and any required notice.
-- Win32-only APIs belong only in the thin platform layer.
+- Win32-only APIs belong only in the thin platform layer, with one exception: the UDP socket file in `libs/net` (`udp_socket.cpp`, D-014) uses Winsock.
 - `main` is the protected default branch. Do work on feature branches, not directly on `main`.

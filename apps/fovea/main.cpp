@@ -34,6 +34,8 @@
 #include "fovea/core/image_file.hpp"
 #include "fovea/core/log.hpp"
 #include "fovea/core/scene.hpp"
+#include "fovea/net/cigi_adapter.hpp"
+#include "fovea/net/host_thread.hpp"
 #include "fovea/platform/monitors.hpp"
 #include "fovea/platform/platform.hpp"
 #include "fovea/render/frame_loop.hpp"
@@ -196,11 +198,45 @@ int finish(const fovea::Renderer& r) {
     return r.validation_messages() == 0 ? 0 : 1;
 }
 
+// What the CIGI link did, at exit.
+void print_host_stats(const fovea::CigiAdapter& adapter) {
+    const fovea::CigiAdapterStats& s = adapter.stats();
+    std::printf(
+        "CIGI: %llu messages (%llu rejected, %llu in Reset/Standby), %llu entity "
+        "updates, %llu Start of Frame sent (%llu not)\n",
+        static_cast<unsigned long long>(s.messages),
+        static_cast<unsigned long long>(s.rejected_messages) +
+            static_cast<unsigned long long>(s.truncated_messages),
+        static_cast<unsigned long long>(s.ignored_in_standby),
+        static_cast<unsigned long long>(s.entity_updates),
+        static_cast<unsigned long long>(s.frames_reported),
+        static_cast<unsigned long long>(s.frames_unreported));
+    if (s.stale_messages > 0 || s.frames_coalesced > 0) {
+        std::printf(
+            "CIGI: %llu messages out of order (dropped), %llu Start of Frame skipped "
+            "after stalls\n",
+            static_cast<unsigned long long>(s.stale_messages),
+            static_cast<unsigned long long>(s.frames_coalesced));
+    }
+    if (s.attached_entities > 0 || s.entity_table_full > 0) {
+        std::printf(
+            "CIGI: %llu attached-entity updates not applied yet, %llu entities over the "
+            "table's %zu\n",
+            static_cast<unsigned long long>(s.attached_entities),
+            static_cast<unsigned long long>(s.entity_table_full), fovea::kMaxEntities);
+    }
+}
+
 // Headless: every channel rendered offscreen, with no windows or display
 // (the offscreen presenter, or --headless with any config). Draws the given
 // number of frames, prints the colour read back from the middle of each
 // channel, and with --dump writes each channel's last frame as <name>.png.
 int run_headless(const Options& options, const fovea::DisplayConfig& config) {
+    if (config.host) {
+        std::printf(
+            "note: [host] is not used headless (recorded host traffic replays in "
+            "milestone 2 step 6)\n");
+    }
     // Before rendering anything: a bad directory fails at once.
     if (!options.dump.empty()) {
         std::error_code ec;
@@ -341,6 +377,12 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
     // file closes, whichever way this function exits.
     std::unique_ptr<std::FILE, int (*)(std::FILE*)> stats_file(nullptr, &std::fclose);
     std::unique_ptr<fovea::Logger> stats;
+    // The host link (milestone 2): the network thread receives the host's
+    // messages into the scene state and sends a Start of Frame for each of
+    // the loop's frames. Declared before the loop, so the loop stops first.
+    std::unique_ptr<fovea::FrameStartRing> frame_starts;
+    std::unique_ptr<fovea::CigiAdapter> host_adapter;
+    std::unique_ptr<fovea::HostThread> host_thread;
     std::unique_ptr<fovea::FrameLoop> loop;
     if (renderer && !options.clear) {
         if (!options.stats.empty()) {
@@ -357,6 +399,33 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
             renderer->enable_overlay(0);  // the first channel: the debug channel
             loop_options.overlay = true;
         }
+        if (config.host) {
+            const fovea::HostConfig& h = *config.host;
+            fovea::CigiAdapterOptions host_options;
+            host_options.port = h.port;
+            if (h.host_address) {
+                host_options.host = fovea::UdpEndpoint{*h.host_address, h.host_port};
+            }
+            host_options.geoid_height_m = h.geoid_height_m;
+            frame_starts = std::make_unique<fovea::FrameStartRing>();
+            try {
+                host_adapter =
+                    std::make_unique<fovea::CigiAdapter>(host_options, frame_starts.get());
+            } catch (const std::runtime_error& e) {
+                (void)std::fprintf(stderr, "fovea: CIGI on UDP port %u: %s\n", unsigned{h.port},
+                                   e.what());
+                return 1;
+            }
+            std::printf(
+                "CIGI 3.3: listening on UDP port %u (receive buffer %zu KB); Start of "
+                "Frame to %s\n",
+                unsigned{host_adapter->port()}, host_adapter->receive_buffer_bytes() / 1024,
+                host_options.host ? fovea::format_endpoint(*host_options.host).c_str()
+                                  : "the host's address, once it sends");
+            loop_options.frame_starts = frame_starts.get();
+            host_thread = std::make_unique<fovea::HostThread>(*host_adapter, *scene_state);
+            host_thread->start();
+        }
         loop = std::make_unique<fovea::FrameLoop>(*renderer, *scene_state, views, loop_options,
                                                   stats.get());
         loop->start();
@@ -370,7 +439,7 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         if (loop) {
             // Rendering runs on its own thread; wake for events, or at least
             // every 100 ms to check the time limit and the loop's health.
-            if (loop->failed()) {
+            if (loop->failed() || (host_thread && host_thread->failed())) {
                 break;  // stop() below rethrows what went wrong
             }
             int timeout_ms = 100;
@@ -419,7 +488,37 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         }
     }
     if (loop) {
-        loop->stop();  // rethrows a render thread failure
+        // Both threads stop, and both report, before either failure is
+        // rethrown (the render thread's first).
+        std::exception_ptr render_error;
+        try {
+            loop->stop();
+        } catch (...) {
+            render_error = std::current_exception();
+        }
+        if (host_thread) {
+            std::exception_ptr host_error;
+            try {
+                host_thread->stop();
+            } catch (...) {
+                host_error = std::current_exception();
+            }
+            print_host_stats(*host_adapter);
+            if (host_error && !render_error) {
+                std::rethrow_exception(host_error);
+            }
+            if (host_error) {
+                try {
+                    std::rethrow_exception(host_error);
+                } catch (const std::exception& e) {
+                    (void)std::fprintf(stderr, "fovea: the network thread failed too: %s\n",
+                                       e.what());
+                }
+            }
+        }
+        if (render_error) {
+            std::rethrow_exception(render_error);
+        }
         if (stats) {
             stats->stop();
             if (stats->dropped() > 0) {
