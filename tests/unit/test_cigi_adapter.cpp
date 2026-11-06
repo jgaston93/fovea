@@ -421,6 +421,37 @@ TEST(CigiAdapter, AfterAStallOnlyTheNewestFrameIsReported) {
     EXPECT_FALSE(host_socket.wait_readable(50));  // just the one
 }
 
+TEST(CigiAdapter, SampleTimesFollowTheHostClock) {
+    // Two messages stamped 1 ms apart, the second arriving 50 ms late: its
+    // sample time is 1 ms after the first's, not 50 ms. Smoothing is
+    // allowed only when both CIGI flags say so.
+    auto scene = std::make_unique<SceneState>();
+    CigiAdapter adapter({});
+    Host host(adapter.port());
+    start_operating(adapter, *scene, host, 1000);
+    cigi::IgControl ig = operate(1, 1000);
+    ig.extrapolation_enable = true;
+    cigi::EntityControl e = entity(1, 0.0, 0.0, 0.0);
+    e.extrapolation_enable = true;
+    host.send(host_message(ig, {e}));
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 2; }));
+    const LocalTime first = find_entity(scene->latest(), 1)->cur.sample_t;
+    EXPECT_TRUE(find_entity(scene->latest(), 1)->smooth);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    ig = operate(2, 1100);
+    ig.extrapolation_enable = false;  // the host withdraws its leave
+    host.send(host_message(ig, {e}));
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 3; }));
+    const EntityState* now_e = find_entity(scene->latest(), 1);
+    const double gap_ms =
+        std::chrono::duration<double, std::milli>(now_e->cur.sample_t - first).count();
+    EXPECT_NEAR(gap_ms, 1.0, 0.01);  // plus the zero's creep: 100 ppm of 50 ms = 5 us
+    const double late_ms =
+        std::chrono::duration<double, std::milli>(now_e->cur.recv_t - now_e->cur.sample_t).count();
+    EXPECT_GE(late_ms, 45.0);
+    EXPECT_FALSE(now_e->smooth);
+}
+
 TEST(CigiAdapter, SteadyStateAllocatesNothing) {
     auto scene = std::make_unique<SceneState>();
     FrameStartRing frames;

@@ -20,6 +20,14 @@ constexpr double kSecondsPerTick = 10e-6;  // CIGI timestamps (ICD p. 44)
 // order; further back, the host's clock restarted.
 constexpr std::int64_t kReorderWindowTicks = 100000;  // one second
 
+// How fast the host clock's zero may creep later (drift between two
+// machines' clocks is tens of ppm).
+constexpr double kEpochCreep = 100e-6;
+
+LocalTime::duration ticks_to_duration(std::uint64_t ticks) {
+    return std::chrono::duration_cast<LocalTime::duration>(std::chrono::microseconds(ticks * 10));
+}
+
 // Removes an entity by moving the last one into its slot (order is not kept).
 void remove(SceneSnapshot& scene, EntityState* e) {
     EntityState* last = scene.entities.end() - 1;
@@ -133,8 +141,21 @@ bool CigiAdapter::apply(std::span<const std::uint8_t> message, SceneSnapshot& sc
     }
     if (ig->timestamp_valid) {
         last_host_ticks_ = ig->timestamp;
+        // The host clock's zero as this message places it: no earlier than
+        // the true one (the message took some time to arrive), so the
+        // earliest seen is the best estimate.
+        const LocalTime candidate = received - ticks_to_duration(host_ticks_);
+        if (!host_epoch_) {
+            host_epoch_ = candidate;
+        } else {
+            const auto creep = std::chrono::duration_cast<LocalTime::duration>(
+                (received - host_epoch_updated_) * kEpochCreep);
+            host_epoch_ = std::min(*host_epoch_ + creep, candidate);
+        }
+        host_epoch_updated_ = received;
     }
     host_time_valid_ = ig->timestamp_valid;
+    smoothing_allowed_ = ig->extrapolation_enable;
     ++stats_.messages;
     last_host_frame_ = ig->host_frame_number;
     if (ig->ig_mode == cigi::IgMode::reset_standby) {
@@ -199,6 +220,8 @@ void CigiAdapter::apply_entity(const cigi::EntityControl& e, SceneSnapshot& scen
     pose.host_t.seconds = static_cast<double>(host_ticks_) * kSecondsPerTick;
     pose.host_t.valid = host_time_valid_;
     pose.recv_t = received;
+    pose.sample_t =
+        host_time_valid_ && host_epoch_ ? *host_epoch_ + ticks_to_duration(host_ticks_) : received;
     if (entity == nullptr) {
         EntityState created;
         created.id = e.entity_id;
@@ -215,6 +238,7 @@ void CigiAdapter::apply_entity(const cigi::EntityControl& e, SceneSnapshot& scen
     }
     entity->model = e.entity_type;
     entity->active = e.entity_state == cigi::EntityState::active;
+    entity->smooth = smoothing_allowed_ && e.extrapolation_enable;
     ++stats_.entity_updates;
 }
 

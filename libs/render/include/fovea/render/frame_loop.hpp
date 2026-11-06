@@ -61,6 +61,12 @@ struct FrameRecord {
     double work_ms = 0.0;              // recording, submitting, presenting
     bool missed = false;               // more than missed_after_periods after the previous frame
     std::uint64_t scene_sequence = 0;  // which SceneState publish it drew
+    // With a rig, about the first view's entity (0 without one): how old
+    // its newest sample was at frame start, on the host's clock mapped
+    // across, and since it arrived; and the first view's heading.
+    double sample_age_ms = 0.0;
+    double recv_age_ms = 0.0;
+    double heading_deg = 0.0;
     // GPU time per output of an earlier frame (FrameTiming); NaN-free, 0 when
     // there are none yet.
     std::uint64_t gpu_frame = 0;
@@ -83,6 +89,11 @@ struct FrameSummary {
     // With a rig: views drawn with their eye at or below the grid (a host
     // below the origin's altitude), counted per view per frame.
     std::uint64_t views_below_ground = 0;
+    // With a rig and its first view's entity present: frames, and the mean
+    // sample and arrival ages (FrameRecord).
+    std::uint64_t entity_frames = 0;
+    double sample_age_mean_ms = 0.0;
+    double recv_age_mean_ms = 0.0;
 };
 
 class FrameLoop {

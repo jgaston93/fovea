@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 
 #include "fovea/core/attitude.hpp"
@@ -111,8 +112,36 @@ std::vector<SceneView> reference_scene_views(const DisplayConfig& config) {
     return views;
 }
 
+Pose pose_at(const EntityState& e, LocalTime at) {
+    const Pose& cur = e.cur;
+    const Pose& prev = e.prev;
+    const double span = std::chrono::duration<double>(cur.sample_t - prev.sample_t).count();
+    // Smoothing needs the host's leave and two samples close enough together
+    // to give a velocity (not a first sample, nor a gap of seconds).
+    if (!e.smooth || span <= 1e-4 || span > 0.5) {
+        return cur;
+    }
+    const double lead =
+        std::min(std::chrono::duration<double>(at - cur.sample_t).count(), kMaxExtrapolationS);
+    const double f = lead / span;  // negative: between the samples
+    Pose p = cur;
+    p.ecef = cur.ecef + (cur.ecef - prev.ecef) * f;
+    // The rotation from the previous sample to the newest, continued by f
+    // of itself (in ECEF axes, applied after the newest).
+    DQuat step = cur.orientation * glm::inverse(prev.orientation);
+    if (step.w < 0.0) {
+        step = -step;  // the short way round
+    }
+    const double angle = 2.0 * std::acos(std::clamp(step.w, -1.0, 1.0));
+    if (angle > 1e-12) {
+        const DVec3 axis = glm::normalize(DVec3(step.x, step.y, step.z));
+        p.orientation = glm::normalize(glm::angleAxis(angle * f, axis) * cur.orientation);
+    }
+    return p;
+}
+
 std::size_t ride_entities(const ViewRig& rig, const SceneSnapshot& snapshot,
-                          std::span<SceneView> out) {
+                          std::span<SceneView> out, LocalTime at) {
     const Ground g = ground(rig.scene, rig.geoid_height_m);
     const std::size_t n = std::min(rig.views.size(), out.size());
     std::size_t below = 0;
@@ -123,7 +152,8 @@ std::size_t ride_entities(const ViewRig& rig, const SceneSnapshot& snapshot,
             eye = {view.pose.world_ecef, view.pose.world_orientation};
         } else if (const EntityState* e = find_entity(snapshot, view.pose.entity);
                    e != nullptr && e->active) {
-            eye = eye_on(view, e->cur.ecef, e->cur.orientation);
+            const Pose p = pose_at(*e, at);
+            eye = eye_on(view, p.ecef, p.orientation);
         } else {
             continue;  // keeps its last view: a missing entity doesn't snap it away
         }

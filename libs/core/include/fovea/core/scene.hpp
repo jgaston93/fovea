@@ -31,6 +31,10 @@ struct Pose {
     DQuat orientation{1.0, 0.0, 0.0, 0.0};  // body to ECEF
     HostTime host_t;
     LocalTime recv_t;
+    // When the pose held, on this computer's clock: the host's timestamp
+    // mapped across (or recv_t without one). Frames are timed on the same
+    // clock, so a renderer can extrapolate samples to its frame time.
+    LocalTime sample_t;
 };
 
 // An articulated part (a rotor, a gear leg), relative to its parent.
@@ -48,6 +52,10 @@ struct EntityState {
     // An inactive entity is kept (its model stays loaded) but not drawn, and
     // views can't ride it until it is active again.
     bool active = true;
+    // The host allows the renderer to extrapolate or interpolate its samples
+    // (CIGI: Extrapolation/Interpolation Enable, in IG Control and in the
+    // entity's own Entity Control).
+    bool smooth = false;
     // The last two samples, so the renderer can interpolate or extrapolate
     // to its own frame time without the writer knowing about frames.
     Pose cur;

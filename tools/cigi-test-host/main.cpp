@@ -3,7 +3,10 @@
 // sends it at the script's rate (asynchronous), or once per Start of Frame
 // (--sync), and reports the Start of Frame round trip.
 //
-//   cigi-test-host [--seconds N] [--sync] <script.toml>
+//   cigi-test-host [--seconds N] [--sync] [--no-smoothing] <script.toml>
+//
+// --no-smoothing withholds the IG's leave to extrapolate between samples
+// (CIGI's Extrapolation/Interpolation Enable), for comparing.
 //
 // Fovea's [host] section must match the script: its port is the script's
 // [ig] port, and Start of Frame comes back to the script's [host] port
@@ -24,7 +27,9 @@
 namespace {
 
 int usage() {
-    (void)std::fprintf(stderr, "usage: cigi-test-host [--seconds N] [--sync] <script.toml>\n");
+    (void)std::fprintf(stderr,
+                       "usage: cigi-test-host [--seconds N] [--sync] [--no-smoothing] "
+                       "<script.toml>\n");
     return 2;
 }
 
@@ -44,11 +49,14 @@ void print_stats(const fovea::test_host::SessionStats& s, double seconds) {
 int main(int argc, char** argv) {
     double seconds = 60.0;
     bool sync = false;
+    bool smoothing = true;
     std::string path;
     for (int i = 1; i < argc; ++i) {
         const std::string_view a = argv[i];
         if (a == "--sync") {
             sync = true;
+        } else if (a == "--no-smoothing") {
+            smoothing = false;
         } else if (a == "--seconds" && i + 1 < argc) {
             const std::string_view v = argv[++i];
             const auto [end, ec] = std::from_chars(v.data(), v.data() + v.size(), seconds);
@@ -77,7 +85,7 @@ int main(int argc, char** argv) {
     const fovea::test_host::Script& script = *loaded.script;
     try {
         const fovea::UdpEndpoint ig{script.ig_address, script.ig_port};
-        fovea::test_host::Session session(ig, script.host_port);
+        fovea::test_host::Session session(ig, script.host_port, 0, smoothing);
         fovea::test_host::Flight flight(script.start, script.segments, script.loop);
         std::printf("cigi-test-host: CIGI 3.3 to %s from port %u, %s, %zu segments%s, for %.0f s\n",
                     fovea::format_endpoint(ig).c_str(), unsigned{session.local_port()},

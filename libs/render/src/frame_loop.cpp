@@ -1,6 +1,7 @@
 #include "fovea/render/frame_loop.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <stdexcept>
 #include <utility>
@@ -35,9 +36,9 @@ FrameLoop::FrameLoop(Renderer& renderer, SceneState& scene, std::span<const Scen
         views_ = rigged_;
     }
     if (stats_ != nullptr) {
-        stats_->write(
-            LogLevel::info,
-            "frame,t_s,interval_ms,wait_ms,work_ms,missed,scene_sequence,gpu_frame,gpu_ms...");
+        stats_->write(LogLevel::info,
+                      "frame,t_s,interval_ms,wait_ms,work_ms,missed,scene_sequence,sample_age_ms,"
+                      "recv_age_ms,heading_deg,gpu_frame,gpu_ms...");
     }
 }
 
@@ -70,7 +71,7 @@ const FrameRecord& FrameLoop::step() {
     // The latest published scene, taken once for the whole frame.
     const SceneSnapshot& scene = scene_.latest();
     if (options_.rig != nullptr) {
-        summary_.views_below_ground += ride_entities(*options_.rig, scene, rigged_);
+        summary_.views_below_ground += ride_entities(*options_.rig, scene, rigged_, started);
     }
 
     // The overlay shows the stats up to the previous frame.
@@ -109,6 +110,20 @@ const FrameRecord& FrameLoop::step() {
     const double period_ms = 1000.0 / options_.rate_hz;
     r.missed = r.interval_ms > options_.missed_after_periods * period_ms;
     r.scene_sequence = scene.sequence;
+    if (options_.rig != nullptr && !options_.rig->views.empty()) {
+        // The first view's heading: its centre ray, in the level frame.
+        const Vec4 ray = rigged_[0].clip_to_local * Vec4(0.0F, 0.0F, 1.0F, 1.0F);
+        r.heading_deg =
+            glm::degrees(std::atan2(static_cast<double>(ray.y), static_cast<double>(ray.x)));
+        if (const EntityState* e = find_entity(scene, options_.rig->views[0].pose.entity)) {
+            r.sample_age_ms = ms_between(e->cur.sample_t, started);
+            r.recv_age_ms = ms_between(e->cur.recv_t, started);
+            ++summary_.entity_frames;
+            const auto k = static_cast<double>(summary_.entity_frames);
+            summary_.sample_age_mean_ms += (r.sample_age_ms - summary_.sample_age_mean_ms) / k;
+            summary_.recv_age_mean_ms += (r.recv_age_ms - summary_.recv_age_mean_ms) / k;
+        }
+    }
     // In this loop's numbering (draws before the loop started don't count).
     const bool ours = t.gpu_outputs > 0 && t.gpu_frame >= first_renderer_frame_;
     r.gpu_frame = ours ? t.gpu_frame - first_renderer_frame_ : 0;
@@ -166,9 +181,10 @@ void FrameLoop::log(const FrameRecord& r) {
                                     static_cast<double>(r.gpu_ms[i]));
         used += n > 0 ? static_cast<std::size_t>(n) : 0;
     }
-    stats_->write(LogLevel::info, "%llu,%.6f,%.3f,%.3f,%.3f,%d,%llu,%llu%s",
+    stats_->write(LogLevel::info, "%llu,%.6f,%.3f,%.3f,%.3f,%d,%llu,%.3f,%.3f,%.4f,%llu%s",
                   static_cast<unsigned long long>(r.frame), r.t_s, r.interval_ms, r.wait_ms,
                   r.work_ms, r.missed ? 1 : 0, static_cast<unsigned long long>(r.scene_sequence),
+                  r.sample_age_ms, r.recv_age_ms, r.heading_deg,
                   static_cast<unsigned long long>(r.gpu_frame), gpu.data());
 }
 

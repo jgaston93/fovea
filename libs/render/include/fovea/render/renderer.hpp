@@ -102,9 +102,19 @@ struct ViewRig {
 
 // Updates out[i] for each of the rig's views (as many as both hold), and
 // returns how many eyes were at or below the grid (drawn from just above
-// it). No allocation: for the render thread.
+// it). An entity whose host allows it (EntityState::smooth) is drawn where
+// its last two samples put it at `at` (the frame's time): extrapolated at
+// their velocity, at most kMaxExtrapolation past the newest; otherwise at
+// its newest sample. No allocation: for the render thread.
 std::size_t ride_entities(const ViewRig& rig, const SceneSnapshot& snapshot,
-                          std::span<SceneView> out);
+                          std::span<SceneView> out, LocalTime at = {});
+
+// How far past its newest sample an entity is extrapolated, at most: past
+// this (a host that stopped sending), it holds there.
+inline constexpr double kMaxExtrapolationS = 0.1;
+
+// An entity's pose at `at` (see ride_entities).
+Pose pose_at(const EntityState& entity, LocalTime at);
 
 // Up to this many outputs get GPU timings.
 inline constexpr std::size_t kMaxTimedOutputs = 8;

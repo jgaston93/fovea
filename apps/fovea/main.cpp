@@ -190,6 +190,12 @@ void print_summary(const fovea::FrameSummary& s) {
         std::printf("  GPU, output %u: mean %.3f ms, max %.3f ms\n", i, s.gpu_mean_ms[i],
                     s.gpu_max_ms[i]);
     }
+    if (s.entity_frames > 0) {
+        std::printf(
+            "  host samples at frame start: %.2f ms old on the host's clock, %.2f ms "
+            "since they arrived (means)\n",
+            s.sample_age_mean_ms, s.recv_age_mean_ms);
+    }
     if (s.views_below_ground > 0) {
         std::printf(
             "  %llu view frames had the eye at or below the grid (drawn from just "
