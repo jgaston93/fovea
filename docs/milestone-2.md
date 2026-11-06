@@ -63,10 +63,14 @@ The packet layouts come from the CIGI 3.3 ICD and its errata, fetched by `tools/
 
 ## Step 6: Record and replay
 
+- **Status:** deferred so milestone 3 could start (2026-11-06): #29.
+
 - `fovea --record <file>` writes received CIGI messages with their receive times. A replay adapter writes them back into `SceneState` at their original timing, so a recorded flight can run headless.
 - **Done when:** a recorded flight replays headless into golden images, frame for frame, in CI.
 
 ## Step 7: Hardware check
+
+- **Status:** mostly measured in steps 4 and 5; the write-up is deferred (2026-11-06): #30.
 
 - Fly the scripted routes on the three monitors with the overlay and stats on, and record frame timing and latency in the pull request.
 - **Done when:** the routes fly at a locked 60 Hz with the latency breakdown recorded, and anything unexpected is either fixed or written up as an issue.

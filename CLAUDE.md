@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Fovea is an open-source, cross-platform Vulkan image generator (IG) for real-time geographic scenes, driven by a host program. Flight simulation over CIGI is its first application, not its definition (D-011): keep vehicle-, domain- and protocol-specific behaviour in adapters and modules, out of core and the renderer. `docs/fovea-plan.md` is the authoritative design handoff, `docs/architecture.md` turns it into concrete structure, and `docs/decisions.md` records design choices (D-xxx). The build, test and CI stack is in place. There's no IG code yet.
+Fovea is an open-source, cross-platform Vulkan image generator (IG) for real-time geographic scenes, driven by a host program. Flight simulation over CIGI is its first application, not its definition (D-011): keep vehicle-, domain- and protocol-specific behaviour in adapters and modules, out of core and the renderer. `docs/fovea-plan.md` is the authoritative design handoff, `docs/architecture.md` turns it into concrete structure, and `docs/decisions.md` records design choices (D-xxx). The build, test and CI stack is in place. The skeleton (milestone 1), the CIGI eyepoint (milestone 2) and their tests are in place; open items are GitHub issues by milestone.
 
 ## Commands
 
@@ -92,4 +92,4 @@ Modules are compiled in behind stable interfaces and enabled through config. Don
 - Never commit terrain databases or raw source data. Commit source manifests, download scripts and compiler settings instead.
 - Keep a data attribution file listing each source, its license and any required notice.
 - Win32-only APIs belong only in the thin platform layer, with one exception: the UDP socket file in `libs/net` (`udp_socket.cpp`, D-014) uses Winsock.
-- `main` is the default branch: do work on feature branches, merged by pull request, never directly on `main`. (GitHub branch protection is not switched on; the repository is public since 2026-11-06, so it can be.) Pushes that change only Markdown, `docs/` or a license file skip CI; a newer push to a pull request cancels its older CI run.
+- `main` is the default branch: do work on feature branches, merged by pull request, never directly on `main`. GitHub branch protection (since 2026-11-06, when the repository went public) requires a pull request, blocks force pushes and deletion, and keeps history linear; no approval or status checks are required. Pushes that change only Markdown, `docs/` or a license file skip CI; a newer push to a pull request cancels its older CI run.
