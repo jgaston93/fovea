@@ -16,13 +16,16 @@ cmake --preset debug && cmake --build --preset debug && ctest --preset debug
 # tsan on WSL/Ubuntu 24.04 needs ASLR off: setarch "$(uname -m)" -R ctest --preset tsan
 ctest --preset debug -R 'Toolchain\.FloatingPointIsIeeeWithoutFastMath'   # one test
 ./build/debug/apps/fovea/fovea --list-monitors                            # monitors, in config index order
-./build/debug/apps/fovea/fovea --identify --seconds 10 config/<file>.toml  # colour each channel's window
+./build/debug/apps/fovea/fovea --seconds 10 config/<file>.toml             # GPU-clear each channel's window
+./build/debug/apps/fovea/fovea --identify --seconds 10 config/<file>.toml  # same, filled in software
+./build/debug/apps/fovea/fovea tests/data/offscreen.toml                   # headless Vulkan, no display
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json FOVEA_REQUIRE_VULKAN=1 ctest --preset debug  # GPU tests on lavapipe
 CC=clang CXX=clang++ cmake --preset debug -B build/clang-debug --fresh     # Clang build
 ```
 
 GCC (≥ 11), Clang (≥ 14) and MSVC (VS 2022) must all build without warnings, and warnings are errors. On Windows, configure from a VS developer prompt with `CC=cl CXX=cl` and the same presets (ASan presets are GCC/Clang only). Every compiled target must call `fovea_target_defaults()` (`cmake/FoveaCompilerFlags.cmake`). Header-only INTERFACE targets can't take its PRIVATE flags; their headers are compiled, and checked, in the targets that include them. Fast-math is forbidden. Dependencies go in `cmake/FoveaDependencies.cmake`, pinned by version and SHA-256, and are added only when code needs them. The test presets fail when no tests match (`noTestsAction: error`). Linux builds need `libx11-dev libxext-dev libxrandr-dev` for SDL. Tests that open windows use SDL's dummy display (`SDL_VIDEO_DRIVER=dummy`, or `PlatformOptions{"dummy"}`), and must have a time limit. Real monitors are checked on the Windows machine with `tools/check-identify.ps1`, which screenshots each monitor while `fovea --identify` runs. It needs an unlocked desktop.
 
-Each library keeps its public headers in `libs/<lib>/include/fovea/<lib>/` and its sources in `libs/<lib>/src/`. Tests go in `tests/unit/`, added to `tests/CMakeLists.txt`. Use `test::AllocationCounter` (`tests/support/alloc_counter.hpp`) to prove that render-path code allocates nothing. The `IncludeRules.*` tests (`cmake/CheckIncludeRules.cmake`) enforce the library boundaries from `docs/architecture.md`. Update the rules there when a library gains a new dependency.
+Each library keeps its public headers in `libs/<lib>/include/fovea/<lib>/` and its sources in `libs/<lib>/src/`. Tests go in `tests/unit/`, added to `tests/CMakeLists.txt`. Use `test::AllocationCounter` (`tests/support/alloc_counter.hpp`) to prove that render-path code allocates nothing. Keep it out of binaries that load Vulkan drivers: GPU tests go in `fovea_gpu_tests`. They skip without a Vulkan 1.3 driver unless `FOVEA_REQUIRE_VULKAN` is set (CI sets it, plus `FOVEA_REQUIRE_VALIDATION`). Vulkan types stay inside `libs/render/src/vk`, and `renderer.hpp` exposes none. The `IncludeRules.*` tests (`cmake/CheckIncludeRules.cmake`) enforce the library boundaries from `docs/architecture.md`. Update the rules there when a library gains a new dependency.
 
 The lint tools are pinned to CI's versions in a git-ignored venv:
 

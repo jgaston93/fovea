@@ -31,7 +31,7 @@ Apache-2.0 is permissive like MIT and also includes an explicit patent grant, wh
 **Status:** Accepted. Compiler and CI details are in D-008.
 
 - C++20, CMake ≥ 3.24, Vulkan 1.3. The Vulkan SDK must be installed on the build machine once rendering work starts. It provides headers, validation layers and `slangc`.
-- Third-party libraries are fetched with CMake `FetchContent`, pinned by version and SHA-256, in `cmake/FoveaDependencies.cmake`. A library is added there when the first code that uses it lands. Today that's only GoogleTest. volk, VMA, vk-bootstrap, SDL3 and toml++ follow with milestone 1. There's no package manager. GDAL is the exception: it's large, so the compiler finds a system or package-manager install of it. The runtime doesn't use GDAL.
+- Third-party libraries are fetched with CMake `FetchContent`, pinned by version and SHA-256, in `cmake/FoveaDependencies.cmake`. A library is added there when the first code that uses it lands. Today that's only GoogleTest. SDL3, toml++, glm, and for Vulkan the headers, volk, vk-bootstrap and VMA, followed with milestone 1. The Vulkan pieces are pinned to the SDK 1.4.363 release (VMA 3.4.0), so building needs no Vulkan SDK. The SDK only supplies the validation layers and `slangc`. There's no package manager. GDAL is the exception: it's large, so the compiler finds a system or package-manager install of it. The runtime doesn't use GDAL.
 
 ## D-006 Debug overlay: Dear ImGui
 

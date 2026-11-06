@@ -151,8 +151,8 @@ struct Renderer::Impl {
     void create_instance(const std::vector<std::string>& extensions, Validation validation);
     void create_device(bool present);
     void create_frames();
-    void build_swapchain(Swapchain& s);
-    void destroy_swapchain(Swapchain& s);
+    void build_swapchain(Swapchain& s) const;
+    void destroy_swapchain(Swapchain& s) const;
     void create_offscreen(OffscreenOutput o);
     Frame& begin_frame();
     void draw(std::span<const Rgb8> colours);
@@ -296,7 +296,7 @@ void Renderer::Impl::create_frames() {
     }
 }
 
-void Renderer::Impl::build_swapchain(Swapchain& s) {
+void Renderer::Impl::build_swapchain(Swapchain& s) const {
     const auto size = s.window->pixel_size();
     vkb::SwapchainBuilder builder(device, s.surface);
     builder.set_desired_format({kSwapchainFormat, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR})
@@ -328,7 +328,7 @@ void Renderer::Impl::build_swapchain(Swapchain& s) {
     s.needs_rebuild = false;
 }
 
-void Renderer::Impl::destroy_swapchain(Swapchain& s) {
+void Renderer::Impl::destroy_swapchain(Swapchain& s) const {
     for (VkSemaphore r : s.rendered) {
         vkDestroySemaphore(device.device, r, nullptr);
     }
@@ -425,7 +425,7 @@ void Renderer::Impl::draw(std::span<const Rgb8> colours) {
             continue;
         }
         Swapchain& s = swapchains[i];
-        const VkImage image = s.images[image_index[i]];
+        VkImage image = s.images[image_index[i]];  // a handle, copied
         // The acquire semaphore is waited on at the transfer stage, so the
         // barrier's source scope starts there too.
         transition(f.cmd, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,

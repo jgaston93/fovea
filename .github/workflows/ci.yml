@@ -37,10 +37,14 @@ jobs:
       CXX: ${{ matrix.cxx }}
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
+      # GPU tests run on lavapipe with validation; a missing driver or
+      # layer fails them instead of skipping.
+      FOVEA_REQUIRE_VULKAN: "1"
+      FOVEA_REQUIRE_VALIDATION: "1"
     steps:
       - uses: actions/checkout@v5
-      - name: Install Ninja, ccache and SDL's X11 dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache libx11-dev libxext-dev libxrandr-dev
+      - name: Install Ninja, ccache, SDL's X11 dependencies and lavapipe
+        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache libx11-dev libxext-dev libxrandr-dev mesa-vulkan-drivers libvulkan1 vulkan-validationlayers
       # Compiled objects (ours and the FetchContent dependencies) are reused
       # between runs; ccache only reuses an object when the compiler, flags
       # and preprocessed source match, so results are unchanged.
@@ -75,12 +79,16 @@ jobs:
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
+      # GPU tests run on lavapipe with validation; a missing driver or
+      # layer fails them instead of skipping.
+      FOVEA_REQUIRE_VULKAN: "1"
+      FOVEA_REQUIRE_VALIDATION: "1"
     steps:
       - name: Install toolchain
         run: |
           dnf -y install gcc-c++ cmake git dnf-plugins-core tar zstd epel-release
           dnf config-manager --set-enabled crb
-          dnf -y install ninja-build ccache libX11-devel libXext-devel libXrandr-devel
+          dnf -y install ninja-build ccache libX11-devel libXext-devel libXrandr-devel mesa-vulkan-drivers vulkan-loader vulkan-validation-layers
       - uses: actions/checkout@v5
       - name: Restore the compiler cache
         uses: actions/cache@v4

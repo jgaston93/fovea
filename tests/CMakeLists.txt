@@ -11,7 +11,6 @@ add_executable(fovea_unit_tests
     unit/test_monitors.cpp
     unit/test_platform.cpp
     unit/test_projection.cpp
-    unit/test_renderer.cpp
     unit/test_scene.cpp
     unit/test_terrain.cpp
     unit/test_time.cpp
@@ -25,6 +24,17 @@ fovea_target_defaults(fovea_unit_tests)
 
 # A time limit on every test: some open (dummy) windows, which can hang.
 gtest_discover_tests(fovea_unit_tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT 60)
+
+# GPU tests, in their own binary without the allocation counter: Vulkan
+# loads its driver at run time (lavapipe brings LLVM), and replacing the
+# global operator new/delete in a binary that loads libraries pairs their
+# allocations with the wrong deallocator (ASan's alloc-dealloc-mismatch).
+add_executable(fovea_gpu_tests
+    unit/test_renderer.cpp)
+target_include_directories(fovea_gpu_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(fovea_gpu_tests PRIVATE fovea::render GTest::gtest_main)
+fovea_target_defaults(fovea_gpu_tests)
+gtest_discover_tests(fovea_gpu_tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT 120)
 
 # Library boundaries (architecture.md): the repository passes, and planted
 # violations (a GPU header, a GDAL header in a .inl, a fovea library outside
