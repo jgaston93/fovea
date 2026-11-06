@@ -15,7 +15,8 @@ cmake --preset debug && cmake --build --preset debug && ctest --preset debug
 # presets: debug, release, relwithdebinfo, asan (ASan+UBSan, -Og), asan-fast (-O1), tsan
 # tsan on WSL/Ubuntu 24.04 needs ASLR off, and runs without the validation layer
 # (not TSan-built, it reports races between its own threads):
-#   VK_LOADER_LAYERS_DISABLE=VK_LAYER_KHRONOS_validation setarch "$(uname -m)" -R ctest --preset tsan
+#   VK_LOADER_LAYERS_DISABLE=VK_LAYER_KHRONOS_validation TSAN_OPTIONS=suppressions=$PWD/tools/ci/tsan.supp \
+#     setarch "$(uname -m)" -R ctest --preset tsan   (lavapipe isn't TSan-built either)
 ctest --preset debug -R 'Toolchain\.FloatingPointIsIeeeWithoutFastMath'   # one test
 ./build/debug/apps/fovea/fovea --list-monitors                            # monitors, in config index order
 ./build/debug/apps/fovea/fovea --seconds 10 config/<file>.toml             # the reference scene on each channel
