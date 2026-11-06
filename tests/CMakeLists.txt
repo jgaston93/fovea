@@ -7,6 +7,7 @@ add_executable(fovea_unit_tests
     unit/test_config.cpp
     unit/test_containers.cpp
     unit/test_geodesy.cpp
+    unit/test_image_file.cpp
     unit/test_log.cpp
     unit/test_monitors.cpp
     unit/test_platform.cpp
@@ -32,9 +33,11 @@ gtest_discover_tests(fovea_unit_tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT
 add_executable(fovea_gpu_tests
     support/alloc_counter.cpp
     unit/test_frame_loop.cpp
+    unit/test_golden.cpp
     unit/test_renderer.cpp)
 target_include_directories(fovea_gpu_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(fovea_gpu_tests PRIVATE fovea::render GTest::gtest_main)
+target_compile_definitions(fovea_gpu_tests PRIVATE FOVEA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 fovea_target_defaults(fovea_gpu_tests)
 gtest_discover_tests(fovea_gpu_tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT 120)
 
@@ -79,8 +82,30 @@ add_test(NAME App.OffscreenRendersTheScene
 set_tests_properties(App.OffscreenRendersTheScene PROPERTIES
     ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver" TIMEOUT 60
     PASS_REGULAR_EXPRESSION "offscreen \"only\": 1024x768, middle rgb.*0 validation messages")
+# --headless with an on-screen config: no windows, one PNG per channel.
+add_test(NAME App.HeadlessDumpsEachChannel
+    COMMAND fovea --headless --frames 2 --dump headless-dump
+        ${PROJECT_SOURCE_DIR}/config/channels.example.toml)
+set_tests_properties(App.HeadlessDumpsEachChannel PROPERTIES
+    ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver" TIMEOUT 60
+    PASS_REGULAR_EXPRESSION "wrote headless-dump.left\\.png.*wrote headless-dump.center\\.png.*wrote headless-dump.right\\.png.*0 validation messages")
+add_test(NAME App.HeadlessRefusesIdentify
+    COMMAND fovea --headless --identify ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
+set_tests_properties(App.HeadlessRefusesIdentify PROPERTIES
+    TIMEOUT 20 PASS_REGULAR_EXPRESSION "--identify are for on-screen runs")
+# The dump directory is a file: refused before rendering (no Vulkan needed).
+add_test(NAME App.DumpIntoAFileFailsAtOnce
+    COMMAND fovea --headless --dump ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml
+        ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
+set_tests_properties(App.DumpIntoAFileFailsAtOnce PROPERTIES
+    TIMEOUT 20 PASS_REGULAR_EXPRESSION "cannot make the directory .*one_channel.toml")
+add_test(NAME App.DumpNeedsHeadless
+    COMMAND fovea --dump out ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
+set_tests_properties(App.DumpNeedsHeadless PROPERTIES
+    TIMEOUT 20 PASS_REGULAR_EXPRESSION "--frames and --dump need --headless")
 if(NOT DEFINED ENV{FOVEA_REQUIRE_VULKAN})
-    set_tests_properties(App.OffscreenRendersWithoutADisplay App.OffscreenRendersTheScene PROPERTIES
+    set_tests_properties(App.OffscreenRendersWithoutADisplay App.OffscreenRendersTheScene
+        App.HeadlessDumpsEachChannel PROPERTIES
         SKIP_REGULAR_EXPRESSION "no Vulkan loader found|no GPU with Vulkan 1.3")
 endif()
 add_test(NAME App.StatsNeedsTheScene
