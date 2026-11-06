@@ -4,6 +4,7 @@ add_executable(fovea_unit_tests
     support/alloc_counter.cpp
     unit/test_alloc_counter.cpp
     unit/test_attitude.cpp
+    unit/test_cigi.cpp
     unit/test_config.cpp
     unit/test_containers.cpp
     unit/test_geodesy.cpp
@@ -135,3 +136,12 @@ set_tests_properties(App.ReportsABadConfig PROPERTIES WILL_FAIL TRUE TIMEOUT 20)
 add_test(NAME App.ListsMonitors COMMAND fovea --list-monitors)
 set_tests_properties(App.ListsMonitors PROPERTIES
     ENVIRONMENT ${dummy_display} TIMEOUT 20 PASS_REGULAR_EXPRESSION "1 monitors \\(dummy\\)")
+
+# libFuzzer targets (the `fuzz` preset, Clang only); run nightly.
+option(FOVEA_FUZZ "Build the libFuzzer targets" OFF)
+if(FOVEA_FUZZ)
+    add_executable(fovea_fuzz_cigi fuzz/fuzz_cigi.cpp)
+    target_link_libraries(fovea_fuzz_cigi PRIVATE fovea::net)
+    target_link_options(fovea_fuzz_cigi PRIVATE -fsanitize=fuzzer)
+    fovea_target_defaults(fovea_fuzz_cigi)
+endif()

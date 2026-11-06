@@ -125,6 +125,35 @@ jobs:
       - name: Test (all, slow ones included)
         run: ctest --preset debug --parallel "$(nproc)"
 
+
+  fuzz:
+    name: Fuzz the CIGI codec (libFuzzer, 5 minutes)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Ninja and SDL's X11 dependencies (needed to configure)
+        timeout-minutes: 10
+        run: tools/ci/apt-install.sh ninja-build libx11-dev libxext-dev libxrandr-dev
+      - name: Configure
+        run: cmake --preset fuzz
+      - name: Build
+        run: cmake --build --preset fuzz --target fovea_fuzz_cigi
+      # Any crash, sanitizer report or failed round trip fails the job and
+      # leaves the input in fuzz-artifacts/.
+      - name: Fuzz
+        run: |
+          mkdir -p fuzz-corpus fuzz-artifacts
+          ./build/fuzz/tests/fovea_fuzz_cigi -max_total_time=300 -artifact_prefix=fuzz-artifacts/ fuzz-corpus tests/fuzz/corpus/cigi
+      - name: Keep the failing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz-artifacts/
   tidy:
     name: clang-tidy, every file
     runs-on: ubuntu-24.04
@@ -152,7 +181,7 @@ jobs:
   # instead.
   report:
     name: Report a failed nightly run
-    needs: [asan, tsan, clang, tidy]
+    needs: [asan, tsan, clang, tidy, fuzz]
     if: >-
       always() && github.event_name == 'schedule' &&
       (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
