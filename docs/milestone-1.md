@@ -71,7 +71,7 @@ GitHub's CI runners have no GPU. From step 5 onward, the Linux CI jobs install M
 - `fovea --headless --frames N --dump <dir>` writes each channel's image as PNG.
 - `docs/display-sync-test.md`: a procedure in which a flashing marker, drawn on all three channels in the same frame, is filmed with a high-speed camera. It compares three setups: FIFO on every output, FIFO on one output with the others on MAILBOX, and the driver's display spanning.
 - **Done when:** the procedure has been run on the real displays and its results are recorded as a decision in `decisions.md`.
-- **Status:** part 2 (the display sync test) is built and filmed when the owner is at the desk; milestone 2 started meanwhile (2026-11-06).
+- **Status:** part 2 (the display sync test) is built and filmed when the owner is at the desk: #21. Milestones 2 and 3 started meanwhile (2026-11-06).
 - **Result (part 1):** `--headless` renders any config offscreen, for `--frames N`, and `--dump` writes `<channel>.png` (stb_image_write). Golden images for `tests/data/golden.toml` (yaw, pitch, roll, an eye offset, an asymmetric frustum) are rendered on lavapipe. The RTX 5070 Ti differs from them by at most 1 level per channel (mean 0.08 to 0.22). The test allows 4 levels on 0.1% of pixels, and a 0.5° yaw or roll change, or a 10% grid change, fails it with 7–25% of pixels over.
 
 ## Inputs needed from you
