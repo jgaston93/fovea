@@ -32,7 +32,7 @@ if (Get-Process LogonUI -ErrorAction SilentlyContinue | Where-Object { $_.Sessio
 
 $out = New-TemporaryFile
 $err = New-TemporaryFile
-$arguments = @('--seconds', '10') + $(if ($Software) { @('--identify') } else { @() }) + @($Config)
+$arguments = @('--seconds', '10') + $(if ($Software) { @('--identify') } else { @('--clear') }) + @($Config)
 $p = Start-Process -FilePath $Exe -ArgumentList $arguments `
     -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
 $null = $p.Handle  # keeps ExitCode readable after exit (a PowerShell quirk)

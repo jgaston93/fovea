@@ -1,8 +1,8 @@
 #pragma once
 
-// The Vulkan renderer (milestone 1 step 5): device setup and the presenters,
-// behind a header with no Vulkan types. Drawing is a clear per output for
-// now; the reference scene arrives in step 6.
+// The Vulkan renderer: device setup and the presenters, behind a header
+// with no Vulkan types. It draws a clear per output (step 5) or the
+// reference scene (step 6).
 
 #include <cstdint>
 #include <memory>
@@ -11,7 +11,9 @@
 #include <vector>
 
 #include "fovea/core/config.hpp"
+#include "fovea/core/math.hpp"
 #include "fovea/platform/platform.hpp"
+#include "fovea/render/view.hpp"
 
 namespace fovea {
 
@@ -40,17 +42,38 @@ struct Rgb8 {
     std::uint8_t b = 0;
 };
 
-// An on-screen output: a window with its own swapchain.
+// An on-screen output: a window with its own swapchain. The scene renders
+// at render_width x render_height (0: the window's size when the Renderer is
+// made; it stays that size if the window is resized) and is scaled to the
+// window by the tone-map pass.
 struct WindowOutput {
     const Window* window = nullptr;
     PresentMode present_mode = PresentMode::fifo;
+    std::uint32_t render_width = 0;
+    std::uint32_t render_height = 0;
 };
 
 // An offscreen output: an image of this size, with no window or display.
+// The scene renders at the same size.
 struct OffscreenOutput {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
 };
+
+// What one output's view of the reference scene needs (step 6).
+struct SceneView {
+    // Clip space to the local level frame (x north, y east, z down): the
+    // eye's orientation times the inverse of the channel's projection.
+    Mat4 clip_to_local{1.0F};
+    float eye_height_m = 2.0F;  // the eye above the ground, offset included
+    float grid_spacing_m = 10.0F;
+    Vec3 eye_offset_m{0.0F};  // the eye's offset in the level frame (z unused)
+    float exposure = 1.0F;    // linear multiplier before tone mapping
+};
+
+// The reference scene for a view, with the eyepoint level and facing north
+// (no host moves it until milestone 2) and the view's own rotation.
+SceneView reference_scene_view(const ViewDesc& view, const ReferenceScene& scene);
 
 // One Renderer at a time (Vulkan entry points are process-wide in volk);
 // creating a second while one is alive throws std::runtime_error.
@@ -84,6 +107,12 @@ public:
     // call, so the caller should wait a little before the next. After an
     // exception, the Renderer must be destroyed, not drawn with again.
     std::uint32_t draw_clear_frame(std::span<const Rgb8> colours);
+
+    // One frame of the reference scene: each output renders its view in
+    // linear HDR at its render size, then the tone-map pass draws it into
+    // the output. Presents and paces like draw_clear_frame, and returns the
+    // same count.
+    std::uint32_t draw_scene_frame(std::span<const SceneView> views);
 
     // Offscreen outputs only: the last frame's pixels, RGBA8, row by row.
     // Waits for the GPU to finish it.

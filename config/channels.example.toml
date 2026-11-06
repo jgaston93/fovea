@@ -12,6 +12,12 @@ presenter = "multi_swapchain"   # or "spanned", "offscreen"
 target_hz = 60
 near_m = 0.1                    # reverse-Z, infinite far plane
 
+# The milestone 1 reference scene (all optional).
+[reference_scene]
+eye_height_m = 2.0              # the eye above the ground grid
+grid_spacing_m = 10.0
+exposure_ev = 0.0
+
 [[channel]]
 name = "left"
 monitor = 0                     # platform monitor index

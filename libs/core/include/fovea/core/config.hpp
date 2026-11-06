@@ -41,11 +41,20 @@ struct ChannelConfig {
     Frustum frustum;
 };
 
+// The milestone 1 reference scene: a flat ground grid below the eye and a
+// sky, for checking each channel's view (the [reference_scene] table).
+struct ReferenceScene {
+    double eye_height_m = 2.0;     // the eye above the ground plane
+    double grid_spacing_m = 10.0;  // between grid lines
+    double exposure_ev = 0.0;      // tone-mapping exposure, in stops
+};
+
 struct DisplayConfig {
     PresenterKind presenter = PresenterKind::multi_swapchain;
     double target_hz = 60.0;
     double near_m = 0.1;
     std::vector<ChannelConfig> channels;
+    ReferenceScene reference_scene;
 };
 
 // One problem in a config file. Line and column are 1-based; 0 when the

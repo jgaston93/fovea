@@ -18,7 +18,7 @@ People edit channel and runtime config by hand, and TOML allows comments and is 
 
 **Status:** Accepted
 
-All shaders are written in Slang and compiled ahead of time to SPIR-V with `slangc`, run as a CMake build step. Slang modules and generics fit the per-view post-processing chains and the future sensor modes. `slangc` ships with the Vulkan SDK, so there's no extra toolchain to install. The runtime compiles no shaders.
+All shaders are written in Slang and compiled ahead of time to SPIR-V with `slangc`, run as a CMake build step, and embedded in the binary as word arrays (`cmake/FoveaShaders.cmake`), so nothing is read from disk at run time. The build fetches Slang 2026.17.1's official prebuilt release, pinned by SHA-256 like the other dependencies and matching the SDK's Slang. `-DFOVEA_SLANGC=<path>` substitutes another `slangc`. Matrices use column-major layout, like glm. Slang modules and generics fit the per-view post-processing chains and the future sensor modes. `slangc` ships with the Vulkan SDK, so there's no extra toolchain to install. The runtime compiles no shaders.
 
 ## D-004 Repository license: Apache-2.0
 

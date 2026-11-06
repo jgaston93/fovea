@@ -122,6 +122,32 @@ TEST(Config, ViewpointEntityIsReadAndDefaultsToZero) {
                      "'channel[0].entity' must be between 0 and");
 }
 
+TEST(Config, ReferenceSceneIsReadWithDefaults) {
+    const auto d = parse(kMinimal);
+    ASSERT_TRUE(d.ok());
+    EXPECT_EQ(d.config->reference_scene.eye_height_m, 2.0);
+    EXPECT_EQ(d.config->reference_scene.grid_spacing_m, 10.0);
+    EXPECT_EQ(d.config->reference_scene.exposure_ev, 0.0);
+    const auto r =
+        parse("[reference_scene]\neye_height_m = 150\ngrid_spacing_m = 25\nexposure_ev = -1.5\n" +
+              kMinimal);
+    ASSERT_TRUE(r.ok()) << r.errors.at(0).to_string();
+    EXPECT_EQ(r.config->reference_scene.eye_height_m, 150.0);
+    EXPECT_EQ(r.config->reference_scene.grid_spacing_m, 25.0);
+    EXPECT_EQ(r.config->reference_scene.exposure_ev, -1.5);
+}
+
+TEST(Config, ReferenceSceneValuesAreChecked) {
+    expect_one_error(parse("[reference_scene]\neye_height_m = 0\n" + kMinimal), 2,
+                     "'reference_scene.eye_height_m' must be greater than 0");
+    expect_one_error(parse("[reference_scene]\ngrid_spacing_m = -5\n" + kMinimal), 2,
+                     "'reference_scene.grid_spacing_m' must be greater than 0");
+    expect_one_error(parse("[reference_scene]\nexposure_ev = 30\n" + kMinimal), 2,
+                     "'reference_scene.exposure_ev' must be at least -20 and at most 20");
+    expect_one_error(parse("[reference_scene]\neye_hieght_m = 2\n" + kMinimal), 2,
+                     "unknown key 'reference_scene.eye_hieght_m'");
+}
+
 TEST(Config, SyntaxErrorReportsItsLine) {
     expect_one_error(parse(minimal_with("monitor = 1", "monitor = ")), 4, "");
 }

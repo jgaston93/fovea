@@ -1,11 +1,13 @@
 // The runtime IG. Loads the display config, checks it against the connected
 // monitors and opens one window per channel, until Esc or a window close.
-// Each window is cleared on the GPU to its channel's colour (red, green,
-// blue, ... in config order); the reference scene arrives in step 6.
+// Each window shows its channel's view of the reference scene (a ground
+// grid, the horizon and the sky).
 //
-//   fovea [--seconds N] [--identify] <display-config.toml>
-//       run; N > 0: exit after N seconds; --identify: fill the windows in
-//       software instead of with Vulkan (no GPU needed)
+//   fovea [--seconds N] [--clear | --identify] <display-config.toml>
+//       run; N > 0: exit after N seconds; --clear: clear each window to its
+//       channel's colour (red, green, blue, ... in config order) on the GPU
+//       instead; --identify: fill them with those colours in software (no
+//       GPU needed)
 //   fovea --list-monitors     print the monitors and exit
 //
 // An offscreen config renders one frame headless and prints the colour read
@@ -43,6 +45,7 @@ fovea::Rgb8 colour_of(std::size_t channel) {
 struct Options {
     std::string config;
     double seconds = 0.0;  // 0: until Esc
+    bool clear = false;
     bool identify = false;
     bool list_monitors = false;
 };
@@ -113,8 +116,10 @@ std::optional<Options> parse_args(int argc, char** argv) {
                 return std::nullopt;
             }
             o.seconds = *s;
-        } else if (args[i] == "--identify") {
+        } else if (args[i] == "--identify" && !o.clear) {
             o.identify = true;
+        } else if (args[i] == "--clear" && !o.identify) {
+            o.clear = true;
         } else if (!args[i].starts_with("--") && o.config.empty()) {
             o.config = std::string(args[i]);
         } else {
@@ -129,7 +134,7 @@ std::optional<Options> parse_args(int argc, char** argv) {
 
 int usage() {
     (void)std::fprintf(stderr,
-                       "usage: fovea [--seconds N] [--identify] <display-config.toml>\n"
+                       "usage: fovea [--seconds N] [--clear | --identify] <display-config.toml>\n"
                        "       fovea --list-monitors\n");
     return 2;
 }
@@ -140,9 +145,18 @@ int finish(const fovea::Renderer& r) {
     return r.validation_messages() == 0 ? 0 : 1;
 }
 
+std::vector<fovea::SceneView> scene_views(const fovea::DisplayConfig& config) {
+    std::vector<fovea::SceneView> views;
+    for (std::size_t i = 0; i < config.channels.size(); ++i) {
+        views.push_back(fovea::reference_scene_view(
+            fovea::view_from_channel(config.channels[i], config, i), config.reference_scene));
+    }
+    return views;
+}
+
 // The offscreen presenter: one frame, no windows or display, and the colour
 // read back from the middle of each output.
-int run_offscreen(const fovea::DisplayConfig& config) {
+int run_offscreen(const Options& options, const fovea::DisplayConfig& config) {
     print_views(config);
     std::vector<fovea::OffscreenOutput> outputs;
     std::vector<fovea::Rgb8> clears;
@@ -152,7 +166,11 @@ int run_offscreen(const fovea::DisplayConfig& config) {
     }
     const auto renderer = fovea::Renderer::offscreen(outputs);
     print_gpu(*renderer);
-    renderer->draw_clear_frame(clears);
+    if (options.clear) {
+        renderer->draw_clear_frame(clears);
+    } else {
+        renderer->draw_scene_frame(scene_views(config));
+    }
     for (std::uint32_t i = 0; i < renderer->output_count(); ++i) {
         const auto px = renderer->read_back_rgba(i);
         const auto& o = outputs[i];
@@ -187,9 +205,14 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         const auto size = w.pixel_size();
         const int on = w.current_monitor();
         const fovea::Rgb8 c = colour_of(windows.size() - 1);
-        std::printf("  window \"%s\": on monitor %d, %ux%u px, %s rgb(%u,%u,%u)\n", ch.name.c_str(),
-                    on, size.width, size.height, options.identify ? "identify" : "clear", c.r, c.g,
-                    c.b);
+        if (options.identify || options.clear) {
+            std::printf("  window \"%s\": on monitor %d, %ux%u px, %s rgb(%u,%u,%u)\n",
+                        ch.name.c_str(), on, size.width, size.height,
+                        options.identify ? "identify" : "clear", c.r, c.g, c.b);
+        } else {
+            std::printf("  window \"%s\": on monitor %d, %ux%u px, scene\n", ch.name.c_str(), on,
+                        size.width, size.height);
+        }
         // The window manager has the last word on placement; a channel shown
         // on the wrong screen must not go unnoticed.
         if (on != ch.monitor) {
@@ -201,19 +224,26 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         }
     }
 
-    // Vulkan: one swapchain per window, each cleared to its channel's colour.
-    // With --identify, the windows are filled in software instead.
+    // Vulkan: one swapchain per window, showing the channel's view of the
+    // scene (or, with --clear, its colour). With --identify, the windows are
+    // filled in software instead.
     std::unique_ptr<fovea::Renderer> renderer;
     std::vector<fovea::Rgb8> clears;
+    const std::vector<fovea::SceneView> views = scene_views(config);
+    const auto draw = [&] {
+        return options.clear ? renderer->draw_clear_frame(clears)
+                             : renderer->draw_scene_frame(views);
+    };
     if (!options.identify) {
         std::vector<fovea::WindowOutput> outputs;
         for (std::size_t i = 0; i < windows.size(); ++i) {
-            outputs.push_back({&windows[i], config.channels[i].present_mode});
+            const fovea::ChannelConfig& ch = config.channels[i];
+            outputs.push_back({&windows[i], ch.present_mode, ch.render_width, ch.render_height});
             clears.push_back(colour_of(i));
         }
         renderer = fovea::Renderer::for_windows(platform, outputs);
         print_gpu(*renderer);
-        renderer->draw_clear_frame(clears);
+        (void)draw();
     }
     const auto paint = [&] {
         for (std::size_t i = 0; options.identify && i < windows.size(); ++i) {
@@ -245,7 +275,7 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
             if (platform.poll_events().quit) {
                 break;
             }
-            if (renderer->draw_clear_frame(clears) == 0) {
+            if (draw() == 0) {
                 // Nothing drawable (every window minimized, or swapchains
                 // being rebuilt): nothing paced the frame, so sleep for
                 // about one instead of spinning.
@@ -298,7 +328,7 @@ int run(const Options& options) {
         case fovea::PresenterKind::multi_swapchain:
             return run_windows(options, config);
         case fovea::PresenterKind::offscreen:
-            return run_offscreen(config);
+            return run_offscreen(options, config);
         case fovea::PresenterKind::spanned:
             (void)std::fprintf(stderr, "%s: the spanned presenter is not implemented yet\n",
                                options.config.c_str());

@@ -101,6 +101,31 @@ FetchContent_Declare(vma
 FetchContent_MakeAvailable(vma)
 fovea_mark_system_includes(VulkanMemoryAllocator)
 
+# --- Slang 2026.17.1 (shader compiler, D-003; a build tool, not linked) ---------
+# The official prebuilt release, pinned and hashed, so every machine compiles
+# shaders with the same slangc (it matches the Vulkan SDK 1.4.363's Slang).
+# -DFOVEA_SLANGC=<path> uses another slangc instead (e.g. offline).
+set(FOVEA_SLANGC "" CACHE FILEPATH "slangc to compile shaders with (empty: fetch Slang 2026.17.1)")
+if(NOT FOVEA_SLANGC)
+    if(WIN32)
+        FetchContent_Declare(slang
+            URL https://github.com/shader-slang/slang/releases/download/v2026.17.1/slang-2026.17.1-windows-x86_64.zip
+            URL_HASH SHA256=a41896cba523ecfecaf67d18bdb7767349112a45540ac0b88e8ce48e10ce239f
+            SOURCE_SUBDIR do-not-configure)
+        set(slangc_name slangc.exe)
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        FetchContent_Declare(slang
+            URL https://github.com/shader-slang/slang/releases/download/v2026.17.1/slang-2026.17.1-linux-x86_64-glibc-2.28.tar.gz
+            URL_HASH SHA256=163f9527bcb92e005e83a3441a77c92317c9ad478614a2af98333e660075def2
+            SOURCE_SUBDIR do-not-configure)
+        set(slangc_name slangc)
+    else()
+        message(FATAL_ERROR "No pinned Slang release for this platform; set -DFOVEA_SLANGC=<path to slangc>")
+    endif()
+    FetchContent_MakeAvailable(slang)
+    set(FOVEA_SLANGC "${slang_SOURCE_DIR}/bin/${slangc_name}" CACHE FILEPATH "" FORCE)
+endif()
+
 # --- GoogleTest 1.15.2 (tests only) -------------------------------------------
 if(FOVEA_BUILD_TESTS)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)

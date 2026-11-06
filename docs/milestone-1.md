@@ -48,12 +48,13 @@ GitHub's CI runners have no GPU. From step 5 onward, the Linux CI jobs install M
 - **Result (2026-11-06):** on the RTX 5070 Ti with validation required, the three windows ran 604 frames in 10 s (FIFO, about 60 Hz) with 0 validation messages, all presented in one `vkQueuePresentKHR`. Offscreen clears read back exactly, on the NVIDIA card and on lavapipe. All three monitors are wired to the NVIDIA card (their PnP parent is it; the AMD iGPU has no active output), so there's no cross-adapter copy. On-screen colours still need checking with `tools/check-identify.ps1` on an unlocked desktop.
 - **Note:** `Renderer` owns its presenters for now (`libs/render/src/vk`). The public `Presenter` interface is the shape to converge on in step 7, when the frame loop separates drawing from presenting.
 
-## Step 6: Reference scene
+## Step 6: Reference scene (done)
 
 - Shaders written in Slang and compiled by `slangc` as a build step (D-003). The SPIR-V files are build outputs and aren't committed.
 - Each view uses a camera-relative, reverse-Z projection built from its channel's config. A flat ground grid lies at a configurable eye height, with a horizon line and a sky gradient. The eyepoint is fixed, since there's no CIGI until milestone 2.
 - Linear HDR render target per view, followed by a tone-map pass into the output (foundational decision 3).
 - **Done when:** headless golden-image tests on lavapipe, one image per channel, compare within a tolerance. On real hardware, a manual check confirms the horizon and grid lines are continuous across the three screens.
+- **Result (2026-11-06):** geometric tests replace golden images. They check where the projection puts the horizon (with an asymmetric frustum, with pitch, with roll), the grid lines' distances, and that lines meet across a shared channel edge (a 1° misalignment fails it). They pass on lavapipe and on the RTX 5070 Ti with synchronization validation, and work on any GPU without per-driver reference images. Golden images arrive with step 8's `--dump`. On the three monitors: 604 frames in 10 s, 0 validation messages. Looking at the screens needs an unlocked desktop.
 
 ## Step 7: Frame loop and stats
 
