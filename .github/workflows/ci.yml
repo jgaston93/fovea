@@ -143,6 +143,9 @@ jobs:
         run: git ls-files '*.cpp' '*.hpp' | xargs --no-run-if-empty clang-format-18 --dry-run --Werror
       - name: Configure (for compile_commands.json)
         run: cmake --preset debug
+      # Shader headers are generated at build time; tidy needs them.
+      - name: Generate the shader headers
+        run: cmake --build --preset debug --target fovea_shaders
       # On a PR: the .cpp files it changes, and the .cpp beside each header
       # it changes (foo.hpp -> foo.cpp). A header change seen only through
       # other files waits for the nightly full run (full-verification.yml).

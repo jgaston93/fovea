@@ -21,3 +21,5 @@ set(scene_shader "${PROJECT_SOURCE_DIR}/shaders/reference_scene.slang")
 fovea_add_shader(fovea_render "${scene_shader}" vs_fullscreen vertex kVsFullscreen)
 fovea_add_shader(fovea_render "${scene_shader}" fs_scene fragment kFsScene)
 fovea_add_shader(fovea_render "${scene_shader}" fs_tonemap fragment kFsTonemap)
+# Just the generated shader headers: what clang-tidy needs from a build.
+add_custom_target(fovea_shaders DEPENDS ${FOVEA_SHADER_HEADERS})

@@ -129,6 +129,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ninja-build clang-tidy-18 libx11-dev libxext-dev libxrandr-dev
       - name: Configure (for compile_commands.json)
         run: cmake --preset debug
+      # Shader headers are generated at build time; tidy needs them.
+      - name: Generate the shader headers
+        run: cmake --build --preset debug --target fovea_shaders
       - name: clang-tidy
         run: |
           files=$(git ls-files 'apps/*.cpp' 'libs/*.cpp' 'tools/*.cpp')

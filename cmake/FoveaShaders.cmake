@@ -7,7 +7,9 @@
 # makes <name>.hpp (in the target's generated include directory) with
 #   inline constexpr std::array<std::uint32_t, N> <name> = {...};
 # Matrices use column-major layout, like glm, so a glm matrix in a push
-# constant means the same matrix in the shader.
+# constant means the same matrix in the shader. Each header is also added to
+# FOVEA_SHADER_HEADERS in the caller's scope, for a target that builds just
+# the shaders (clang-tidy needs the headers without a full build).
 
 set(FOVEA_SHADER_EMBED "${CMAKE_CURRENT_LIST_DIR}/EmbedSpirv.cmake")
 
@@ -27,5 +29,6 @@ function(fovea_add_shader target source entry stage name)
         COMMENT "slangc ${name} (${entry}, ${stage})"
         VERBATIM)
     target_sources(${target} PRIVATE "${hpp}")
+    set(FOVEA_SHADER_HEADERS ${FOVEA_SHADER_HEADERS} "${hpp}" PARENT_SCOPE)
     target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 endfunction()
