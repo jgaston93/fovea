@@ -203,11 +203,12 @@ ScriptResult parse_script(const std::string& text, const std::string& source) {
                         "'address' in [ig] must be an IPv4 address (got \"" + *a + "\")");
             }
         }
-        s.ig_port = r.port(*ig, "port", "[ig]", 1, std::nullopt).value_or(1);
+        s.ig_port = r.port(*ig, "port", "[ig]", 1, std::nullopt).value_or(std::uint16_t{1});
     }
     if (const auto* host = r.table(root, "host", false)) {
         r.check_keys(*host, {"port", "rate_hz"}, "[host]");
-        s.host_port = r.port(*host, "port", "[host]", 0, 0).value_or(0);
+        s.host_port =
+            r.port(*host, "port", "[host]", 0, std::uint16_t{0}).value_or(std::uint16_t{0});
         s.rate_hz = r.number(*host, "rate_hz", "[host]", 1.0, 1000.0, 60.0).value_or(60.0);
     }
     if (const auto* start = r.table(root, "start", true)) {
