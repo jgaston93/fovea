@@ -45,6 +45,11 @@ add_test(NAME App.OpensItsWindowsAndExits
 set_tests_properties(App.OpensItsWindowsAndExits PROPERTIES
     ENVIRONMENT ${dummy_display} TIMEOUT 20
     PASS_REGULAR_EXPRESSION "only +monitor 0 \\(window on 0, [0-9]+x[0-9]+ px\\)")
+add_test(NAME App.IdentifyFillsTheWindows
+    COMMAND fovea --seconds 0.2 --identify ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
+set_tests_properties(App.IdentifyFillsTheWindows PROPERTIES
+    ENVIRONMENT ${dummy_display} TIMEOUT 20
+    PASS_REGULAR_EXPRESSION "Identifying: red" FAIL_REGULAR_EXPRESSION "cannot fill")
 add_test(NAME App.RejectsAConfigNeedingMoreMonitors
     COMMAND fovea --seconds 0.2 ${PROJECT_SOURCE_DIR}/config/channels.example.toml)
 set_tests_properties(App.RejectsAConfigNeedingMoreMonitors PROPERTIES
