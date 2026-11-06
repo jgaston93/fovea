@@ -1,0 +1,47 @@
+# Sources for the first terrain database (milestone 3): about 20 x 20 km
+# centred on Huntsville International Airport (KHSV). Fetched by
+#   python3 tools/fetch-sources.py data/sources/khsv.toml
+# into data/cache/ (git-ignored); data/sources/khsv.lock.json (committed)
+# pins each file's URL, size and SHA-256. Credits: ATTRIBUTION.md.
+
+[area]
+name = "khsv"
+# 10 km either side of 34.637 N, 86.775 W.
+south = 34.547
+north = 34.727
+west = -86.885
+east = -86.665
+
+# USGS 3DEP 1 m lidar DEMs: every project covering the area (the compiler
+# takes the newest first). GeoTIFF, NAD83 / UTM 16N, NAVD88 metres.
+[[layer]]
+name = "elevation_1m"
+kind = "tnm"
+dataset = "Digital Elevation Model (DEM) 1 meter"
+pick = "all"
+
+# USGS 3DEP 1/3 arc-second (about 10 m): the backdrop beyond the 1 m data.
+# Newest edition of each 1 x 1 degree tile.
+[[layer]]
+name = "elevation_10m"
+kind = "tnm"
+dataset = "National Elevation Dataset (NED) 1/3 arc-second"
+pick = "newest"
+
+# USDA NAIP 2023, 0.6 m RGB + near-infrared, from the Microsoft Planetary
+# Computer (free; links signed with a short-lived token at download time).
+[[layer]]
+name = "imagery"
+kind = "stac"
+endpoint = "https://planetarycomputer.microsoft.com/api/stac/v1"
+collection = "naip"
+year = 2023
+asset = "image"
+sign = "https://planetarycomputer.microsoft.com/api/sas/v1/token/naip"
+
+# NOAA GEOID18 (NAVD88 to NAD83(2011) ellipsoid heights), from PROJ's data
+# server.
+[[layer]]
+name = "geoid"
+kind = "url"
+url = "https://cdn.proj.org/us_noaa_g2018u0.tif"

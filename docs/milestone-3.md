@@ -28,6 +28,7 @@ For a first area of about 20 x 20 km around KHSV (34.55-34.72 N, 86.90-86.65 W):
 
 - `data/sources/khsv.toml`: the area, and for each layer its source, product, year and priority. `tools/fetch-sources.py` lists the files through the TNM API and the Planetary Computer STAC, downloads them into the git-ignored `data/`, and checks sizes and hashes into a lock file that is committed. `ATTRIBUTION.md` lists each source and its credit.
 - **Done when:** a fresh clone fetches the KHSV sources with one command, and a second run downloads nothing.
+- **Result:** `python3 tools/fetch-sources.py data/sources/khsv.toml` (standard library only) fetched 49 files, about 15 GB, in 10 minutes: 27 1 m DEM tiles from four 3DEP projects (5.7 GB), the newest 1/3 arc-second tile (n35w087, 2026 edition), 20 NAIP 2023 quarter-quads (8.2 GB; four-band, so larger than the 4.4 GB estimate), and GEOID18 (`us_noaa_g2018u0.tif`, 16.7 MB). `data/sources/khsv.lock.json` (committed) pins each file's URL, size and SHA-256. A second run downloads nothing; `--verify` re-hashes everything (a byte changed in one file was found and re-downloaded); `--update` asks the services again, and a file whose hash changed upstream is an error until accepted. The services' occasional HTTP 500s are retried. `ATTRIBUTION.md` credits each source.
 
 ## Step 2: The database format and its reader
 

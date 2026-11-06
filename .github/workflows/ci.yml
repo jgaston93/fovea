@@ -144,6 +144,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+      - name: Python tools compile and parse their data
+        run: |
+          python3 -m py_compile tools/fetch-sources.py
+          python3 -c "import tomllib, json; tomllib.load(open('data/sources/khsv.toml', 'rb')); json.load(open('data/sources/khsv.lock.json'))"
         with:
           fetch-depth: 0  # the PR's base, for the changed files
       - name: Install tools
