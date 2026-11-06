@@ -24,3 +24,6 @@ docs/reference/
 
 # Terrain source downloads (tools/fetch-sources.py); the lock files are committed
 data/cache/
+
+# Synthetic databases the terrain tests write (they use the temp directory; this guards old runs)
+terrain_test_dbs/

@@ -157,22 +157,30 @@ TileResult decode_tile(std::span<const std::uint8_t> in, const std::optional<Til
     return {std::move(tile), TileError::none, {}};
 }
 
-bool write_tile(const std::filesystem::path& file, const TileFile& tile) {
+bool write_bytes_atomically(const std::filesystem::path& file,
+                            std::span<const std::uint8_t> bytes) {
     std::error_code ec;
     std::filesystem::create_directories(file.parent_path(), ec);
-    const auto bytes = encode_tile(tile);
     std::filesystem::path part = file;
     part += ".part";
-    {
-        std::ofstream out(part, std::ios::binary | std::ios::trunc);
-        out.write(reinterpret_cast<const char*>(bytes.data()),
-                  static_cast<std::streamsize>(bytes.size()));
-        if (!out) {
-            return false;
-        }
+    std::ofstream out(part, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+    out.close();  // flushes: a full disk shows here, not after the rename
+    if (!out) {
+        std::filesystem::remove(part, ec);
+        return false;
     }
     std::filesystem::rename(part, file, ec);
-    return !ec;
+    if (ec) {
+        std::filesystem::remove(part, ec);
+        return false;
+    }
+    return true;
+}
+
+bool write_tile(const std::filesystem::path& file, const TileFile& tile) {
+    return write_bytes_atomically(file, encode_tile(tile));
 }
 
 TileResult read_tile(const std::filesystem::path& file, const std::optional<TileKey>& expected) {

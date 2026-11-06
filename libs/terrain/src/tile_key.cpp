@@ -32,7 +32,19 @@ GeoBounds tile_bounds(const TileKey& key) {
     return b;
 }
 
+double wrap_longitude(double lon_deg) {
+    if (lon_deg == 180.0) {
+        return lon_deg;
+    }
+    const double w = std::fmod(lon_deg + 180.0, 360.0);
+    return (w < 0.0 ? w + 360.0 : w) - 180.0;
+}
+
 TileKey tile_at(double lat_deg, double lon_deg, std::uint8_t level) {
+    if (!std::isfinite(lat_deg) || !std::isfinite(lon_deg)) {
+        return {level, 0, 0};  // callers check; never a cast of NaN
+    }
+    lon_deg = wrap_longitude(lon_deg);
     const double size = tile_size_deg(level);
     const auto index = [size](double offset, std::uint32_t count) {
         const double i = std::floor(offset / size);

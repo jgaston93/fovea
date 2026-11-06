@@ -36,11 +36,27 @@ struct LevelTiles {
     }
 };
 
+// Where a layer's data came from (D-018), for the record and for credits.
+struct SourceInfo {
+    std::string layer;   // "elevation"
+    std::string name;    // "USGS 3DEP 1 m DEM"
+    std::string credit;  // as ATTRIBUTION.md asks
+};
+
+// manifest.toml:
+//   schema = 1, name = "..."
+//   [area] south, north, west, east
+//   [layers.elevation] format = "float32", samples = 257
+//   [[source]] layer, name, credit          (any number)
+//   [[level]] level, x = [first, last], y = [first, last]
+// Further layers (imagery, D-017; the geoid, D-020) add [layers.<name>]
+// tables; a reader skips layers it doesn't know.
 struct DatabaseManifest {
     std::uint32_t schema = kDatabaseSchema;
     std::string name;
     GeoBounds area;
     std::uint32_t elevation_samples = 257;
+    std::vector<SourceInfo> sources;
     std::vector<LevelTiles> levels;  // coarsest first
 
     bool has_tile(const TileKey& key) const;

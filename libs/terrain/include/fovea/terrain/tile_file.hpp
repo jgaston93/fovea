@@ -61,7 +61,10 @@ std::vector<std::uint8_t> encode_tile(const TileFile& tile);
 // `expected`: the tile the caller asked for; another key is an error.
 TileResult decode_tile(std::span<const std::uint8_t> in, const std::optional<TileKey>& expected);
 
-// Writes atomically (a temporary file, then renamed), making directories.
+// Writes a file atomically (a temporary file, flushed and closed, then
+// renamed over it), making directories; on any failure the old file stays
+// and nothing is left behind.
+bool write_bytes_atomically(const std::filesystem::path& file, std::span<const std::uint8_t> bytes);
 bool write_tile(const std::filesystem::path& file, const TileFile& tile);
 TileResult read_tile(const std::filesystem::path& file, const std::optional<TileKey>& expected);
 

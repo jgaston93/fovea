@@ -45,8 +45,13 @@ GeoBounds tile_bounds(const TileKey& key);
 
 // The tile at `level` containing a point. Points on an edge belong to the
 // tile to their north and east; the north pole and 180 E belong to the last
-// row and column.
+// row and column. Longitudes outside -180..180 wrap; a non-finite point
+// gives tile 0, 0 (check before asking).
 TileKey tile_at(double lat_deg, double lon_deg, std::uint8_t level);
+
+// A longitude in [-180, 180), except 180 itself, which stays 180 (the
+// eastern edge of the last column).
+double wrap_longitude(double lon_deg);
 
 std::optional<TileKey> parent(const TileKey& key);  // nothing at level 0
 

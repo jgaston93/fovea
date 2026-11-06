@@ -2,7 +2,9 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <memory>
+#include <random>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -163,10 +165,27 @@ struct TestDb {
     DatabaseManifest manifest;
 };
 
+// Under the system temp directory, one folder per test run (so builds
+// running at once don't share it), removed when the tests end.
+const std::filesystem::path& test_root() {
+    struct Root {
+        std::filesystem::path path;
+        Root()
+            : path(std::filesystem::temp_directory_path() /
+                   ("fovea-terrain-tests-" + std::to_string(std::random_device{}()))) {}
+        ~Root() {
+            std::error_code ec;
+            std::filesystem::remove_all(path, ec);
+        }
+    };
+    static const Root root;
+    return root.path;
+}
+
 TestDb make_db(const std::string& name, const GeoBounds& area,
                std::initializer_list<std::uint8_t> levels, std::uint32_t samples,
                const std::function<double(std::uint8_t, double, double)>& height) {
-    TestDb db{std::filesystem::path("terrain_test_dbs") / name, {}};
+    TestDb db{test_root() / name, {}};
     std::filesystem::remove_all(db.dir);
     db.manifest.name = name;
     db.manifest.area = area;
@@ -224,18 +243,17 @@ TEST(TerrainDatabase, ManifestRoundTripsAndIsChecked) {
     EXPECT_FALSE(back.manifest->has_tile({12, 1087, 2835}));
     EXPECT_EQ(back.manifest->finest_level(), 12);
 
-    EXPECT_FALSE(
-        parse_manifest(
-            "schema = 2\n[elevation]\nsamples = 17\n[[level]]\nlevel = 1\nx = [0, 0]\ny = [0, 0]\n",
-            "m")
-            .manifest.has_value());
+    EXPECT_FALSE(parse_manifest("schema = 2\n[layers.elevation]\nformat = \"float32\"\nsamples = "
+                                "17\n[[level]]\nlevel = 1\nx = [0, 0]\ny = [0, 0]\n",
+                                "m")
+                     .manifest.has_value());
     const ManifestResult bad = parse_manifest(
-        "schema = 1\n[area]\nsouth = 0\nnorth = 1\nwest = 0\neast = 1\n[elevation]\nsamples = 17\n"
-        "[[level]]\nlevel = 2\nx = [3, 1]\ny = [0, 0]\n",
+        "schema = 1\n[area]\nsouth = 0\nnorth = 1\nwest = 0\neast = 1\n[layers.elevation]\n"
+        "format = \"float32\"\nsamples = 17\n[[level]]\nlevel = 2\nx = [3, 1]\ny = [0, 0]\n",
         "m.toml");
     EXPECT_FALSE(bad.manifest.has_value());
     ASSERT_FALSE(bad.errors.empty());
-    EXPECT_NE(bad.errors[0].find("m.toml:9: level 2"), std::string::npos) << bad.errors[0];
+    EXPECT_NE(bad.errors[0].find("m.toml:10: level 2"), std::string::npos) << bad.errors[0];
 }
 
 TEST(DatabaseTerrain, HeightsComeBackExactlyFromTheFinestTile) {
@@ -330,6 +348,81 @@ TEST(DatabaseTerrain, RaysHitFlatTerrainWhereTheEllipsoidModelSays) {
     const DVec3 a = geodetic_to_ecef({34.63, -86.78, 152.0});
     const DVec3 b = geodetic_to_ecef({34.63, -86.77, 152.0});
     EXPECT_TRUE(terrain.line_of_sight(a, b));
+}
+
+TEST(TerrainDatabase, ManifestNamesSourcesAndSizesAreSafe) {
+    DatabaseManifest m;
+    m.name = R"(KHSV "test" C:\terrain)";
+    m.area = kArea;
+    m.sources = {{"elevation", "USGS 3DEP 1 m DEM", "U.S. Geological Survey"}};
+    m.levels = {{10, 270, 271, 708, 709}};
+    const ManifestResult back = parse_manifest(manifest_text(m), "m.toml");
+    ASSERT_TRUE(back.manifest.has_value()) << back.errors[0];
+    EXPECT_EQ(back.manifest->name, m.name);
+    ASSERT_EQ(back.manifest->sources.size(), 1U);
+    EXPECT_EQ(back.manifest->sources[0].credit, "U.S. Geological Survey");
+    // A size past 32 bits doesn't wrap into range (2^32 + 17).
+    std::string text = manifest_text(m);
+    const auto at = text.find("samples = 257");
+    ASSERT_NE(at, std::string::npos);
+    text.replace(at, 13, "samples = 4294967313");
+    EXPECT_FALSE(parse_manifest(text, "m.toml").manifest.has_value());
+}
+
+TEST(TileFile, AFailedWriteLeavesNothingBehind) {
+    // The tile's directory would have to be inside a regular file.
+    const auto blocker = test_root() / "blocker";
+    std::filesystem::create_directories(test_root());
+    { std::ofstream(blocker) << "a file"; }
+    const auto file = blocker / "tiles" / "1.fvt";
+    EXPECT_FALSE(write_tile(file, two_layer_tile()));
+    EXPECT_FALSE(std::filesystem::exists(file));
+    auto part = file;
+    part += ".part";
+    EXPECT_FALSE(std::filesystem::exists(part));
+}
+
+TEST(DatabaseTerrain, OddPointsAndEdges) {
+    const auto plane = [](double lat, double lon) {
+        return 100.0 + 1000.0 * (lat - 34.6) + 500.0 * (lon + 86.8);
+    };
+    const TestDb t = make_db("edges", kArea, {11}, 17,
+                             [&](std::uint8_t, double a, double o) { return plane(a, o); });
+    auto db = open_db(t);
+    const DatabaseTerrain terrain(*db);
+    EXPECT_FALSE(terrain.height_at(std::nan(""), -86.77).has_value());
+    EXPECT_FALSE(terrain.height_at(34.63, std::numeric_limits<double>::infinity()).has_value());
+    // A longitude a turn away is the same place.
+    ASSERT_TRUE(terrain.height_at(34.63, -86.77 + 360.0).has_value());
+    EXPECT_NEAR(*terrain.height_at(34.63, -86.77 + 360.0), plane(34.63, -86.77), 1e-3);
+    // The database's own north-east corner: held by its last tile.
+    const LevelTiles& l = t.manifest.levels[0];
+    const GeoBounds ne = tile_bounds({l.level, l.x1, l.y1});
+    ASSERT_TRUE(terrain.height_at(ne.north_deg, ne.east_deg).has_value());
+    EXPECT_NEAR(*terrain.height_at(ne.north_deg, ne.east_deg), plane(ne.north_deg, ne.east_deg),
+                1e-3);
+    // An unlimited ray that misses ends anyway: going up, or leaving the
+    // tiles low and level.
+    const Geodetic eye{34.637, -86.775, 400.0};
+    const DMat3 ned = ned_to_ecef(eye.lat_deg, eye.lon_deg);
+    const double inf = std::numeric_limits<double>::infinity();
+    EXPECT_FALSE(
+        terrain.intersect({geodetic_to_ecef(eye), ned * DVec3{0, 0, -1}}, inf).has_value());
+    EXPECT_FALSE(
+        terrain.intersect({geodetic_to_ecef(eye), ned * DVec3{0, 1, -0.01}}, 1e12).has_value());
+}
+
+TEST(DatabaseTerrain, ATileWhoseGridDisagreesWithTheManifestIsSkipped) {
+    TestDb t =
+        make_db("wrong_grid", kArea, {11}, 17, [](std::uint8_t, double, double) { return 80.0; });
+    t.manifest.elevation_samples = 33;  // the tiles hold 17
+    ASSERT_TRUE(write_manifest(t.dir, t.manifest));
+    auto db = open_db(t);
+    const DatabaseTerrain terrain(*db);
+    EXPECT_FALSE(terrain.height_at(34.63, -86.77).has_value());
+    ASSERT_EQ(terrain.problems().size(), 1U);
+    EXPECT_NE(terrain.problems()[0].find("17-sample grid"), std::string::npos)
+        << terrain.problems()[0];
 }
 
 TEST(DatabaseTerrain, ARidgeBlocksTheView) {
