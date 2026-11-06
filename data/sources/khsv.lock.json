@@ -1,0 +1,452 @@
+{
+ "area": {
+  "name": "khsv",
+  "south": 34.547,
+  "north": 34.727,
+  "west": -86.885,
+  "east": -86.665
+ },
+ "files": [
+  {
+   "name": "USGS_13_n35w087_20261020.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/TIFF/historical/n35w087/USGS_13_n35w087_20261020.tif",
+   "published": "2026-10-20",
+   "title": "USGS 1/3 Arc Second n35w087 20261020",
+   "layer": "elevation_10m",
+   "size": 466390343,
+   "sha256": "2a80d50133f40833d937e1c844c4d78c7a71e9a99a56f23a4e0485fb06978301"
+  },
+  {
+   "name": "USGS_1M_16_x51y383_AL_11County_B23.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_11County_B23/TIFF/USGS_1M_16_x51y383_AL_11County_B23.tif",
+   "published": "2026-06-09",
+   "title": "USGS 1 Meter 16 x51y383 AL_11County_B23",
+   "layer": "elevation_1m",
+   "size": 130753356,
+   "sha256": "a7bc58a2c9af5493c7043dd210a55145fa1a2c2e536f7790902628a2b170e45c"
+  },
+  {
+   "name": "USGS_1M_16_x51y383_AL_17County_2020_B20.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_17County_2020_B20/TIFF/USGS_1M_16_x51y383_AL_17County_2020_B20.tif",
+   "published": "2022-07-28",
+   "title": "USGS 1 Meter 16 x51y383 AL_17County_2020_B20",
+   "layer": "elevation_1m",
+   "size": 147573533,
+   "sha256": "1a86f6d21f7c237449cd8fda91d00d0fb9e988d423a9daaa7824078fe904a39e"
+  },
+  {
+   "name": "USGS_1M_16_x51y383_AL_19County_B24.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_19County_B24/TIFF/USGS_1M_16_x51y383_AL_19County_B24.tif",
+   "published": "2026-10-20",
+   "title": "USGS 1 Meter 16 x51y383 AL_19County_B24",
+   "layer": "elevation_1m",
+   "size": 19997013,
+   "sha256": "ccd76f168bb94f1d2753d13bee45fb333d173b6de0d1cd3e413ed3fa43cdcaac"
+  },
+  {
+   "name": "USGS_1M_16_x51y383_AL_NorthAL_2019_B19.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_NorthAL_2019_B19/TIFF/USGS_1M_16_x51y383_AL_NorthAL_2019_B19.tif",
+   "published": "2021-06-11",
+   "title": "USGS 1 Meter 16 x51y383 AL_NorthAL_2019_B19",
+   "layer": "elevation_1m",
+   "size": 151025805,
+   "sha256": "e8569bbb4ec42bfbb26919ef566dc005a23d3a79afa5a4bca96570d3aac7161a"
+  },
+  {
+   "name": "USGS_1M_16_x51y384_AL_11County_B23.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_11County_B23/TIFF/USGS_1M_16_x51y384_AL_11County_B23.tif",
+   "published": "2026-06-09",
+   "title": "USGS 1 Meter 16 x51y384 AL_11County_B23",
+   "layer": "elevation_1m",
+   "size": 291132528,
+   "sha256": "2177b14599c85f8fc03df463b24cedd3bda6a8d1bc807a8feb58e1c3b293a730"
+  },
+  {
+   "name": "USGS_1M_16_x51y384_AL_19County_B24.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_19County_B24/TIFF/USGS_1M_16_x51y384_AL_19County_B24.tif",
+   "published": "2026-10-20",
+   "title": "USGS 1 Meter 16 x51y384 AL_19County_B24",
+   "layer": "elevation_1m",
+   "size": 23132400,
+   "sha256": "507acad831fb7c164da7707546d8e930d43a6e9215a0883a57aaf1ed26f1b546"
+  },
+  {
+   "name": "USGS_1M_16_x51y384_AL_NorthAL_2019_B19.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_NorthAL_2019_B19/TIFF/USGS_1M_16_x51y384_AL_NorthAL_2019_B19.tif",
+   "published": "2021-06-11",
+   "title": "USGS 1 Meter 16 x51y384 AL_NorthAL_2019_B19",
+   "layer": "elevation_1m",
+   "size": 297594030,
+   "sha256": "ef0dd9ac32acaf0171d502d2138398313f5e8c0e7b1dfc4cd53e9bf271dc261f"
+  },
+  {
+   "name": "USGS_1M_16_x51y385_AL_11County_B23.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_11County_B23/TIFF/USGS_1M_16_x51y385_AL_11County_B23.tif",
+   "published": "2026-06-09",
+   "title": "USGS 1 Meter 16 x51y385 AL_11County_B23",
+   "layer": "elevation_1m",
+   "size": 313269215,
+   "sha256": "a6b049f917dc7daa76ea1835ff8592950e747b887d5d7a3e5427c667fdf771d5"
+  },
+  {
+   "name": "USGS_1M_16_x51y385_AL_19County_B24.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_19County_B24/TIFF/USGS_1M_16_x51y385_AL_19County_B24.tif",
+   "published": "2026-10-20",
+   "title": "USGS 1 Meter 16 x51y385 AL_19County_B24",
+   "layer": "elevation_1m",
+   "size": 21543959,
+   "sha256": "08f05ca67d6da989794887230834035652f68b758da2e1dcabd3a56e88a8b83b"
+  },
+  {
+   "name": "USGS_1M_16_x51y385_AL_NorthAL_2019_B19.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_NorthAL_2019_B19/TIFF/USGS_1M_16_x51y385_AL_NorthAL_2019_B19.tif",
+   "published": "2021-06-11",
+   "title": "USGS 1 Meter 16 x51y385 AL_NorthAL_2019_B19",
+   "layer": "elevation_1m",
+   "size": 242800652,
+   "sha256": "20e794ae769896fbf9fcaac274d2fd106ce3002128446c57412ff6f3d63bcbbe"
+  },
+  {
+   "name": "USGS_1M_16_x52y383_AL_17County_2020_B20.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_17County_2020_B20/TIFF/USGS_1M_16_x52y383_AL_17County_2020_B20.tif",
+   "published": "2022-07-28",
+   "title": "USGS 1 Meter 16 x52y383 AL_17County_2020_B20",
+   "layer": "elevation_1m",
+   "size": 194171899,
+   "sha256": "76c7902d4ee757871ce0a69ebcded2a0ebfb4c78cb15ceb2b3c66a53290f1d5f"
+  },
+  {
+   "name": "USGS_1M_16_x52y383_AL_19County_B24.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_19County_B24/TIFF/USGS_1M_16_x52y383_AL_19County_B24.tif",
+   "published": "2026-10-20",
+   "title": "USGS 1 Meter 16 x52y383 AL_19County_B24",
+   "layer": "elevation_1m",
+   "size": 137156996,
+   "sha256": "eaac9e370dd6eeb1680d232a4a4dca400c297d950094479949b680a2d8ba9e6f"
+  },
+  {
+   "name": "USGS_1M_16_x52y383_AL_NorthAL_2019_B19.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_NorthAL_2019_B19/TIFF/USGS_1M_16_x52y383_AL_NorthAL_2019_B19.tif",
+   "published": "2021-06-11",
+   "title": "USGS 1 Meter 16 x52y383 AL_NorthAL_2019_B19",
+   "layer": "elevation_1m",
+   "size": 158994434,
+   "sha256": "3865e403a1dea721cc5b6ca9e4e5774f6d1a17b528fcbfbce4d74b51f665d6e3"
+  },
+  {
+   "name": "USGS_1M_16_x52y384_AL_19County_B24.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_19County_B24/TIFF/USGS_1M_16_x52y384_AL_19County_B24.tif",
+   "published": "2026-10-20",
+   "title": "USGS 1 Meter 16 x52y384 AL_19County_B24",
+   "layer": "elevation_1m",
+   "size": 327074804,
+   "sha256": "15644081681fbae4cb825519e339229d7d2a992e0421e340a54b7378b72879f1"
+  },
+  {
+   "name": "USGS_1M_16_x52y384_AL_NorthAL_2019_B19.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_NorthAL_2019_B19/TIFF/USGS_1M_16_x52y384_AL_NorthAL_2019_B19.tif",
+   "published": "2021-06-11",
+   "title": "USGS 1 Meter 16 x52y384 AL_NorthAL_2019_B19",
+   "layer": "elevation_1m",
+   "size": 311719844,
+   "sha256": "6c42a1a8dbc7c4d78af7f01c8e5ef748754e61a3d24d423dbb2a6eca604979e1"
+  },
+  {
+   "name": "USGS_1M_16_x52y385_AL_19County_B24.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_19County_B24/TIFF/USGS_1M_16_x52y385_AL_19County_B24.tif",
+   "published": "2026-10-20",
+   "title": "USGS 1 Meter 16 x52y385 AL_19County_B24",
+   "layer": "elevation_1m",
+   "size": 335320647,
+   "sha256": "314ad6040b03db2535d275ebae4d8b17718de75a4ca751fb8185ead360556496"
+  },
+  {
+   "name": "USGS_1M_16_x52y385_AL_NorthAL_2019_B19.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_NorthAL_2019_B19/TIFF/USGS_1M_16_x52y385_AL_NorthAL_2019_B19.tif",
+   "published": "2021-06-11",
+   "title": "USGS 1 Meter 16 x52y385 AL_NorthAL_2019_B19",
+   "layer": "elevation_1m",
+   "size": 326987234,
+   "sha256": "d62d4de15a985e8e74ced354a0116589205ada871a387424a0d272fce4929dd8"
+  },
+  {
+   "name": "USGS_1M_16_x53y383_AL_17County_2020_B20.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_17County_2020_B20/TIFF/USGS_1M_16_x53y383_AL_17County_2020_B20.tif",
+   "published": "2022-07-28",
+   "title": "USGS 1 Meter 16 x53y383 AL_17County_2020_B20",
+   "layer": "elevation_1m",
+   "size": 202512416,
+   "sha256": "6378f8fae9ae86cbeb1c67491c2bfbd1b93baa3b376b51ef9b4b765fa4932c4d"
+  },
+  {
+   "name": "USGS_1M_16_x53y383_AL_19County_B24.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_19County_B24/TIFF/USGS_1M_16_x53y383_AL_19County_B24.tif",
+   "published": "2026-10-20",
+   "title": "USGS 1 Meter 16 x53y383 AL_19County_B24",
+   "layer": "elevation_1m",
+   "size": 156164129,
+   "sha256": "d8e49e69759488fd4169b47dcf2582471f9dff29062715fac15e9ae805a0fe26"
+  },
+  {
+   "name": "USGS_1M_16_x53y383_AL_NorthAL_2019_B19.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_NorthAL_2019_B19/TIFF/USGS_1M_16_x53y383_AL_NorthAL_2019_B19.tif",
+   "published": "2021-06-11",
+   "title": "USGS 1 Meter 16 x53y383 AL_NorthAL_2019_B19",
+   "layer": "elevation_1m",
+   "size": 182792102,
+   "sha256": "d5073335c23279e41a58c59d82915fc49902a14e10837cac46ad506cb75b0d1f"
+  },
+  {
+   "name": "USGS_1M_16_x53y384_AL_19County_B24.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_19County_B24/TIFF/USGS_1M_16_x53y384_AL_19County_B24.tif",
+   "published": "2026-10-20",
+   "title": "USGS 1 Meter 16 x53y384 AL_19County_B24",
+   "layer": "elevation_1m",
+   "size": 333638105,
+   "sha256": "1f7e6c797c7b8beaffb3cf4e80ca796798d2b9578a1e7d34c8df7064f9443ebc"
+  },
+  {
+   "name": "USGS_1M_16_x53y384_AL_NorthAL_2019_B19.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_NorthAL_2019_B19/TIFF/USGS_1M_16_x53y384_AL_NorthAL_2019_B19.tif",
+   "published": "2021-06-11",
+   "title": "USGS 1 Meter 16 x53y384 AL_NorthAL_2019_B19",
+   "layer": "elevation_1m",
+   "size": 319355370,
+   "sha256": "8d5eb6a9dca095e79eb4b20046c55b25e13a205e9ee14d239a078a0b602d9004"
+  },
+  {
+   "name": "USGS_1M_16_x53y385_AL_19County_B24.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_19County_B24/TIFF/USGS_1M_16_x53y385_AL_19County_B24.tif",
+   "published": "2026-10-20",
+   "title": "USGS 1 Meter 16 x53y385 AL_19County_B24",
+   "layer": "elevation_1m",
+   "size": 333284568,
+   "sha256": "e69bd05e5e53695fc000e1ca9c23dc6b94d84f87cd830b634261bc833e1b0cdd"
+  },
+  {
+   "name": "USGS_1M_16_x53y385_AL_NorthAL_2019_B19.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_NorthAL_2019_B19/TIFF/USGS_1M_16_x53y385_AL_NorthAL_2019_B19.tif",
+   "published": "2021-06-11",
+   "title": "USGS 1 Meter 16 x53y385 AL_NorthAL_2019_B19",
+   "layer": "elevation_1m",
+   "size": 325386963,
+   "sha256": "aa3ea131a7c2695d0d2f2f69190351d056fab5336507086534f8b96161c751f7"
+  },
+  {
+   "name": "USGS_1m_x51y383_AL_25Co_B1_2017.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_25Co_B1_2017/TIFF/USGS_1m_x51y383_AL_25Co_B1_2017.tif",
+   "published": "2020-03-12",
+   "title": "USGS one meter x51y383 AL 25Co B1 2017",
+   "layer": "elevation_1m",
+   "size": 163629690,
+   "sha256": "e041d50eebbc87605eb73a03b4feb30328172371f3a03dce060c0e62c0eb1aea"
+  },
+  {
+   "name": "USGS_1m_x51y384_AL_25Co_B1_2017.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_25Co_B1_2017/TIFF/USGS_1m_x51y384_AL_25Co_B1_2017.tif",
+   "published": "2020-03-12",
+   "title": "USGS one meter x51y384 AL 25Co B1 2017",
+   "layer": "elevation_1m",
+   "size": 323966397,
+   "sha256": "99608b5e59dbe7e8034394d878a5d218ffcf65423a92ee231b487c54e9509d1e"
+  },
+  {
+   "name": "USGS_1m_x51y385_AL_25Co_B1_2017.tif",
+   "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/AL_25Co_B1_2017/TIFF/USGS_1m_x51y385_AL_25Co_B1_2017.tif",
+   "published": "2020-03-12",
+   "title": "USGS one meter x51y385 AL 25Co B1 2017",
+   "layer": "elevation_1m",
+   "size": 335294239,
+   "sha256": "2961dc33e5b2bb6455f764d69eea47b067b70c1f553d9e6d6d848eefe0de0222"
+  },
+  {
+   "name": "us_noaa_g2018u0.tif",
+   "url": "https://cdn.proj.org/us_noaa_g2018u0.tif",
+   "published": "",
+   "title": "",
+   "layer": "geoid",
+   "size": 16742155,
+   "sha256": "fa9a407ac7ee3f5a3694008e4bcd09ce9cc250452f0c3b11700a4960340abce2"
+  },
+  {
+   "name": "m_3408617_ne_16_060_20230525_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408617_ne_16_060_20230525_20231127.tif",
+   "published": "2023-05-25T16:00:00Z",
+   "title": "al_m_3408617_ne_16_060_20230525_20231127",
+   "layer": "imagery",
+   "size": 400454281,
+   "sha256": "6c0519363201b1a062738c78e227822d74274340b54f55d5ef7ac562729c8c5b"
+  },
+  {
+   "name": "m_3408617_se_16_060_20230525_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408617_se_16_060_20230525_20231127.tif",
+   "published": "2023-05-25T16:00:00Z",
+   "title": "al_m_3408617_se_16_060_20230525_20231127",
+   "layer": "imagery",
+   "size": 406572644,
+   "sha256": "74a42be2a338af0f68f98b4a4f13bb18d2c7c45e01f6f2a5c8a947a00d68b839"
+  },
+  {
+   "name": "m_3408618_ne_16_060_20230801_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408618_ne_16_060_20230801_20231127.tif",
+   "published": "2023-08-01T16:00:00Z",
+   "title": "al_m_3408618_ne_16_060_20230801_20231127",
+   "layer": "imagery",
+   "size": 452025143,
+   "sha256": "70f8f456a2cd0f2a75a05842e9aceeb21b409141e286aa451f9f6c8dbea9531d"
+  },
+  {
+   "name": "m_3408618_nw_16_060_20230525_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408618_nw_16_060_20230525_20231127.tif",
+   "published": "2023-05-25T16:00:00Z",
+   "title": "al_m_3408618_nw_16_060_20230525_20231127",
+   "layer": "imagery",
+   "size": 410363238,
+   "sha256": "cb2976f3ec3f146b8e6e3347c277a01aa4256b3a968aa93a108bc6708fc101de"
+  },
+  {
+   "name": "m_3408618_se_16_060_20230801_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408618_se_16_060_20230801_20231127.tif",
+   "published": "2023-08-01T16:00:00Z",
+   "title": "al_m_3408618_se_16_060_20230801_20231127",
+   "layer": "imagery",
+   "size": 407054672,
+   "sha256": "6428b574a7d19d198e35dd0e8cc111e1f534b34e20744b826f8a57a4daaeb74c"
+  },
+  {
+   "name": "m_3408618_sw_16_060_20230525_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408618_sw_16_060_20230525_20231127.tif",
+   "published": "2023-05-25T16:00:00Z",
+   "title": "al_m_3408618_sw_16_060_20230525_20231127",
+   "layer": "imagery",
+   "size": 409836253,
+   "sha256": "4ab04c41364a659cd414bcca6f28bacb0432fd1fa03735f421060c3efd2e64fe"
+  },
+  {
+   "name": "m_3408619_ne_16_060_20230607_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408619_ne_16_060_20230607_20231127.tif",
+   "published": "2023-06-07T16:00:00Z",
+   "title": "al_m_3408619_ne_16_060_20230607_20231127",
+   "layer": "imagery",
+   "size": 447364556,
+   "sha256": "40eb7c47e6e0903122da7ca6c1e3c36300baa927125d2f1580da998caeeb67d2"
+  },
+  {
+   "name": "m_3408619_nw_16_060_20230607_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408619_nw_16_060_20230607_20231127.tif",
+   "published": "2023-06-07T16:00:00Z",
+   "title": "al_m_3408619_nw_16_060_20230607_20231127",
+   "layer": "imagery",
+   "size": 460917040,
+   "sha256": "01b71252f90d9c1938cd8fd996d34314979a36af8b4a7b85a190c823eb75ec5c"
+  },
+  {
+   "name": "m_3408619_se_16_060_20230607_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408619_se_16_060_20230607_20231127.tif",
+   "published": "2023-06-07T16:00:00Z",
+   "title": "al_m_3408619_se_16_060_20230607_20231127",
+   "layer": "imagery",
+   "size": 449968884,
+   "sha256": "fb64d2b76e8fd9dc25d9ab4dc7c15d8605c7d0c359039d028977c4daf5d0d602"
+  },
+  {
+   "name": "m_3408619_sw_16_060_20230607_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408619_sw_16_060_20230607_20231127.tif",
+   "published": "2023-06-07T16:00:00Z",
+   "title": "al_m_3408619_sw_16_060_20230607_20231127",
+   "layer": "imagery",
+   "size": 443383824,
+   "sha256": "bf5b27c8574e17b2858b4c007ceae133184a1423050a666438491a43e4e5560d"
+  },
+  {
+   "name": "m_3408625_ne_16_060_20230525_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408625_ne_16_060_20230525_20231127.tif",
+   "published": "2023-05-25T16:00:00Z",
+   "title": "al_m_3408625_ne_16_060_20230525_20231127",
+   "layer": "imagery",
+   "size": 400231199,
+   "sha256": "bcb6baee0d1b8a8fc2bec0db265713401ea30dbcb10812acaf658ae354932688"
+  },
+  {
+   "name": "m_3408625_se_16_060_20230525_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408625_se_16_060_20230525_20231127.tif",
+   "published": "2023-05-25T16:00:00Z",
+   "title": "al_m_3408625_se_16_060_20230525_20231127",
+   "layer": "imagery",
+   "size": 436130571,
+   "sha256": "2f9527025053c0810622e420ab75145c862be6d648ff2e004924f6c5c4eff6a1"
+  },
+  {
+   "name": "m_3408626_ne_16_060_20230801_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408626_ne_16_060_20230801_20231127.tif",
+   "published": "2023-08-01T16:00:00Z",
+   "title": "al_m_3408626_ne_16_060_20230801_20231127",
+   "layer": "imagery",
+   "size": 432566001,
+   "sha256": "542973137b7891f8e00b14e0f3175cf08b617208619f691ed55ba5c15674abc3"
+  },
+  {
+   "name": "m_3408626_nw_16_060_20230801_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408626_nw_16_060_20230801_20231127.tif",
+   "published": "2023-08-01T16:00:00Z",
+   "title": "al_m_3408626_nw_16_060_20230801_20231127",
+   "layer": "imagery",
+   "size": 428585091,
+   "sha256": "c95f6d7f7fb54600a63b605eb7074976ee489e3262ab53df833c4df4d6692d2a"
+  },
+  {
+   "name": "m_3408626_se_16_060_20230801_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408626_se_16_060_20230801_20231127.tif",
+   "published": "2023-08-01T16:00:00Z",
+   "title": "al_m_3408626_se_16_060_20230801_20231127",
+   "layer": "imagery",
+   "size": 459411259,
+   "sha256": "cb6d25569d0babbbc1672d2d6f6d693dc8f9f1dc9fb66eee59ff4eeb4503ab87"
+  },
+  {
+   "name": "m_3408626_sw_16_060_20230801_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408626_sw_16_060_20230801_20231127.tif",
+   "published": "2023-08-01T16:00:00Z",
+   "title": "al_m_3408626_sw_16_060_20230801_20231127",
+   "layer": "imagery",
+   "size": 456457091,
+   "sha256": "2cb505dd3b3af00c98c628525a595cc99d7caacf4944902e4fa398b6f5d26e55"
+  },
+  {
+   "name": "m_3408627_ne_16_060_20230607_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408627_ne_16_060_20230607_20231127.tif",
+   "published": "2023-06-07T16:00:00Z",
+   "title": "al_m_3408627_ne_16_060_20230607_20231127",
+   "layer": "imagery",
+   "size": 457580050,
+   "sha256": "61c91c992938c1c35abe290d837d221958ec8fa75cf70d2439de136d9ac3702e"
+  },
+  {
+   "name": "m_3408627_nw_16_060_20230607_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408627_nw_16_060_20230607_20231127.tif",
+   "published": "2023-06-07T16:00:00Z",
+   "title": "al_m_3408627_nw_16_060_20230607_20231127",
+   "layer": "imagery",
+   "size": 448745361,
+   "sha256": "0190322330f201724dcaf32b8d2622bb40ceb12c928855357cfb4362d9a8cc80"
+  },
+  {
+   "name": "m_3408627_se_16_060_20230607_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408627_se_16_060_20230607_20231127.tif",
+   "published": "2023-06-07T16:00:00Z",
+   "title": "al_m_3408627_se_16_060_20230607_20231127",
+   "layer": "imagery",
+   "size": 468398500,
+   "sha256": "8d481793145056e04623fd8342e510e4bb7b9522282e259056eda06fccb15aad"
+  },
+  {
+   "name": "m_3408627_sw_16_060_20230607_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408627_sw_16_060_20230607_20231127.tif",
+   "published": "2023-06-07T16:00:00Z",
+   "title": "al_m_3408627_sw_16_060_20230607_20231127",
+   "layer": "imagery",
+   "size": 458264689,
+   "sha256": "9b179118c678e369e3d30f0ae1b4da6b4e48012a112e3c6698485797711fec21"
+  }
+ ]
+}

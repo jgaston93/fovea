@@ -146,6 +146,10 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0  # the PR's base, for the changed files
+      - name: Python tools compile and parse their data
+        run: |
+          python3 -m py_compile tools/fetch-sources.py
+          python3 -c "import tomllib, json; tomllib.load(open('data/sources/khsv.toml', 'rb')); json.load(open('data/sources/khsv.lock.json'))"
       - name: Install tools
         timeout-minutes: 10
         run: tools/ci/apt-install.sh ninja-build clang-format-18 clang-tidy-18 libx11-dev libxext-dev libxrandr-dev

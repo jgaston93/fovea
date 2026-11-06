@@ -21,3 +21,6 @@ __pycache__/
 
 # Reference documents fetched by tools/ (not ours to redistribute in git)
 docs/reference/
+
+# Terrain source downloads (tools/fetch-sources.py); the lock files are committed
+data/cache/
