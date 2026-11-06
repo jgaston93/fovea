@@ -6,8 +6,9 @@
 // AllocationCounter is alive. Backed by replacements of the global
 // operator new family in alloc_counter.cpp; used to enforce the
 // no-allocation rule on the render path (architecture.md, "Render path
-// rules"). Link it only into binaries that load no libraries at run time
-// (Vulkan drivers): see fovea_gpu_tests in tests/CMakeLists.txt.
+// rules"). It replaces every form of operator new and delete: a library
+// loaded at run time (a Vulkan driver) using a form left out would allocate
+// with the standard one and free with ours.
 namespace fovea::test {
 
 class AllocationCounter {

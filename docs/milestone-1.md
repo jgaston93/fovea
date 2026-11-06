@@ -56,13 +56,14 @@ GitHub's CI runners have no GPU. From step 5 onward, the Linux CI jobs install M
 - **Done when:** headless golden-image tests on lavapipe, one image per channel, compare within a tolerance. On real hardware, a manual check confirms the horizon and grid lines are continuous across the three screens.
 - **Result (2026-11-06):** geometric tests replace golden images. They check where the projection puts the horizon (with an asymmetric frustum, with pitch, with roll), the grid lines' distances, and that lines meet across a shared channel edge (a 1° misalignment fails it). They pass on lavapipe and on the RTX 5070 Ti with synchronization validation, and work on any GPU without per-driver reference images. Golden images arrive with step 8's `--dump`. On the three monitors: 604 frames in 10 s, 0 validation messages. Looking at the screens needs an unlocked desktop.
 
-## Step 7: Frame loop and stats
+## Step 7: Frame loop and stats (loop and stats done; overlay next)
 
 - A render thread on a fixed 60 Hz clock with two frames in flight. Once per frame it takes the latest SceneState, records every view, submits, and presents back to back.
 - Stats: CPU frame time, GPU time per view (timestamp queries), present interval, and missed frames (an interval more than 1.5× the period). Present timing comes from `VK_KHR_present_wait`/`present_id` when available.
 - Stats go to a CSV log file through the lock-free log. The Dear ImGui overlay on the debug channel shows the frame time and a missed-frame graph. D-006 must be accepted first.
 - A debug-build check that the render loop allocates nothing after warm-up.
 - **Done when:** a 10-minute run on the Windows machine shows no missed frames in the CSV, and the zero-allocation check passes.
+- **Result, loop and stats (2026-11-06):** `FrameLoop` runs on a render thread, takes the latest scene state each frame, and writes a CSV line per frame (`fovea --stats FILE`) plus a summary at exit. A test shows a steady frame allocates nothing, stats logging included (one allocation per frame makes it fail). On the RTX 5070 Ti, FIFO pacing alone started frames in uneven pairs (intervals of 0.4 ms and 33 ms, 284 of 894 frames flagged) or mostly evenly (13 missed), varying by run. Pacing on `VK_KHR_present_wait` (wait until the last frame is on screen, then start the next) gives intervals of 15.0–18.1 ms (1st–99th percentile) with no misses after the first 80 ms, over two 15 s runs. GPU time is 0.03–0.06 ms per view and CPU work about 0.35 ms per frame.
 
 ## Step 8: Headless option and the display sync test
 

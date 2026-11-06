@@ -3,8 +3,9 @@
 // Each window shows its channel's view of the reference scene (a ground
 // grid, the horizon and the sky).
 //
-//   fovea [--seconds N] [--clear | --identify] <display-config.toml>
-//       run; N > 0: exit after N seconds; --clear: clear each window to its
+//   fovea [--seconds N] [--stats FILE] [--clear | --identify] <display-config.toml>
+//       run; N > 0: exit after N seconds; --stats: write every frame's timing
+//       to FILE as CSV; --clear: clear each window to its
 //       channel's colour (red, green, blue, ... in config order) on the GPU
 //       instead; --identify: fill them with those colours in software (no
 //       GPU needed)
@@ -26,8 +27,11 @@
 #include <vector>
 
 #include "fovea/core/config.hpp"
+#include "fovea/core/log.hpp"
+#include "fovea/core/scene.hpp"
 #include "fovea/platform/monitors.hpp"
 #include "fovea/platform/platform.hpp"
+#include "fovea/render/frame_loop.hpp"
 #include "fovea/render/renderer.hpp"
 #include "fovea/render/view.hpp"
 
@@ -45,6 +49,7 @@ fovea::Rgb8 colour_of(std::size_t channel) {
 struct Options {
     std::string config;
     double seconds = 0.0;  // 0: until Esc
+    std::string stats;     // CSV file for per-frame timing, or empty
     bool clear = false;
     bool identify = false;
     bool list_monitors = false;
@@ -116,6 +121,8 @@ std::optional<Options> parse_args(int argc, char** argv) {
                 return std::nullopt;
             }
             o.seconds = *s;
+        } else if (args[i] == "--stats" && i + 1 < args.size()) {
+            o.stats = std::string(args[++i]);
         } else if (args[i] == "--identify" && !o.clear) {
             o.identify = true;
         } else if (args[i] == "--clear" && !o.identify) {
@@ -129,14 +136,33 @@ std::optional<Options> parse_args(int argc, char** argv) {
     if (o.config.empty()) {
         return std::nullopt;
     }
+    if (!o.stats.empty() && (o.clear || o.identify)) {
+        (void)std::fprintf(stderr,
+                           "fovea: --stats times the scene; it can't be used with "
+                           "--clear or --identify\n");
+        return std::nullopt;
+    }
     return o;
 }
 
 int usage() {
-    (void)std::fprintf(stderr,
-                       "usage: fovea [--seconds N] [--clear | --identify] <display-config.toml>\n"
-                       "       fovea --list-monitors\n");
+    (void)std::fprintf(
+        stderr,
+        "usage: fovea [--seconds N] [--stats FILE] [--clear | --identify] <display-config.toml>\n"
+        "       fovea --list-monitors\n");
     return 2;
+}
+
+void print_summary(const fovea::FrameSummary& s) {
+    std::printf(
+        "%llu frames, %llu missed; interval mean %.3f ms, max %.3f ms; CPU work mean "
+        "%.3f ms, max %.3f ms\n",
+        static_cast<unsigned long long>(s.frames), static_cast<unsigned long long>(s.missed),
+        s.interval_mean_ms, s.interval_max_ms, s.work_mean_ms, s.work_max_ms);
+    for (std::uint32_t i = 0; i < s.gpu_outputs; ++i) {
+        std::printf("  GPU, output %u: mean %.3f ms, max %.3f ms\n", i, s.gpu_mean_ms[i],
+                    s.gpu_max_ms[i]);
+    }
 }
 
 int finish(const fovea::Renderer& r) {
@@ -243,6 +269,9 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         }
         renderer = fovea::Renderer::for_windows(platform, outputs);
         print_gpu(*renderer);
+        std::printf("Pacing: %s\n", renderer->has_present_wait()
+                                        ? "present wait (each frame starts after a vsync)"
+                                        : "FIFO blocking (no present wait support)");
         (void)draw();
     }
     const auto paint = [&] {
@@ -264,10 +293,50 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
     const auto deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(
                                              std::chrono::duration<double>(options.seconds));
     const bool timed = options.seconds > 0.0;
+    // The scene on the render thread (step 7): a fixed-rate loop drawing the
+    // latest scene state, while this (main) thread handles window events.
+    auto scene_state = std::make_unique<fovea::SceneState>();
+    // Declared before the logger, so the logger stops (flushing) before the
+    // file closes, whichever way this function exits.
+    std::unique_ptr<std::FILE, int (*)(std::FILE*)> stats_file(nullptr, &std::fclose);
+    std::unique_ptr<fovea::Logger> stats;
+    std::unique_ptr<fovea::FrameLoop> loop;
+    if (renderer && !options.clear) {
+        if (!options.stats.empty()) {
+            stats_file.reset(std::fopen(options.stats.c_str(), "w"));
+            if (stats_file == nullptr) {
+                (void)std::fprintf(stderr, "fovea: cannot write %s\n", options.stats.c_str());
+                return 1;
+            }
+            stats = std::make_unique<fovea::Logger>(std::size_t{16384});
+            stats->start(fovea::make_text_sink(stats_file.get()));
+        }
+        loop = std::make_unique<fovea::FrameLoop>(
+            *renderer, *scene_state, views, fovea::FrameLoopOptions{config.target_hz}, stats.get());
+        loop->start();
+    }
+
     std::uint64_t frames = 0;
     for (;;) {
         if (timed && Clock::now() >= deadline) {
             break;
+        }
+        if (loop) {
+            // Rendering runs on its own thread; wake for events, or at least
+            // every 100 ms to check the time limit and the loop's health.
+            if (loop->failed()) {
+                break;  // stop() below rethrows what went wrong
+            }
+            int timeout_ms = 100;
+            if (timed) {
+                const auto left =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now());
+                timeout_ms = static_cast<int>(std::clamp<std::int64_t>(left.count(), 0, 100));
+            }
+            if (platform.wait_events(timeout_ms).quit) {
+                break;
+            }
+            continue;
         }
         if (renderer) {
             // Draw continuously; FIFO presentation paces the loop at the
@@ -302,6 +371,18 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         if (events.exposed) {
             paint();
         }
+    }
+    if (loop) {
+        loop->stop();  // rethrows a render thread failure
+        if (stats) {
+            stats->stop();
+            if (stats->dropped() > 0) {
+                std::printf("stats: %llu records dropped\n",
+                            static_cast<unsigned long long>(stats->dropped()));
+            }
+        }
+        print_summary(loop->summary());
+        return finish(*renderer);
     }
     if (renderer) {
         std::printf("%llu frames\n", static_cast<unsigned long long>(frames));

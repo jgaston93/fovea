@@ -82,4 +82,8 @@ private:
 // or a file the caller opened), flushing after each one.
 Logger::Sink make_stream_sink(std::FILE* stream);
 
+// A sink that writes each record's text alone, one per line: for data files
+// such as the frame stats CSV.
+Logger::Sink make_text_sink(std::FILE* stream);
+
 }  // namespace fovea

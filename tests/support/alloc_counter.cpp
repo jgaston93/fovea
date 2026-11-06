@@ -92,6 +92,15 @@ void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
 void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
     return counted_alloc(size);
 }
+// Every form must be replaced: a library using one we leave out (LLVM, which
+// lavapipe loads at run time, uses the aligned nothrow form) would allocate
+// with the standard one and free with ours.
+void* operator new(std::size_t size, std::align_val_t align, const std::nothrow_t&) noexcept {
+    return counted_aligned_alloc(size, align);
+}
+void* operator new[](std::size_t size, std::align_val_t align, const std::nothrow_t&) noexcept {
+    return counted_aligned_alloc(size, align);
+}
 
 void operator delete(void* p) noexcept {
     std::free(p);
@@ -122,4 +131,10 @@ void operator delete(void* p, const std::nothrow_t&) noexcept {
 }
 void operator delete[](void* p, const std::nothrow_t&) noexcept {
     std::free(p);
+}
+void operator delete(void* p, std::align_val_t, const std::nothrow_t&) noexcept {
+    aligned_free(p);
+}
+void operator delete[](void* p, std::align_val_t, const std::nothrow_t&) noexcept {
+    aligned_free(p);
 }

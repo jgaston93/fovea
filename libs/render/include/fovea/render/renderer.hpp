@@ -4,6 +4,7 @@
 // with no Vulkan types. It draws a clear per output (step 5) or the
 // reference scene (step 6).
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -75,6 +76,20 @@ struct SceneView {
 // (no host moves it until milestone 2) and the view's own rotation.
 SceneView reference_scene_view(const ViewDesc& view, const ReferenceScene& scene);
 
+// Up to this many outputs get GPU timings.
+inline constexpr std::size_t kMaxTimedOutputs = 8;
+
+// Where the last draw's time went, and the GPU time of an earlier frame
+// (GPU results are read once that frame's fence has signalled, two frames
+// later, so nothing waits for them).
+struct FrameTiming {
+    double wait_ms = 0.0;           // blocked: present wait, the frame fence and image acquires
+    double work_ms = 0.0;           // recording, submitting and presenting
+    std::uint64_t gpu_frame = 0;    // the frame (frames_drawn() numbering) these GPU times are for
+    std::uint32_t gpu_outputs = 0;  // how many are valid; 0 without timestamps
+    std::array<float, kMaxTimedOutputs> gpu_ms{};  // per output: scene plus tone map
+};
+
 // One Renderer at a time (Vulkan entry points are process-wide in volk);
 // creating a second while one is alive throws std::runtime_error.
 class Renderer {
@@ -117,6 +132,28 @@ public:
     // Offscreen outputs only: the last frame's pixels, RGBA8, row by row.
     // Waits for the GPU to finish it.
     std::vector<std::uint8_t> read_back_rgba(std::uint32_t output);
+
+    // The last draw's timing (no allocation; for the frame loop's stats).
+    const FrameTiming& last_timing() const;
+
+    // True when presentation paces drawing: an on-screen output with FIFO.
+    // Otherwise (offscreen, mailbox, immediate) the caller must pace itself.
+    bool paced_by_display() const;
+
+    // Blocks until the last frame drawn is on the first output's display
+    // (VK_KHR_present_wait), so the next frame can start right after a
+    // vsync: evenly spaced and with the least latency. Waits at most
+    // timeout_ms (a covered first window must not hold back the others).
+    // Returns the time waited, in ms; returns at once (0) without present
+    // wait support or when there is nothing queued to wait for.
+    double wait_for_last_present(double timeout_ms);
+
+    // Frames drawn so far (draw_clear_frame and draw_scene_frame calls): the
+    // numbering FrameTiming::gpu_frame uses.
+    std::uint64_t frames_drawn() const;
+
+    // Whether wait_for_last_present can wait (the GPU and surface support it).
+    bool has_present_wait() const;
 
     // Validation layer warnings and errors so far (each also printed).
     std::uint64_t validation_messages() const;
