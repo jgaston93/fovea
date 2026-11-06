@@ -146,6 +146,64 @@ TEST(FrameLoop, SteadyFramesAllocateNothing) {
     EXPECT_EQ(counter.count(), 0U);
 }
 
+TEST(FrameLoop, OverlayDrawsOnItsOutputOnly) {
+    // Two offscreen outputs, the overlay on the first: its top-left corner
+    // changes, the second output doesn't, and validation stays quiet.
+    auto plain = make_offscreen(2);
+    FOVEA_NEED_VULKAN(plain);
+    auto scene = std::make_unique<SceneState>();
+    const auto v = views(2);
+    std::vector<std::uint8_t> plain0;
+    std::vector<std::uint8_t> plain1;
+    {
+        FrameLoop loop(*plain, *scene, v, {1000.0});
+        for (int i = 0; i < 3; ++i) {
+            (void)loop.step();
+        }
+        plain0 = plain->read_back_rgba(0);
+        plain1 = plain->read_back_rgba(1);
+    }
+    plain.reset();
+    auto with = make_offscreen(2);
+    with->enable_overlay(0);
+    {
+        FrameLoopOptions options{1000.0};
+        options.overlay = true;
+        FrameLoop loop(*with, *scene, v, options);
+        for (int i = 0; i < 3; ++i) {
+            (void)loop.step();
+        }
+    }
+    EXPECT_NE(with->read_back_rgba(0), plain0);
+    EXPECT_EQ(with->read_back_rgba(1), plain1);
+    EXPECT_EQ(with->validation_messages(), 0U);
+}
+
+TEST(FrameLoop, SteadyFramesWithTheOverlayAllocateNothing) {
+    auto r = make_offscreen(1, false);  // without validation, as above
+    FOVEA_NEED_VULKAN(r);
+    r->enable_overlay(0);
+    auto scene = std::make_unique<SceneState>();
+    const auto v = views(1);
+    FrameLoopOptions options{1000.0};
+    options.overlay = true;
+    FrameLoop loop(*r, *scene, v, options);
+    {
+        // Warm-up allocates (ImGui builds its buffers), which shows the
+        // counter sees ImGui's memory: the zero below is real.
+        const test::AllocationCounter warm_up;
+        for (int i = 0; i < 30; ++i) {
+            (void)loop.step();
+        }
+        EXPECT_GT(warm_up.count(), 0U);
+    }
+    const test::AllocationCounter counter;
+    for (int i = 0; i < 100; ++i) {
+        (void)loop.step();
+    }
+    EXPECT_EQ(counter.count(), 0U);
+}
+
 TEST(FrameLoop, StatsAreCsvOneLinePerFrame) {
     auto r = make_offscreen(2);
     FOVEA_NEED_VULKAN(r);

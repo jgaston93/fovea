@@ -4,13 +4,15 @@ add_library(fovea_render STATIC
     src/frame_loop.cpp
     src/scene_view.cpp
     src/view.cpp
+    src/vk/overlay_ui.cpp
     src/vk/renderer.cpp
     src/vk/vma.cpp)
 add_library(fovea::render ALIAS fovea_render)
 target_include_directories(fovea_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(fovea_render
     PUBLIC fovea::core fovea::platform
-    PRIVATE Vulkan::Headers volk::volk vk-bootstrap::vk-bootstrap GPUOpen::VulkanMemoryAllocator)
+    PRIVATE Vulkan::Headers volk::volk vk-bootstrap::vk-bootstrap GPUOpen::VulkanMemoryAllocator
+            fovea_imgui)
 # Vulkan functions come from volk (no prototypes, no static linking to the
 # loader); VMA takes them from volk too.
 target_compile_definitions(fovea_render PRIVATE

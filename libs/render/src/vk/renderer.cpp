@@ -27,7 +27,11 @@
 #include <utility>
 #include <vector>
 
+#include <imgui.h>
+#include <imgui_impl_vulkan.h>
+
 #include "fovea/render/renderer.hpp"
+#include "overlay_ui.hpp"
 #include "shaders/kFsScene.hpp"
 #include "shaders/kFsTonemap.hpp"
 #include "shaders/kVsFullscreen.hpp"
@@ -167,6 +171,38 @@ void memory_barrier(VkCommandBuffer cmd, VkPipelineStageFlags2 src_stage, VkAcce
     vkCmdPipelineBarrier2(cmd, &d);
 }
 
+// Draws the overlay's ImGui data over what a target already holds.
+void draw_overlay(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent, ImDrawData* data) {
+    // After the tone map's writes to the same target.
+    memory_barrier(cmd, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    VkRenderingAttachmentInfo colour{};
+    colour.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colour.imageView = target;
+    colour.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colour.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    colour.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    info.renderArea = {{0, 0}, extent};
+    info.layerCount = 1;
+    info.colorAttachmentCount = 1;
+    info.pColorAttachments = &colour;
+    vkCmdBeginRendering(cmd, &info);
+    ImGui_ImplVulkan_RenderDrawData(data, cmd);
+    vkCmdEndRendering(cmd);
+}
+
+// ImGui's memory through operator new, so allocation checks see it too.
+void* imgui_alloc(std::size_t size, void* /*user*/) {
+    return ::operator new(size);
+}
+void imgui_free(void* p, void* /*user*/) {
+    ::operator delete(p);
+}
+
 // Draws the fullscreen triangle into one colour target with dynamic rendering.
 void draw_fullscreen(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent) {
     VkRenderingAttachmentInfo colour{};
@@ -250,6 +286,7 @@ struct DrawRequest {
     std::span<const Rgb8> colours;
     std::span<const SceneView> views;
     bool scene = false;
+    const OverlayContent* overlay = nullptr;
 };
 
 }  // namespace
@@ -290,6 +327,14 @@ struct Renderer::Impl {
     std::array<std::uint64_t, kFramesInFlight> slot_frame{};  // frame number in each slot
     std::vector<std::uint64_t> query_results;                 // sized once
     FrameTiming timing;
+
+    // The debug overlay (Dear ImGui), on one output.
+    bool overlay = false;
+    std::uint32_t overlay_output = 0;
+    VkFormat overlay_format = VK_FORMAT_UNDEFINED;  // ImGui's pipeline reads it by pointer
+    ImGuiContext* imgui = nullptr;
+    void overlay_frame(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
+                       const OverlayContent& content);
 
     // Present pacing (VK_KHR_present_id / present_wait), when supported.
     bool present_wait = false;
@@ -1025,6 +1070,9 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
             tonemap_into(s.views[image_index[i]], s.chain.extent, s.chain.image_format, i);
+            if (overlay && request.overlay != nullptr && i == overlay_output) {
+                overlay_frame(f.cmd, s.views[image_index[i]], s.chain.extent, *request.overlay);
+            }
             transition(f.cmd, image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1073,6 +1121,9 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
             tonemap_into(o.view, {o.width, o.height}, kOffscreenFormat, i);
+            if (overlay && request.overlay != nullptr && swapchains.size() + i == overlay_output) {
+                overlay_frame(f.cmd, o.view, {o.width, o.height}, *request.overlay);
+            }
             transition(f.cmd, o.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1177,7 +1228,26 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
     return presenting + static_cast<std::uint32_t>(offscreen.size());
 }
 
+void Renderer::Impl::overlay_frame(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
+                                   const OverlayContent& content) {
+    ImGui_ImplVulkan_NewFrame();
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(static_cast<float>(extent.width), static_cast<float>(extent.height));
+    io.DeltaTime = std::max(content.target_ms, 1.0F) / 1000.0F;
+    ImGui::NewFrame();
+    build_overlay_ui(content);
+    ImGui::Render();
+    draw_overlay(cmd, target, extent, ImGui::GetDrawData());
+}
+
 Renderer::Impl::~Impl() {
+    if (imgui != nullptr) {
+        if (device.device != VK_NULL_HANDLE) {
+            (void)vkDeviceWaitIdle(device.device);
+        }
+        ImGui_ImplVulkan_Shutdown();
+        ImGui::DestroyContext(imgui);
+    }
     if (device.device != VK_NULL_HANDLE) {
         (void)vkDeviceWaitIdle(device.device);
         for (Frame& f : frames) {
@@ -1304,8 +1374,57 @@ std::uint32_t Renderer::draw_clear_frame(std::span<const Rgb8> colours) {
     return impl_->draw({colours, {}, false});
 }
 
-std::uint32_t Renderer::draw_scene_frame(std::span<const SceneView> views) {
-    return impl_->draw({{}, views, true});
+std::uint32_t Renderer::draw_scene_frame(std::span<const SceneView> views,
+                                         const OverlayContent* overlay) {
+    return impl_->draw({{}, views, true, overlay});
+}
+
+void Renderer::enable_overlay(std::uint32_t output) {
+    Impl& m = *impl_;
+    if (output >= m.output_total()) {
+        fail("enable_overlay: there is no output " + std::to_string(output));
+    }
+    if (m.overlay) {
+        return;
+    }
+    std::uint32_t image_count = 2;
+    if (output < m.swapchains.size()) {
+        const Swapchain& s = m.swapchains[output];
+        if (s.chain.swapchain == VK_NULL_HANDLE) {
+            fail("enable_overlay: the window has no swapchain yet");
+        }
+        m.overlay_format = s.chain.image_format;
+        image_count = std::max<std::uint32_t>(2, static_cast<std::uint32_t>(s.images.size()));
+    } else {
+        m.overlay_format = kOffscreenFormat;
+    }
+    ImGui::SetAllocatorFunctions(&imgui_alloc, &imgui_free);
+    m.imgui = ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr;  // no files: nothing to read or write while drawing
+    io.LogFilename = nullptr;
+    ImGui::StyleColorsDark();
+
+    ImGui_ImplVulkan_InitInfo init{};
+    init.ApiVersion = VK_API_VERSION_1_3;
+    init.Instance = m.instance.instance;
+    init.PhysicalDevice = m.physical.physical_device;
+    init.Device = m.device.device;
+    init.QueueFamily = m.queue_family;
+    init.Queue = m.queue;
+    init.DescriptorPoolSize = 8;  // the backend's own pool, for its font texture
+    init.MinImageCount = 2;
+    init.ImageCount = image_count;
+    init.UseDynamicRendering = true;
+    init.PipelineInfoMain.PipelineRenderingCreateInfo.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    init.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+    init.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &m.overlay_format;
+    if (!ImGui_ImplVulkan_Init(&init)) {
+        fail("enable_overlay: cannot start ImGui's Vulkan backend");
+    }
+    m.overlay = true;
+    m.overlay_output = output;
 }
 
 std::vector<std::uint8_t> Renderer::read_back_rgba(std::uint32_t output) {

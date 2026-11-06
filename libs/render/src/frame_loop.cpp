@@ -57,7 +57,22 @@ const FrameRecord& FrameLoop::step() {
     // The latest published scene, taken once for the whole frame.
     const SceneSnapshot& scene = scene_.latest();
 
-    const std::uint32_t drawn = renderer_.draw_scene_frame(views_);
+    // The overlay shows the stats up to the previous frame.
+    const OverlayContent* overlay = nullptr;
+    if (options_.overlay) {
+        overlay_.intervals_ms = intervals_;
+        overlay_.intervals_oldest = next_interval_;
+        overlay_.target_ms = static_cast<float>(1000.0 / options_.rate_hz);
+        overlay_.frames = summary_.frames;
+        overlay_.missed = summary_.missed;
+        overlay_.interval_mean_ms = summary_.interval_mean_ms;
+        overlay_.interval_max_ms = summary_.interval_max_ms;
+        overlay_.work_mean_ms = summary_.work_mean_ms;
+        overlay_.gpu_outputs = last_.gpu_outputs;
+        overlay_.gpu_ms = last_.gpu_ms;
+        overlay = &overlay_;
+    }
+    const std::uint32_t drawn = renderer_.draw_scene_frame(views_, overlay);
     if (drawn == 0) {
         // Nothing drawable (every window minimized): nothing paced the call.
         std::this_thread::sleep_until(schedule_.next_deadline());
@@ -79,6 +94,10 @@ const FrameRecord& FrameLoop::step() {
     r.gpu_outputs = ours ? t.gpu_outputs : 0;
     r.gpu_ms = t.gpu_ms;
     last_start_ = started;
+    if (frames_ > 0) {
+        intervals_[next_interval_] = static_cast<float>(r.interval_ms);
+        next_interval_ = (next_interval_ + 1) % intervals_.size();
+    }
     ++frames_;
     record(r);
     log(r);

@@ -86,7 +86,7 @@ endif()
 add_test(NAME App.StatsNeedsTheScene
     COMMAND fovea --clear --stats out.csv ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
 set_tests_properties(App.StatsNeedsTheScene PROPERTIES
-    TIMEOUT 20 PASS_REGULAR_EXPRESSION "--stats times the scene")
+    TIMEOUT 20 PASS_REGULAR_EXPRESSION "--stats and --overlay time the scene")
 add_test(NAME App.RejectsABadSecondsValue
     COMMAND fovea --seconds -1 ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
 set_tests_properties(App.RejectsABadSecondsValue PROPERTIES

@@ -90,6 +90,21 @@ struct FrameTiming {
     std::array<float, kMaxTimedOutputs> gpu_ms{};  // per output: scene plus tone map
 };
 
+// What the debug overlay shows for one frame (step 7; D-006). Plain data:
+// the frame loop fills it without allocating.
+struct OverlayContent {
+    std::span<const float> intervals_ms;  // a ring of recent frame intervals
+    std::size_t intervals_oldest = 0;     // index of the oldest in the ring
+    float target_ms = 16.667F;            // the frame period aimed for
+    std::uint64_t frames = 0;
+    std::uint64_t missed = 0;
+    double interval_mean_ms = 0.0;
+    double interval_max_ms = 0.0;
+    double work_mean_ms = 0.0;
+    std::uint32_t gpu_outputs = 0;
+    std::array<float, kMaxTimedOutputs> gpu_ms{};  // the latest GPU times per output
+};
+
 // One Renderer at a time (Vulkan entry points are process-wide in volk);
 // creating a second while one is alive throws std::runtime_error.
 class Renderer {
@@ -127,7 +142,14 @@ public:
     // linear HDR at its render size, then the tone-map pass draws it into
     // the output. Presents and paces like draw_clear_frame, and returns the
     // same count.
-    std::uint32_t draw_scene_frame(std::span<const SceneView> views);
+    std::uint32_t draw_scene_frame(std::span<const SceneView> views,
+                                   const OverlayContent* overlay = nullptr);
+
+    // Shows the debug overlay (Dear ImGui) on one output, drawn after the
+    // tone map whenever draw_scene_frame is given content. One output only,
+    // never a sensor view; offscreen outputs are allowed for tests. Call
+    // before the first draw. Throws std::runtime_error for a bad output.
+    void enable_overlay(std::uint32_t output);
 
     // Offscreen outputs only: the last frame's pixels, RGBA8, row by row.
     // Waits for the GPU to finish it.
