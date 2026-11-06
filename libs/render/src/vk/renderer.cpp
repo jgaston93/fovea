@@ -1081,7 +1081,10 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
             tonemap_into(s.views[image_index[i]], s.chain.extent, s.chain.image_format, i);
-            if (overlay && request.overlay != nullptr && i == overlay_output) {
+            // Only while the swapchain has the format ImGui's pipeline was
+            // made for (a rebuild could, rarely, change it).
+            if (overlay && request.overlay != nullptr && i == overlay_output &&
+                s.chain.image_format == overlay_format) {
                 overlay_frame(f.cmd, s.views[image_index[i]], s.chain.extent, *request.overlay);
             }
             transition(f.cmd, image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -1386,19 +1389,19 @@ void Renderer::enable_overlay(std::uint32_t output) {
     if (m.overlay) {
         return;
     }
-    std::uint32_t image_count = 2;
+    std::uint32_t image_count = 3;
     if (output < m.swapchains.size()) {
+        // The format a swapchain gets, if it isn't built yet (a window that
+        // starts minimized builds it later).
         const Swapchain& s = m.swapchains[output];
-        if (s.chain.swapchain == VK_NULL_HANDLE) {
-            fail("enable_overlay: the window has no swapchain yet");
-        }
-        m.overlay_format = s.chain.image_format;
+        m.overlay_format =
+            s.chain.swapchain != VK_NULL_HANDLE ? s.chain.image_format : kSwapchainFormat;
         image_count = std::max<std::uint32_t>(2, static_cast<std::uint32_t>(s.images.size()));
     } else {
         m.overlay_format = kOffscreenFormat;
     }
     ImGui::SetAllocatorFunctions(&imgui_alloc, &imgui_free);
-    m.imgui = ImGui::CreateContext();
+    ImGuiContext* context = ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;  // no files: nothing to read or write while drawing
     io.LogFilename = nullptr;
@@ -1420,10 +1423,45 @@ void Renderer::enable_overlay(std::uint32_t output) {
     init.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
     init.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &m.overlay_format;
     if (!ImGui_ImplVulkan_Init(&init)) {
+        ImGui::DestroyContext(context);  // nothing to shut down: the backend never started
         fail("enable_overlay: cannot start ImGui's Vulkan backend");
+    }
+    m.imgui = context;
+
+    // Upload the font now, with every glyph the overlay can show (printable
+    // ASCII). ImGui uploads textures from inside drawing with a submit and
+    // vkQueueWaitIdle; done here, the render thread never waits for it.
+    ImGui_ImplVulkan_NewFrame();
+    io.DisplaySize = ImVec2(1024.0F, 1024.0F);
+    io.DeltaTime = 1.0F / 60.0F;
+    ImGui::NewFrame();
+    std::array<char, 96> ascii{};
+    for (std::size_t c = 0; c < 95; ++c) {
+        ascii[c] = static_cast<char>(' ' + c);
+    }
+    ImGui::Begin("warm-up");
+    ImGui::TextUnformatted(ascii.data());
+    ImGui::End();
+    ImGui::Render();
+    for (ImTextureData* tex : ImGui::GetPlatformIO().Textures) {
+        if (tex->Status != ImTextureStatus_OK) {
+            ImGui_ImplVulkan_UpdateTexture(tex);
+        }
     }
     m.overlay = true;
     m.overlay_output = output;
+}
+
+bool Renderer::overlay_ready() const {
+    if (!impl_->overlay) {
+        return false;
+    }
+    for (const ImTextureData* tex : ImGui::GetPlatformIO().Textures) {
+        if (tex->Status != ImTextureStatus_OK) {
+            return false;
+        }
+    }
+    return true;
 }
 
 std::vector<std::uint8_t> Renderer::read_back_rgba(std::uint32_t output) {

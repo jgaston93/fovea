@@ -87,7 +87,7 @@ struct FrameTiming {
     double work_ms = 0.0;           // recording, submitting and presenting
     std::uint64_t gpu_frame = 0;    // the frame (frames_drawn() numbering) these GPU times are for
     std::uint32_t gpu_outputs = 0;  // how many are valid; 0 without timestamps
-    std::array<float, kMaxTimedOutputs> gpu_ms{};  // per output: scene plus tone map
+    std::array<float, kMaxTimedOutputs> gpu_ms{};  // per output: scene, tone map (and overlay)
 };
 
 // What the debug overlay shows for one frame (step 7; D-006). Plain data:
@@ -148,8 +148,14 @@ public:
     // Shows the debug overlay (Dear ImGui) on one output, drawn after the
     // tone map whenever draw_scene_frame is given content. One output only,
     // never a sensor view; offscreen outputs are allowed for tests. Call
-    // before the first draw. Throws std::runtime_error for a bad output.
+    // before the first draw. Uploads the font for every printable ASCII
+    // glyph here, so drawing never waits for an upload. Throws
+    // std::runtime_error for a bad output. If a swapchain rebuild changes
+    // the overlay output's format, the overlay is no longer drawn.
     void enable_overlay(std::uint32_t output);
+
+    // True once the overlay is enabled and its textures are on the GPU.
+    bool overlay_ready() const;
 
     // Offscreen outputs only: the last frame's pixels, RGBA8, row by row.
     // Waits for the GPU to finish it.

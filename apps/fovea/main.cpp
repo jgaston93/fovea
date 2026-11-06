@@ -418,6 +418,13 @@ int run(const Options& options) {
         case fovea::PresenterKind::multi_swapchain:
             return run_windows(options, config);
         case fovea::PresenterKind::offscreen:
+            if (options.overlay || !options.stats.empty()) {
+                (void)std::fprintf(stderr,
+                                   "%s: --overlay and --stats are for on-screen "
+                                   "configs; offscreen renders one frame\n",
+                                   options.config.c_str());
+                return 1;
+            }
             return run_offscreen(options, config);
         case fovea::PresenterKind::spanned:
             (void)std::fprintf(stderr, "%s: the spanned presenter is not implemented yet\n",

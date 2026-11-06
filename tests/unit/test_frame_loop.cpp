@@ -183,16 +183,19 @@ TEST(FrameLoop, SteadyFramesWithTheOverlayAllocateNothing) {
     auto r = make_offscreen(1, false);  // without validation, as above
     FOVEA_NEED_VULKAN(r);
     r->enable_overlay(0);
+    // The font is on the GPU before the first frame: drawing never uploads.
+    EXPECT_TRUE(r->overlay_ready());
     auto scene = std::make_unique<SceneState>();
     const auto v = views(1);
     FrameLoopOptions options{1000.0};
     options.overlay = true;
     FrameLoop loop(*r, *scene, v, options);
     {
-        // Warm-up allocates (ImGui builds its buffers), which shows the
-        // counter sees ImGui's memory: the zero below is real.
+        // A short warm-up allocates (ImGui's first frames build its draw
+        // lists), which shows the counter sees ImGui's memory: the zero below
+        // is real.
         const test::AllocationCounter warm_up;
-        for (int i = 0; i < 30; ++i) {
+        for (int i = 0; i < 3; ++i) {
             (void)loop.step();
         }
         EXPECT_GT(warm_up.count(), 0U);

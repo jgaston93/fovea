@@ -32,7 +32,7 @@ core      ← (nothing; std + toml++ only)
 terrain   ← core
 platform  ← core            (+ SDL3, private)
 net       ← core
-render    ← core, platform  (+ volk, VMA, vk-bootstrap, private)
+render    ← core, platform  (+ volk, VMA, vk-bootstrap, Dear ImGui, private)
 
 apps/fovea           ← core, terrain, platform, net, render
 apps/fovea-compiler  ← core, terrain      (+ GDAL)
