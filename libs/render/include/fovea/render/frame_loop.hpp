@@ -44,7 +44,8 @@ struct FrameLoopOptions {
     FrameStartRing* frame_starts = nullptr;
     // Views riding the scene's entities: when set, the loop's views are
     // recomputed from each frame's scene (ride_entities), starting from the
-    // ones given. Must outlive the loop, and match the views in number.
+    // ones given. Must outlive the loop, and have as many views as the loop
+    // (the constructor throws std::invalid_argument otherwise).
     const ViewRig* rig = nullptr;
 };
 
@@ -79,6 +80,9 @@ struct FrameSummary {
     std::uint64_t gpu_samples = 0;
     std::array<double, kMaxTimedOutputs> gpu_mean_ms{};
     std::array<double, kMaxTimedOutputs> gpu_max_ms{};
+    // With a rig: views drawn with their eye at or below the grid (a host
+    // below the origin's altitude), counted per view per frame.
+    std::uint64_t views_below_ground = 0;
 };
 
 class FrameLoop {

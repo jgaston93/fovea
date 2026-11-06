@@ -333,6 +333,18 @@ TEST(FrameLoop, ARiggedViewFollowsItsEntity) {
     EXPECT_EQ(r->validation_messages(), 0U);
 }
 
+TEST(FrameLoop, ARigMustMatchTheViews) {
+    auto r = make_offscreen(1);
+    FOVEA_NEED_VULKAN(r);
+    auto scene = std::make_unique<SceneState>();
+    const auto v = views(1);
+    const std::vector<ViewDesc> two(2);
+    const ViewRig rig{two, ReferenceScene{}, 0.0};
+    FrameLoopOptions options{1000.0};
+    options.rig = &rig;
+    EXPECT_THROW(FrameLoop(*r, *scene, v, options), std::invalid_argument);
+}
+
 TEST(FrameLoop, RunsOnItsOwnThreadAndSeesNewScenes) {
     auto r = make_offscreen(1);
     FOVEA_NEED_VULKAN(r);

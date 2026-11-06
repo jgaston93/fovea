@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <stdexcept>
 #include <utility>
 
 namespace fovea {
@@ -26,6 +27,9 @@ FrameLoop::FrameLoop(Renderer& renderer, SceneState& scene, std::span<const Scen
       first_renderer_frame_(renderer.frames_drawn()) {
     intervals_.fill(static_cast<float>(1000.0 / options.rate_hz));
     if (options.rig != nullptr) {
+        if (options.rig->views.size() != views.size()) {
+            throw std::invalid_argument("FrameLoop: the rig's views don't match the loop's");
+        }
         // Sized once here: the per-frame update writes in place.
         rigged_.assign(views.begin(), views.end());
         views_ = rigged_;
@@ -66,7 +70,7 @@ const FrameRecord& FrameLoop::step() {
     // The latest published scene, taken once for the whole frame.
     const SceneSnapshot& scene = scene_.latest();
     if (options_.rig != nullptr) {
-        ride_entities(*options_.rig, scene, rigged_);
+        summary_.views_below_ground += ride_entities(*options_.rig, scene, rigged_);
     }
 
     // The overlay shows the stats up to the previous frame.

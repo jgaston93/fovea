@@ -30,7 +30,11 @@ struct ScenePush {
     float4x4 clip_to_local;
     float eye_height_m;
     float grid_spacing_m;
-    float2 eye_offset_m;  // the eye's offset north and east of the ground origin
+    // The eye's offset north and east of the nearest grid crossing (within
+    // half a cell): the grid repeats, so this is all the shader needs, and it
+    // stays small however far the eye is. Not a position: anything that
+    // doesn't repeat with the grid needs its own camera-relative input.
+    float2 eye_offset_m;
 };
 [[vk::push_constant]] ConstantBuffer<ScenePush> scene;
 

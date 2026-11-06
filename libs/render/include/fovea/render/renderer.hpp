@@ -84,19 +84,27 @@ SceneView reference_scene_view(const ViewDesc& view, const ReferenceScene& scene
 // the app draws, and the golden-image test).
 std::vector<SceneView> reference_scene_views(const DisplayConfig& config);
 
+// The display view for each channel of a config, in channel order.
+std::vector<ViewDesc> views_from_config(const DisplayConfig& config);
+
 // Views that ride the scene's entities (milestone 2 step 3): each frame,
 // each view's eye is placed from its entity's latest pose and the channel's
-// offset and rotation, in double precision. A view whose entity is missing
-// or inactive uses the no-host pose; a world-fixed view stays put.
+// offset and rotation, in double precision. The reference grid follows the
+// Earth's curve at the origin's altitude, so level flight at a constant
+// altitude stays level and at its height at any distance. A world-fixed
+// view stays put; a view whose entity is missing or inactive keeps its last
+// view (the no-host pose until its entity first appears).
 struct ViewRig {
     std::span<const ViewDesc> views;  // must outlive the rig's users
     ReferenceScene scene;
     double geoid_height_m = 0.0;
 };
 
-// Fills out[i] for each of the rig's views (as many as both hold). No
-// allocation: for the render thread.
-void ride_entities(const ViewRig& rig, const SceneSnapshot& snapshot, std::span<SceneView> out);
+// Updates out[i] for each of the rig's views (as many as both hold), and
+// returns how many eyes were at or below the grid (drawn from just above
+// it). No allocation: for the render thread.
+std::size_t ride_entities(const ViewRig& rig, const SceneSnapshot& snapshot,
+                          std::span<SceneView> out);
 
 // Up to this many outputs get GPU timings.
 inline constexpr std::size_t kMaxTimedOutputs = 8;

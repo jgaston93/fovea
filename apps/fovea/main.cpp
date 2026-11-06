@@ -190,6 +190,12 @@ void print_summary(const fovea::FrameSummary& s) {
         std::printf("  GPU, output %u: mean %.3f ms, max %.3f ms\n", i, s.gpu_mean_ms[i],
                     s.gpu_max_ms[i]);
     }
+    if (s.views_below_ground > 0) {
+        std::printf(
+            "  %llu view frames had the eye at or below the grid (drawn from just "
+            "above it; is [reference_scene] origin's altitude right?)\n",
+            static_cast<unsigned long long>(s.views_below_ground));
+    }
 }
 
 int finish(const fovea::Renderer& r) {
@@ -335,10 +341,7 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
     const std::vector<fovea::SceneView> views = fovea::reference_scene_views(config);
     // With a host, the views ride its entities (each channel's entity, at its
     // eye offset and rotation), recomputed every frame.
-    std::vector<fovea::ViewDesc> view_descs;
-    for (std::size_t i = 0; i < config.channels.size(); ++i) {
-        view_descs.push_back(fovea::view_from_channel(config.channels[i], config, i));
-    }
+    const std::vector<fovea::ViewDesc> view_descs = fovea::views_from_config(config);
     const fovea::ViewRig rig{view_descs, config.reference_scene,
                              config.host ? config.host->geoid_height_m : 0.0};
     const auto draw = [&] {
