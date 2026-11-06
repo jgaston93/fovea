@@ -29,6 +29,12 @@
 // - Start of Frame: after a stall (the network thread held up while frames
 //   ran), only the newest frame start is reported, so a synchronous host
 //   isn't sent a burst of stale frames.
+// - Each sample's time on this computer's clock (Pose::sample_t) maps the
+//   host's timestamp across: the host clock's zero is placed where the
+//   fastest message so far puts it (least network delay), creeping later at
+//   100 ppm so drift between two machines' clocks can't leave it stale. The
+//   renderer extrapolates samples to its frame time where the host allows
+//   it (Extrapolation/Interpolation Enable, ICD 2.2.1 p. 3-4, 4.1.1, 4.1.2).
 
 #include <array>
 #include <cstdint>
@@ -113,6 +119,9 @@ private:
     std::optional<std::uint32_t> last_host_ticks_;
     std::uint64_t host_ticks_ = 0;
     bool host_time_valid_ = false;  // the current message's Timestamp Valid
+    // Where the host clock's zero falls on this computer's clock (see above).
+    std::optional<LocalTime> host_epoch_;
+    LocalTime host_epoch_updated_;
     CigiAdapterStats stats_;
     // One UDP datagram at most (65,507 bytes of IPv4 payload).
     std::array<std::uint8_t, 65536> buffer_{};

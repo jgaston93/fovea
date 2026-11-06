@@ -30,7 +30,10 @@ struct SessionStats {
 class Session {
 public:
     // Binds `local_port` (0: any free port) on `local_address` (0: all).
-    Session(const UdpEndpoint& ig, std::uint16_t local_port, std::uint32_t local_address = 0);
+    // `smoothing`: allow the IG to extrapolate entity 0 between samples
+    // (Extrapolation/Interpolation Enable in IG Control and Entity Control).
+    Session(const UdpEndpoint& ig, std::uint16_t local_port, std::uint32_t local_address = 0,
+            bool smoothing = true);
 
     // One host frame: reads any Start of Frames that arrived, then sends IG
     // Control (asking for Operate) and, once the IG reports Operate, entity
@@ -57,6 +60,7 @@ private:
     UdpEndpoint ig_;
     LocalTime start_;
     bool operating_ = false;
+    bool smoothing_ = true;
     std::uint32_t host_frame_ = 0;
     std::uint32_t last_ig_frame_ = 0;
     // When each recent host frame was sent, by frame number modulo the size.

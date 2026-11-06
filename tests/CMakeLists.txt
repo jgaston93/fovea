@@ -37,6 +37,7 @@ gtest_discover_tests(fovea_unit_tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT
 # allocations with the wrong deallocator (ASan's alloc-dealloc-mismatch).
 add_executable(fovea_gpu_tests
     support/alloc_counter.cpp
+    unit/test_display_clock.cpp
     unit/test_frame_loop.cpp
     unit/test_golden.cpp
     unit/test_renderer.cpp)

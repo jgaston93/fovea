@@ -46,6 +46,20 @@ The packet layouts come from the CIGI 3.3 ICD and its errata, fetched by `tools/
 - Each frame records: host send time to IG receive, receive to the frame that first draws it, and that frame's start to present (present wait). The host and IG on one machine share a monotonic clock, so these add up exactly. Across machines, the round trip from Start of Frame gives an estimate.
 - Written to the per-frame stats CSV and the end-of-run summary, and shown in the overlay.
 - **Done when:** the numbers are recorded for a run on the Windows machine, with each part explained. Display latency (present to light) is the display sync test's job.
+- **Added after step 4:** smoothing. Asynchronously the host's and the display's 60 Hz drift against each other, so frames got 0 or 2 new samples (seen by the owner as slight jaggedness in turns; ICD 2.2.1 describes exactly this and suggests the IG extrapolate).
+- **Result:** the CIGI adapter maps each sample's host timestamp onto this computer's clock (`Pose::sample_t`): the host clock's zero is placed where the fastest message puts it, creeping later at 100 ppm for drift between machines. Where the host allows it (Extrapolation/Interpolation Enable in IG Control and the entity's Entity Control), `ride_entities` draws the entity where its last two samples put it at the frame's start (`pose_at`): position and rotation continued at their velocity, at most 100 ms past the newest sample. The test host sets both flags (`--no-smoothing` clears them). Each frame's stats record the newest sample's age at frame start (on the host's clock mapped across, and since arrival) and the first view's heading; the run summary and the overlay show the age while the host is live.
+  - **The parts, measured on the desk** (host and Fovea on one machine, asynchronous at 60 Hz, 45 s each): host send to arrival is under a millisecond on loopback (the two ages agree to 0.01 ms); the newest sample is a mean **11.2 ms** old at frame start (max 32 ms), and smoothing extrapolates across that; a frame starts right after a vsync (present wait) and is on screen at the next one, **16.7 ms** later; the display's own delay to light is the sync test's (#21). Round trip host to Start of Frame: mean 10.5 ms.
+  - **Smoothness:** in the circuit's turns, frames whose heading step changed by more than half from the frame before: **20.8%** without smoothing, **0.4%** with it. A simulation test (a 60 Hz host drawn at 59.95 Hz) shows the same: steps of 0 or 2 samples without, even steps with.
+  - **Still a little jagged to the eye**, though: smoothing then drew each frame for its *start*, and starts jitter (15 to 18.6 ms apart, about +-0.9 ms) while vsyncs don't, so heading steps still varied by about 13%. `DisplayClock` fits a steady vsync grid to the frame starts (following the display's real rate, 59.95 Hz on the Dell), and moving entities are now drawn for the vsync each frame will appear at. Tested against simulated wake-up jitter: display steps even to 0.3 ms. On the desk (45 s each; a first attempt ran while a game shared the GPU, 9% missed frames, and was discarded), the frame-to-frame change of the view's heading step in turns:
+
+    | | median | 95th percentile |
+    |---|---|---|
+    | asynchronous, no smoothing | 5.8% | 89% |
+    | asynchronous, smoothed for the display time | **0.25%** | **0.99%** |
+    | synchronous (`--sync`) | 0.28% | 0.98% |
+
+    The owner saw both of the last two as very smooth. Each run: 3,117 frames, 1 missed, 0 validation messages.
+  - **Hardening from the review:** the host clock's mapping restarts with Reset/Standby and with a restarted host clock; IG Control's flag is scene-wide (`SceneSnapshot::smoothing_allowed`); a jump faster than 1000 m/s or 720 deg/s is a reposition, not extrapolated; extrapolation never goes back past the earlier sample; samples on different clocks (Timestamp Valid toggling) aren't combined.
 
 ## Step 6: Record and replay
 

@@ -18,6 +18,9 @@ void build_overlay_ui(const OverlayContent& c) {
     ImGui::Text("missed %llu of %llu", static_cast<unsigned long long>(c.missed),
                 static_cast<unsigned long long>(c.frames));
     ImGui::Text("CPU work %.2f ms", c.work_mean_ms);
+    if (c.host_age_ms >= 0.0F) {
+        ImGui::Text("Host sample %.1f ms old", static_cast<double>(c.host_age_ms));
+    }
     if (!c.note.empty()) {
         ImGui::TextUnformatted(c.note.data(), c.note.data() + c.note.size());
     }

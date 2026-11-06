@@ -1,6 +1,7 @@
 #include "fovea/render/frame_loop.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <stdexcept>
 #include <utility>
@@ -8,6 +9,9 @@
 namespace fovea {
 
 namespace {
+
+// A host whose newest sample is older than this has stopped sending.
+constexpr double kLiveHostMs = 500.0;
 
 double ms_between(LocalTime a, LocalTime b) {
     return std::chrono::duration<double, std::milli>(b - a).count();
@@ -24,7 +28,8 @@ FrameLoop::FrameLoop(Renderer& renderer, SceneState& scene, std::span<const Scen
       stats_(stats),
       start_(now()),
       schedule_(start_, options.rate_hz),
-      first_renderer_frame_(renderer.frames_drawn()) {
+      first_renderer_frame_(renderer.frames_drawn()),
+      display_clock_(options.rate_hz) {
     intervals_.fill(static_cast<float>(1000.0 / options.rate_hz));
     if (options.rig != nullptr) {
         if (options.rig->views.size() != views.size()) {
@@ -35,9 +40,9 @@ FrameLoop::FrameLoop(Renderer& renderer, SceneState& scene, std::span<const Scen
         views_ = rigged_;
     }
     if (stats_ != nullptr) {
-        stats_->write(
-            LogLevel::info,
-            "frame,t_s,interval_ms,wait_ms,work_ms,missed,scene_sequence,gpu_frame,gpu_ms...");
+        stats_->write(LogLevel::info,
+                      "frame,t_s,interval_ms,wait_ms,work_ms,missed,scene_sequence,sample_age_ms,"
+                      "recv_age_ms,heading_deg,gpu_frame,gpu_ms...");
     }
 }
 
@@ -70,7 +75,12 @@ const FrameRecord& FrameLoop::step() {
     // The latest published scene, taken once for the whole frame.
     const SceneSnapshot& scene = scene_.latest();
     if (options_.rig != nullptr) {
-        summary_.views_below_ground += ride_entities(*options_.rig, scene, rigged_);
+        // Moving things are drawn for when the frame will be seen: with
+        // present-wait pacing, the next vsync (DisplayClock), not the
+        // frame's own jittery start; otherwise the start.
+        const LocalTime shown =
+            renderer_.paced_by_display() ? display_clock_.frame_started(started) : started;
+        summary_.views_below_ground += ride_entities(*options_.rig, scene, rigged_, shown);
     }
 
     // The overlay shows the stats up to the previous frame.
@@ -91,6 +101,9 @@ const FrameRecord& FrameLoop::step() {
         overlay_.gpu_outputs = last_.gpu_outputs;
         overlay_.gpu_ms = last_.gpu_ms;
         overlay_.note = options_.overlay_note;
+        overlay_.host_age_ms = last_.recv_age_ms > 0.0 && last_.recv_age_ms < kLiveHostMs
+                                   ? static_cast<float>(last_.sample_age_ms)
+                                   : -1.0F;
         overlay = &overlay_;
     }
     const std::uint32_t drawn = renderer_.draw_scene_frame(views_, overlay);
@@ -109,6 +122,21 @@ const FrameRecord& FrameLoop::step() {
     const double period_ms = 1000.0 / options_.rate_hz;
     r.missed = r.interval_ms > options_.missed_after_periods * period_ms;
     r.scene_sequence = scene.sequence;
+    if (options_.rig != nullptr && !options_.rig->views.empty()) {
+        r.heading_deg = view_heading_deg(rigged_[0]);
+        if (const EntityState* e = find_entity(scene, options_.rig->views[0].pose.entity)) {
+            r.sample_age_ms = ms_between(e->cur.sample_t, started);
+            r.recv_age_ms = ms_between(e->cur.recv_t, started);
+        }
+        // The means cover frames while the host is sending: not before its
+        // first sample, nor after it stops (when the newest only ages).
+        if (r.recv_age_ms > 0.0 && r.recv_age_ms < kLiveHostMs) {
+            ++summary_.entity_frames;
+            const auto k = static_cast<double>(summary_.entity_frames);
+            summary_.sample_age_mean_ms += (r.sample_age_ms - summary_.sample_age_mean_ms) / k;
+            summary_.recv_age_mean_ms += (r.recv_age_ms - summary_.recv_age_mean_ms) / k;
+        }
+    }
     // In this loop's numbering (draws before the loop started don't count).
     const bool ours = t.gpu_outputs > 0 && t.gpu_frame >= first_renderer_frame_;
     r.gpu_frame = ours ? t.gpu_frame - first_renderer_frame_ : 0;
@@ -166,9 +194,10 @@ void FrameLoop::log(const FrameRecord& r) {
                                     static_cast<double>(r.gpu_ms[i]));
         used += n > 0 ? static_cast<std::size_t>(n) : 0;
     }
-    stats_->write(LogLevel::info, "%llu,%.6f,%.3f,%.3f,%.3f,%d,%llu,%llu%s",
+    stats_->write(LogLevel::info, "%llu,%.6f,%.3f,%.3f,%.3f,%d,%llu,%.3f,%.3f,%.4f,%llu%s",
                   static_cast<unsigned long long>(r.frame), r.t_s, r.interval_ms, r.wait_ms,
                   r.work_ms, r.missed ? 1 : 0, static_cast<unsigned long long>(r.scene_sequence),
+                  r.sample_age_ms, r.recv_age_ms, r.heading_deg,
                   static_cast<unsigned long long>(r.gpu_frame), gpu.data());
 }
 

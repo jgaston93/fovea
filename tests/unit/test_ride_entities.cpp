@@ -1,5 +1,7 @@
+#include <chrono>
 #include <cmath>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -62,7 +64,7 @@ SceneView ride(const ReferenceScene& s, const ViewDesc& view, const SceneSnapsho
                std::size_t* below = nullptr) {
     const ViewRig rig{std::span<const ViewDesc>(&view, 1), s, 0.0};
     SceneView out = reference_scene_view(view, s);
-    const std::size_t n = ride_entities(rig, snapshot, std::span<SceneView>(&out, 1));
+    const std::size_t n = ride_entities(rig, snapshot, std::span<SceneView>(&out, 1), LocalTime{});
     if (below != nullptr) {
         *below = n;
     }
@@ -91,14 +93,14 @@ TEST(RideEntities, AViewWithoutItsEntityKeepsItsLastView) {
     const ViewRig rig{std::span<const ViewDesc>(&v, 1), s, 0.0};
     SceneView out = reference_scene_view(v, s);
     ASSERT_TRUE(snapshot->entities.push_back(entity_at(s, 500.0, 0.0, 50.0, {})));
-    (void)ride_entities(rig, *snapshot, std::span<SceneView>(&out, 1));
+    (void)ride_entities(rig, *snapshot, std::span<SceneView>(&out, 1), LocalTime{});
     const SceneView seen = out;
     EXPECT_NEAR(seen.eye_height_m, 50.0F - 0.5F * -1.0F, 1e-3F);
     snapshot->entities[0].active = false;
-    (void)ride_entities(rig, *snapshot, std::span<SceneView>(&out, 1));
+    (void)ride_entities(rig, *snapshot, std::span<SceneView>(&out, 1), LocalTime{});
     expect_same(out, seen, 0.0F);
     snapshot->entities.clear();
-    (void)ride_entities(rig, *snapshot, std::span<SceneView>(&out, 1));
+    (void)ride_entities(rig, *snapshot, std::span<SceneView>(&out, 1), LocalTime{});
     expect_same(out, seen, 0.0F);
 }
 
@@ -234,6 +236,141 @@ TEST(RideEntities, WorldFixedViewsStayPut) {
                 1e-5F);
 }
 
+// An entity whose last two samples are 1/60 s apart, `move` metres north
+// and `turn` degrees of yaw from the first to the second.
+EntityState moving(const ReferenceScene& s, double move, double turn, LocalTime t1,
+                   bool smooth = true) {
+    const auto dt =
+        std::chrono::duration_cast<LocalTime::duration>(std::chrono::duration<double>(1.0 / 60.0));
+    EntityState prev = entity_at(s, 0.0, 0.0, 100.0, {10.0, 0.0, 0.0});
+    EntityState cur = entity_at(s, move, 0.0, 100.0, {10.0 + turn, 0.0, 0.0});
+    EntityState e = cur;
+    e.prev = prev.cur;
+    e.prev.sample_t = t1 - dt;
+    e.cur.sample_t = t1;
+    e.smooth = smooth;
+    return e;
+}
+
+TEST(PoseAt, ExtrapolatesAtTheSamplesVelocity) {
+    const auto s = test_scene();
+    const LocalTime t1 = LocalTime{} + std::chrono::seconds(100);
+    const EntityState e = moving(s, 1.0, 0.5, t1);  // 60 m/s north, 30 deg/s right
+    // Two sample intervals past the newest: 2 m further, 1 degree more.
+    const auto ahead =
+        std::chrono::duration_cast<LocalTime::duration>(std::chrono::duration<double>(2.0 / 60.0));
+    const Pose p = pose_at(e, t1 + ahead);
+    const Geodetic g = ecef_to_geodetic(p.ecef);
+    const Geodetic expected = grid_point(s, 3.0, 0.0, 100.0);
+    EXPECT_NEAR(glm::length(p.ecef - geodetic_to_ecef(expected)), 0.0, 1e-3);
+    const Euler a =
+        to_euler(glm::inverse(glm::quat_cast(ned_to_ecef(g.lat_deg, g.lon_deg))) * p.orientation);
+    EXPECT_NEAR(a.yaw_deg, 11.5, 1e-3);
+    // Between the samples it interpolates.
+    const Pose mid = pose_at(e, t1 - ahead / 4);
+    EXPECT_NEAR(glm::length(mid.ecef - geodetic_to_ecef(grid_point(s, 0.5, 0.0, 100.0))), 0.0,
+                1e-3);
+}
+
+TEST(PoseAt, HoldsWhenNotAllowedOrTooFarAhead) {
+    const auto s = test_scene();
+    const LocalTime t1 = LocalTime{} + std::chrono::seconds(100);
+    const EntityState plain = moving(s, 1.0, 0.5, t1, false);
+    EXPECT_EQ(pose_at(plain, t1 + std::chrono::milliseconds(30)).ecef, plain.cur.ecef);
+    // A host gone quiet: extrapolation stops kMaxExtrapolationS past the
+    // newest sample (6 m at 60 m/s), not at the frame's time.
+    const EntityState e = moving(s, 1.0, 0.0, t1);
+    const Pose far = pose_at(e, t1 + std::chrono::seconds(5));
+    EXPECT_NEAR(glm::length(far.ecef - e.cur.ecef), 60.0 * kMaxExtrapolationS, 1e-3);
+}
+
+TEST(PoseAt, ARepositionIsNotExtrapolated) {
+    // The host moves the entity 10 km between two samples 1/60 s apart: a
+    // jump, not 600 km/s of motion. Drawn where it was put.
+    const auto s = test_scene();
+    const LocalTime t1 = LocalTime{} + std::chrono::seconds(100);
+    const EntityState jump = moving(s, 10000.0, 0.0, t1);
+    EXPECT_EQ(pose_at(jump, t1 + std::chrono::milliseconds(10)).ecef, jump.cur.ecef);
+    const EntityState spin = moving(s, 1.0, 90.0, t1);  // 5400 deg/s
+    EXPECT_EQ(pose_at(spin, t1 + std::chrono::milliseconds(10)).orientation, spin.cur.orientation);
+}
+
+TEST(PoseAt, NeverFurtherBackThanTheEarlierSample) {
+    // A frame time long before the samples (a stale clock, a caller's
+    // mistake): the earlier sample, not an extrapolation back in time.
+    const auto s = test_scene();
+    const LocalTime t1 = LocalTime{} + std::chrono::seconds(100);
+    const EntityState e = moving(s, 1.0, 0.5, t1);
+    EXPECT_LT(glm::length(pose_at(e, LocalTime{}).ecef - e.prev.ecef), 1e-6);
+}
+
+TEST(PoseAt, NeedsSamplesOnOneClockAndTheScenesLeave) {
+    const auto s = test_scene();
+    const LocalTime t1 = LocalTime{} + std::chrono::seconds(100);
+    EntityState e = moving(s, 1.0, 0.5, t1);
+    const LocalTime later = t1 + std::chrono::milliseconds(10);
+    EXPECT_NE(pose_at(e, later).ecef, e.cur.ecef);         // smoothed
+    EXPECT_EQ(pose_at(e, later, false).ecef, e.cur.ecef);  // the host's global flag off
+    e.cur.host_t.valid = true;                             // stamped; the earlier wasn't
+    EXPECT_EQ(pose_at(e, later).ecef, e.cur.ecef);
+}
+
+TEST(RideEntities, SmoothingRemovesTheJudderOfDriftingClocks) {
+    // What the owner saw: a host turning steadily, sending at exactly 60 Hz,
+    // drawn by frames at 59.95 Hz; samples land 0 or 2 to a frame. Without
+    // smoothing the view's heading steps unevenly; with it, evenly.
+    const auto s = test_scene();
+    const ViewDesc v = test_view();
+    const ViewRig rig{std::span<const ViewDesc>(&v, 1), s, 0.0};
+    const double turn_dps = 12.0;
+    auto spread = [&](bool smooth) {
+        auto snapshot = std::make_unique<SceneSnapshot>();
+        const LocalTime origin = LocalTime{} + std::chrono::seconds(100);
+        auto at = [&](double seconds) {
+            return origin + std::chrono::duration_cast<LocalTime::duration>(
+                                std::chrono::duration<double>(seconds));
+        };
+        auto sample = [&](int k) {
+            EntityState e = entity_at(s, 0.0, 0.0, 100.0, {turn_dps * k / 60.0, 0.0, 0.0});
+            e.cur.sample_t = at(k / 60.0);
+            return e.cur;
+        };
+        snapshot->entities.push_back(entity_at(s, 0.0, 0.0, 100.0, {}));
+        snapshot->smoothing_allowed = true;
+        EntityState& e = snapshot->entities[0];
+        e.smooth = smooth;
+        e.prev = sample(-1);
+        e.cur = sample(0);
+        int next = 1;
+        double last_heading = 0.0;
+        double min_step = 1e9;
+        double max_step = -1e9;
+        for (int f = 0; f < 600; ++f) {
+            const double t = 0.002 + f / 59.95;  // frame starts
+            while (next / 60.0 + 0.003 <= t) {   // samples that arrived (3 ms on the way)
+                e.prev = e.cur;
+                e.cur = sample(next++);
+            }
+            SceneView out = reference_scene_view(v, s);
+            (void)ride_entities(rig, *snapshot, std::span<SceneView>(&out, 1), at(t));
+            const double heading = view_heading_deg(out);
+            if (f > 0) {
+                min_step = std::min(min_step, heading - last_heading);
+                max_step = std::max(max_step, heading - last_heading);
+            }
+            last_heading = heading;
+        }
+        return std::pair{min_step, max_step};
+    };
+    const double per_frame = turn_dps / 59.95;
+    const auto [raw_min, raw_max] = spread(false);
+    EXPECT_NEAR(raw_min, 0.0, 1e-6);                    // a repeated sample
+    EXPECT_NEAR(raw_max, 2.0 * turn_dps / 60.0, 1e-4);  // two at once
+    const auto [smooth_min, smooth_max] = spread(true);
+    EXPECT_NEAR(smooth_min, per_frame, 1e-3);
+    EXPECT_NEAR(smooth_max, per_frame, 1e-3);
+}
+
 TEST(RideEntities, AllocatesNothing) {
     const auto s = test_scene();
     std::vector<ViewDesc> views(3, test_view({10.0, 0.0, 0.0}));
@@ -243,7 +380,7 @@ TEST(RideEntities, AllocatesNothing) {
     std::vector<SceneView> out(3);
     const test::AllocationCounter counter;
     for (int i = 0; i < 100; ++i) {
-        ride_entities(rig, *snapshot, out);
+        ride_entities(rig, *snapshot, out, LocalTime{});
     }
     EXPECT_EQ(counter.count(), 0U);
 }

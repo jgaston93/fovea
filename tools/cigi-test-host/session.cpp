@@ -6,8 +6,9 @@
 
 namespace fovea::test_host {
 
-Session::Session(const UdpEndpoint& ig, std::uint16_t local_port, std::uint32_t local_address)
-    : socket_(local_port, local_address), ig_(ig), start_(now()) {}
+Session::Session(const UdpEndpoint& ig, std::uint16_t local_port, std::uint32_t local_address,
+                 bool smoothing)
+    : socket_(local_port, local_address), ig_(ig), start_(now()), smoothing_(smoothing) {}
 
 void Session::read_start_of_frames(LocalTime t) {
     std::array<std::uint8_t, 2048> buffer{};
@@ -75,6 +76,7 @@ void Session::send_frame(const FlightState& state, LocalTime t) {
     ig.host_frame_number = host_frame_;
     ig.last_ig_frame_number = last_ig_frame_;
     ig.timestamp_valid = true;
+    ig.extrapolation_enable = smoothing_;
     const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t - start_).count();
     ig.timestamp = static_cast<std::uint32_t>(static_cast<std::uint64_t>(us) / 10U);
 
@@ -85,6 +87,7 @@ void Session::send_frame(const FlightState& state, LocalTime t) {
         cigi::EntityControl e;
         e.entity_id = 0;
         e.entity_state = cigi::EntityState::active;
+        e.extrapolation_enable = smoothing_;
         e.lat_or_x = state.position.lat_deg;
         e.lon_or_y = state.position.lon_deg;
         e.alt_or_z = state.position.alt_m;
