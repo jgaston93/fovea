@@ -29,6 +29,8 @@ ctest --preset debug -R 'Toolchain\.FloatingPointIsIeeeWithoutFastMath'   # one 
 FOVEA_UPDATE_GOLDEN=1 ctest --preset debug -R Golden                       # rewrite tests/data/golden (on lavapipe)
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json FOVEA_REQUIRE_VULKAN=1 ctest --preset debug  # GPU tests on lavapipe
 CC=clang CXX=clang++ cmake --preset debug -B build/clang-debug --fresh     # Clang build
+cmake --preset fuzz && cmake --build --preset fuzz --target fovea_fuzz_cigi
+./build/fuzz/tests/fovea_fuzz_cigi -max_total_time=60 tests/fuzz/corpus/cigi   # fuzz the CIGI codec
 ```
 
 GCC (≥ 11), Clang (≥ 14) and MSVC (VS 2022) must all build without warnings, and warnings are errors. On Windows, configure from a VS developer prompt with `CC=cl CXX=cl` and the same presets (ASan presets are GCC/Clang only). Every compiled target must call `fovea_target_defaults()` (`cmake/FoveaCompilerFlags.cmake`). Header-only INTERFACE targets can't take its PRIVATE flags; their headers are compiled, and checked, in the targets that include them. Fast-math is forbidden. Dependencies go in `cmake/FoveaDependencies.cmake`, pinned by version and SHA-256, and are added only when code needs them. The test presets fail when no tests match (`noTestsAction: error`). Linux builds need `libx11-dev libxext-dev libxrandr-dev` for SDL. Tests that open windows use SDL's dummy display (`SDL_VIDEO_DRIVER=dummy`, or `PlatformOptions{"dummy"}`), and must have a time limit. Real monitors are checked on the Windows machine with `tools/check-identify.ps1`, which screenshots each monitor while `fovea --identify` runs. It needs an unlocked desktop.
