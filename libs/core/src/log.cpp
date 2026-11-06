@@ -122,4 +122,11 @@ Logger::Sink make_stream_sink(std::FILE* stream) {
     };
 }
 
+Logger::Sink make_text_sink(std::FILE* stream) {
+    return [stream](const LogRecord& r) {
+        (void)std::fprintf(stream, "%s\n", r.text.data());
+        (void)std::fflush(stream);
+    };
+}
+
 }  // namespace fovea

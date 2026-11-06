@@ -25,11 +25,13 @@ fovea_target_defaults(fovea_unit_tests)
 # A time limit on every test: some open (dummy) windows, which can hang.
 gtest_discover_tests(fovea_unit_tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT 60)
 
-# GPU tests, in their own binary without the allocation counter: Vulkan
-# loads its driver at run time (lavapipe brings LLVM), and replacing the
-# global operator new/delete in a binary that loads libraries pairs their
+# GPU tests, in their own binary (they load a Vulkan driver at run time).
+# The allocation counter must replace every operator new/delete form here:
+# lavapipe's LLVM uses the aligned nothrow one, and a missing form paired its
 # allocations with the wrong deallocator (ASan's alloc-dealloc-mismatch).
 add_executable(fovea_gpu_tests
+    support/alloc_counter.cpp
+    unit/test_frame_loop.cpp
     unit/test_renderer.cpp)
 target_include_directories(fovea_gpu_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(fovea_gpu_tests PRIVATE fovea::render GTest::gtest_main)

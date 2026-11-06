@@ -1,6 +1,7 @@
 # Views, presenters, modules and the Vulkan backend (src/vk). Reads
 # SceneState only; never includes net headers.
 add_library(fovea_render STATIC
+    src/frame_loop.cpp
     src/scene_view.cpp
     src/view.cpp
     src/vk/renderer.cpp

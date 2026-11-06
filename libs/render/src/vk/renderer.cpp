@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -279,6 +280,13 @@ struct Renderer::Impl {
     VkPipeline scene_pipeline = VK_NULL_HANDLE;
     std::vector<std::pair<VkFormat, VkPipeline>> tonemap_pipelines;
 
+    // Timing: two timestamps per output per frame in flight.
+    VkQueryPool timestamps = VK_NULL_HANDLE;
+    double timestamp_period_ns = 0.0;                         // 0: no timestamps on this queue
+    std::array<std::uint64_t, kFramesInFlight> slot_frame{};  // frame number in each slot
+    std::vector<std::uint64_t> query_results;                 // sized once
+    FrameTiming timing;
+
     // Per-frame scratch, sized once for the swapchain count: the render path
     // allocates nothing (architecture.md, "Render path rules").
     std::vector<std::uint32_t> image_index;
@@ -309,6 +317,11 @@ struct Renderer::Impl {
     VkImageView make_view(VkImage image, VkFormat format) const;
     void claim();
     void size_scratch();
+    void create_timestamps();
+    void read_gpu_times(std::size_t slot);
+    std::uint32_t output_total() const {
+        return static_cast<std::uint32_t>(swapchains.size() + offscreen.size());
+    }
     Frame& begin_frame();
     std::uint32_t draw(const DrawRequest& request);
     void record_scene(VkCommandBuffer cmd, std::size_t i, const SceneView& view);
@@ -798,9 +811,52 @@ void Renderer::Impl::size_scratch() {
     present_results.resize(n);
 }
 
+void Renderer::Impl::create_timestamps() {
+    const auto families = physical.get_queue_families();
+    if (queue_family >= families.size() || families[queue_family].timestampValidBits == 0) {
+        return;  // no GPU timings on this queue
+    }
+    timestamp_period_ns = static_cast<double>(physical.properties.limits.timestampPeriod);
+    const std::uint32_t count = kFramesInFlight * output_total() * 2;
+    VkQueryPoolCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+    ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    ci.queryCount = count;
+    check(vkCreateQueryPool(device.device, &ci, nullptr, &timestamps), "vkCreateQueryPool");
+    query_results.resize(static_cast<std::size_t>(output_total()) * 2);
+}
+
+// The GPU times of the frame last drawn in this slot, now that its fence has
+// signalled.
+void Renderer::Impl::read_gpu_times(std::size_t slot) {
+    if (timestamps == VK_NULL_HANDLE || frame_number < kFramesInFlight) {
+        return;  // nothing recorded in this slot yet
+    }
+    const std::uint32_t n = output_total() * 2;
+    const VkResult r =
+        vkGetQueryPoolResults(device.device, timestamps, static_cast<std::uint32_t>(slot) * n, n,
+                              query_results.size() * sizeof(std::uint64_t), query_results.data(),
+                              sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT);
+    if (r != VK_SUCCESS) {
+        return;
+    }
+    timing.gpu_frame = slot_frame[slot];
+    timing.gpu_outputs = std::min<std::uint32_t>(output_total(), kMaxTimedOutputs);
+    for (std::uint32_t i = 0; i < timing.gpu_outputs; ++i) {
+        const std::uint64_t begin = query_results[2 * i];
+        const std::uint64_t end = query_results[2 * i + 1];
+        timing.gpu_ms[i] =
+            end >= begin
+                ? static_cast<float>(static_cast<double>(end - begin) * timestamp_period_ns * 1e-6)
+                : 0.0F;
+    }
+}
+
 Frame& Renderer::Impl::begin_frame() {
-    Frame& f = frames[frame_number % kFramesInFlight];
+    const std::size_t slot = frame_number % kFramesInFlight;
+    Frame& f = frames[slot];
     check(vkWaitForFences(device.device, 1, &f.done, VK_TRUE, UINT64_MAX), "vkWaitForFences");
+    read_gpu_times(slot);
     return f;
 }
 
@@ -830,6 +886,8 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t i, const Scen
 }
 
 std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
+    const auto started = now();  // fovea::now(), the monotonic clock
+    const std::size_t slot = frame_number % kFramesInFlight;
     Frame& f = begin_frame();
 
     // Acquire an image from every swapchain that has a drawable size.
@@ -871,11 +929,26 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
         }
     }
 
+    const auto acquired = now();
     check(vkResetCommandBuffer(f.cmd, 0), "vkResetCommandBuffer");
     VkCommandBufferBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check(vkBeginCommandBuffer(f.cmd, &begin), "vkBeginCommandBuffer");
+
+    // Two timestamps per output, around that output's work. Every output's
+    // pair is written, drawn or not, so every query has a result.
+    const std::uint32_t queries_per_slot = output_total() * 2;
+    const std::uint32_t first_query = static_cast<std::uint32_t>(slot) * queries_per_slot;
+    if (timestamps != VK_NULL_HANDLE) {
+        vkCmdResetQueryPool(f.cmd, timestamps, first_query, queries_per_slot);
+    }
+    const auto stamp = [&](std::size_t output, std::uint32_t which) {
+        if (timestamps != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp2(f.cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, timestamps,
+                                 first_query + static_cast<std::uint32_t>(output) * 2 + which);
+        }
+    };
 
     // The stage that first touches an acquired image: the clear's transfer,
     // or the tone-map pass's colour output. The acquire semaphore is waited
@@ -902,7 +975,9 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
 
     std::uint32_t wait_count = 0;
     for (std::size_t i = 0; i < swapchains.size(); ++i) {
+        stamp(i, 0);
         if (image_index[i] == UINT32_MAX) {
+            stamp(i, 1);
             continue;
         }
         Swapchain& s = swapchains[i];
@@ -940,6 +1015,7 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
         sig.semaphore = s.rendered[image_index[i]];
         sig.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         ++wait_count;
+        stamp(i, 1);
     }
 
     if (!offscreen.empty()) {
@@ -951,6 +1027,7 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
     }
     for (std::size_t i = 0; i < offscreen.size(); ++i) {
         const OffscreenImage& o = offscreen[i];
+        stamp(swapchains.size() + i, 0);
         // After the previous frame's copy out of this image (write after read).
         if (request.scene) {
             record_scene(f.cmd, i, i < request.views.size() ? request.views[i] : SceneView{});
@@ -981,6 +1058,7 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
         copy.imageExtent = {o.width, o.height, 1};
         vkCmdCopyImageToBuffer(f.cmd, o.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, o.readback, 1,
                                &copy);
+        stamp(swapchains.size() + i, 1);
     }
     if (!offscreen.empty()) {
         // Make the copies visible to the host once the fence signals.
@@ -1004,6 +1082,7 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
     // must not leave this frame's fence unsignalled for the next wait.
     check(vkResetFences(device.device, 1, &f.done), "vkResetFences");
     check(vkQueueSubmit2(queue, 1, &submit, f.done), "vkQueueSubmit2");
+    slot_frame[slot] = frame_number;
 
     // Every acquired swapchain in one present call: the outputs flip
     // together as far as the driver allows (the display sync test measures
@@ -1040,6 +1119,9 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
         }
     }
     ++frame_number;
+    const auto finished = now();
+    timing.wait_ms = std::chrono::duration<double, std::milli>(acquired - started).count();
+    timing.work_ms = std::chrono::duration<double, std::milli>(finished - acquired).count();
     return presenting + static_cast<std::uint32_t>(offscreen.size());
 }
 
@@ -1065,6 +1147,7 @@ Renderer::Impl::~Impl() {
             vkDestroyImageView(device.device, t.view, nullptr);
             vmaDestroyImage(allocator, t.image, t.memory);
         }
+        vkDestroyQueryPool(device.device, timestamps, nullptr);
         for (const auto& [format, p] : tonemap_pipelines) {
             vkDestroyPipeline(device.device, p, nullptr);
         }
@@ -1131,6 +1214,7 @@ std::unique_ptr<Renderer> Renderer::for_windows(Platform& platform,
     impl->create_scene_resources(render_extents);
     impl->size_scratch();
     impl->create_frames();
+    impl->create_timestamps();
     return std::unique_ptr<Renderer>(new Renderer(std::move(impl)));
 }
 
@@ -1151,6 +1235,7 @@ std::unique_ptr<Renderer> Renderer::offscreen(std::span<const OffscreenOutput> o
     impl->create_scene_resources(render_extents);
     impl->size_scratch();
     impl->create_frames();
+    impl->create_timestamps();
     return std::unique_ptr<Renderer>(new Renderer(std::move(impl)));
 }
 
@@ -1191,6 +1276,17 @@ std::vector<std::uint8_t> Renderer::read_back_rgba(std::uint32_t output) {
     std::memcpy(pixels.data(), mapped, bytes);
     vmaUnmapMemory(impl_->allocator, o.readback_memory);
     return pixels;
+}
+
+const FrameTiming& Renderer::last_timing() const {
+    return impl_->timing;
+}
+
+bool Renderer::paced_by_display() const {
+    return std::any_of(impl_->swapchains.begin(), impl_->swapchains.end(), [](const Swapchain& s) {
+        return s.chain.swapchain != VK_NULL_HANDLE &&
+               s.chain.present_mode == VK_PRESENT_MODE_FIFO_KHR;
+    });
 }
 
 std::uint64_t Renderer::validation_messages() const {
