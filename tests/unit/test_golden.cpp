@@ -11,7 +11,6 @@
 #include "fovea/core/config.hpp"
 #include "fovea/core/image_file.hpp"
 #include "fovea/render/renderer.hpp"
-#include "fovea/render/view.hpp"
 
 namespace fovea {
 namespace {
@@ -36,13 +35,10 @@ TEST(Golden, ReferenceSceneMatchesTheGoldenImages) {
     const DisplayConfig& config = *loaded.config;
 
     std::vector<OffscreenOutput> outputs;
-    std::vector<SceneView> views;
-    for (std::size_t i = 0; i < config.channels.size(); ++i) {
-        const ChannelConfig& ch = config.channels[i];
+    for (const ChannelConfig& ch : config.channels) {
         outputs.push_back({ch.render_width, ch.render_height});
-        views.push_back(
-            reference_scene_view(view_from_channel(ch, config, i), config.reference_scene));
     }
+    const std::vector<SceneView> views = reference_scene_views(config);
     RendererOptions options;
     if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
         options.validation = Validation::required;
@@ -60,6 +56,12 @@ TEST(Golden, ReferenceSceneMatchesTheGoldenImages) {
     EXPECT_EQ(r->validation_messages(), 0U);
 
     const bool update = std::getenv("FOVEA_UPDATE_GOLDEN") != nullptr;
+    // The goldens are lavapipe renders, as CI draws them: no other GPU may
+    // write them.
+    if (update) {
+        ASSERT_NE(r->gpu().name.find("llvmpipe"), std::string::npos)
+            << "FOVEA_UPDATE_GOLDEN on " << r->gpu().name << ": set VK_DRIVER_FILES to lavapipe";
+    }
     for (std::uint32_t i = 0; i < outputs.size(); ++i) {
         const RgbaImage image{outputs[i].width, outputs[i].height, r->read_back_rgba(i)};
         const auto file = kGoldenDir / (config.channels[i].name + ".png");

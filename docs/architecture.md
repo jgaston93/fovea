@@ -28,7 +28,7 @@ docs/
 Arrows mean "depends on". The graph has no cycles, and CMake enforces it through target links.
 
 ```
-core      ← (nothing; std + toml++ only)
+core      ← (nothing; std, glm, toml++ and stb_image only)
 terrain   ← core
 platform  ← core            (+ SDL3, private)
 net       ← core

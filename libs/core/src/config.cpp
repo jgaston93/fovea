@@ -301,8 +301,21 @@ void parse_channel(Parser& p, const toml::table& t, const std::string& path, Cha
 
     if (const auto* n = p.required(t, "name", path)) {
         if (auto v = p.string(*n, path + ".name")) {
+            // Also a file name (headless dumps write <name>.png), so plain
+            // characters only, on every platform.
+            const bool safe =
+                std::all_of(v->begin(), v->end(),
+                            [](char c) {
+                                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                                       (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
+                            }) &&
+                v->front() != '.';
             if (v->empty()) {
                 p.error(n->source(), "'" + path + ".name' must not be empty");
+            } else if (!safe || v->size() > 64) {
+                p.error(n->source(), "'" + path + ".name' \"" + *v +
+                                         "\" must be up to 64 letters, digits, '-', '_' or '.', "
+                                         "not starting with '.'");
             }
             out.name = *v;
         }

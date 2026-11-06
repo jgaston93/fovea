@@ -77,6 +77,10 @@ struct SceneView {
 // (no host moves it until milestone 2) and the view's own rotation.
 SceneView reference_scene_view(const ViewDesc& view, const ReferenceScene& scene);
 
+// The reference scene for every channel of a config, in channel order (what
+// the app draws, and the golden-image test).
+std::vector<SceneView> reference_scene_views(const DisplayConfig& config);
+
 // Up to this many outputs get GPU timings.
 inline constexpr std::size_t kMaxTimedOutputs = 8;
 

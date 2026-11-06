@@ -89,6 +89,16 @@ add_test(NAME App.HeadlessDumpsEachChannel
 set_tests_properties(App.HeadlessDumpsEachChannel PROPERTIES
     ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver" TIMEOUT 60
     PASS_REGULAR_EXPRESSION "wrote headless-dump.left\\.png.*wrote headless-dump.center\\.png.*wrote headless-dump.right\\.png.*0 validation messages")
+add_test(NAME App.HeadlessRefusesIdentify
+    COMMAND fovea --headless --identify ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
+set_tests_properties(App.HeadlessRefusesIdentify PROPERTIES
+    TIMEOUT 20 PASS_REGULAR_EXPRESSION "--identify are for on-screen runs")
+# The dump directory is a file: refused before rendering (no Vulkan needed).
+add_test(NAME App.DumpIntoAFileFailsAtOnce
+    COMMAND fovea --headless --dump ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml
+        ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
+set_tests_properties(App.DumpIntoAFileFailsAtOnce PROPERTIES
+    TIMEOUT 20 PASS_REGULAR_EXPRESSION "cannot make the directory .*one_channel.toml")
 add_test(NAME App.DumpNeedsHeadless
     COMMAND fovea --dump out ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
 set_tests_properties(App.DumpNeedsHeadless PROPERTIES

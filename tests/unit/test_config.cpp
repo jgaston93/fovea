@@ -187,6 +187,15 @@ TEST(Config, DuplicateChannelNamesAreRejected) {
                      "duplicate channel name \"center\" (first used on line 3)");
 }
 
+TEST(Config, ChannelNamesAreFileNames) {
+    // Headless dumps write <name>.png: no separators, '..' or odd characters.
+    for (const char* bad : {"../left", "cam/1", "a\\\\b", "a:b", ".hidden", "two words"}) {
+        expect_one_error(parse(minimal_with("\"center\"", std::string("\"") + bad + "\"")), 3,
+                         "must be up to 64 letters");
+    }
+    EXPECT_TRUE(parse(minimal_with("\"center\"", "\"Left-2_wide.v1\"")).ok());
+}
+
 TEST(Config, FrustumMustBeValid) {
     expect_one_error(parse(minimal_with("left = -30.0", "left = 31.0")), 6,
                      "left (31) must be less than right (30)");

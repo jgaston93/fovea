@@ -22,4 +22,14 @@ SceneView reference_scene_view(const ViewDesc& view, const ReferenceScene& scene
     return v;
 }
 
+std::vector<SceneView> reference_scene_views(const DisplayConfig& config) {
+    std::vector<SceneView> views;
+    views.reserve(config.channels.size());
+    for (std::size_t i = 0; i < config.channels.size(); ++i) {
+        views.push_back(reference_scene_view(view_from_channel(config.channels[i], config, i),
+                                             config.reference_scene));
+    }
+    return views;
+}
+
 }  // namespace fovea

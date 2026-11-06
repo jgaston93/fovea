@@ -196,20 +196,22 @@ int finish(const fovea::Renderer& r) {
     return r.validation_messages() == 0 ? 0 : 1;
 }
 
-std::vector<fovea::SceneView> scene_views(const fovea::DisplayConfig& config) {
-    std::vector<fovea::SceneView> views;
-    for (std::size_t i = 0; i < config.channels.size(); ++i) {
-        views.push_back(fovea::reference_scene_view(
-            fovea::view_from_channel(config.channels[i], config, i), config.reference_scene));
-    }
-    return views;
-}
-
 // Headless: every channel rendered offscreen, with no windows or display
 // (the offscreen presenter, or --headless with any config). Draws the given
 // number of frames, prints the colour read back from the middle of each
 // channel, and with --dump writes each channel's last frame as <name>.png.
 int run_headless(const Options& options, const fovea::DisplayConfig& config) {
+    // Before rendering anything: a bad directory fails at once.
+    if (!options.dump.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(options.dump, ec);
+        if (ec || !std::filesystem::is_directory(options.dump)) {
+            (void)std::fprintf(stderr, "fovea: cannot make the directory %s: %s\n",
+                               options.dump.c_str(),
+                               ec ? ec.message().c_str() : "a file is in the way");
+            return 1;
+        }
+    }
     print_views(config);
     std::vector<fovea::OffscreenOutput> outputs;
     std::vector<fovea::Rgb8> clears;
@@ -219,17 +221,13 @@ int run_headless(const Options& options, const fovea::DisplayConfig& config) {
     }
     const auto renderer = fovea::Renderer::offscreen(outputs);
     print_gpu(*renderer);
-    const auto views = scene_views(config);
+    const auto views = fovea::reference_scene_views(config);
     for (std::uint32_t f = 0; f < options.frames; ++f) {
         if (options.clear) {
             renderer->draw_clear_frame(clears);
         } else {
             renderer->draw_scene_frame(views);
         }
-    }
-    if (!options.dump.empty()) {
-        std::error_code ec;
-        std::filesystem::create_directories(options.dump, ec);
     }
     for (std::uint32_t i = 0; i < renderer->output_count(); ++i) {
         const auto& o = outputs[i];
@@ -298,7 +296,7 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
     // filled in software instead.
     std::unique_ptr<fovea::Renderer> renderer;
     std::vector<fovea::Rgb8> clears;
-    const std::vector<fovea::SceneView> views = scene_views(config);
+    const std::vector<fovea::SceneView> views = fovea::reference_scene_views(config);
     const auto draw = [&] {
         return options.clear ? renderer->draw_clear_frame(clears)
                              : renderer->draw_scene_frame(views);
@@ -458,10 +456,11 @@ int run(const Options& options) {
     }
     const fovea::DisplayConfig& config = *result.config;
     if (options.headless || config.presenter == fovea::PresenterKind::offscreen) {
-        if (options.overlay || !options.stats.empty() || options.seconds > 0.0) {
+        if (options.overlay || !options.stats.empty() || options.seconds > 0.0 ||
+            options.identify) {
             (void)std::fprintf(stderr,
-                               "%s: --overlay, --stats and --seconds are for on-screen "
-                               "runs; headless renders --frames frames\n",
+                               "%s: --overlay, --stats, --seconds and --identify are for "
+                               "on-screen runs; headless renders --frames frames\n",
                                options.config.c_str());
             return 1;
         }
@@ -475,7 +474,7 @@ int run(const Options& options) {
         case fovea::PresenterKind::multi_swapchain:
             return run_windows(options, config);
         case fovea::PresenterKind::offscreen:
-            return run_headless(options, config);
+            break;  // headless, handled above
         case fovea::PresenterKind::spanned:
             (void)std::fprintf(stderr, "%s: the spanned presenter is not implemented yet\n",
                                options.config.c_str());

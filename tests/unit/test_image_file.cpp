@@ -22,8 +22,10 @@ RgbaImage gradient(std::uint32_t w, std::uint32_t h) {
     return img;
 }
 
+// Files in the test's working directory (its build tree), so runs of
+// different builds at once don't share them.
 TEST(ImageFile, PngRoundTripIsExact) {
-    const auto file = std::filesystem::temp_directory_path() / "fovea_image_file_test.png";
+    const std::filesystem::path file = "image_file_round_trip.png";
     const RgbaImage img = gradient(37, 23);
     ASSERT_TRUE(write_png(file, img));
     const auto back = read_png(file);
@@ -36,7 +38,7 @@ TEST(ImageFile, PngRoundTripIsExact) {
 
 TEST(ImageFile, MissingOrBadFilesReadAsNothing) {
     EXPECT_FALSE(read_png("no/such/file.png").has_value());
-    const auto file = std::filesystem::temp_directory_path() / "fovea_not_a_png.png";
+    const std::filesystem::path file = "image_file_not_a_png.png";
     std::FILE* f = std::fopen(file.string().c_str(), "wb");
     ASSERT_NE(f, nullptr);
     (void)std::fputs("not a png", f);

@@ -49,7 +49,7 @@ The first session's tasks are listed in the plan under "First Claude Code sessio
 ## Planned layout and stack
 
 - `apps/fovea` (runtime IG), `apps/fovea-compiler` (offline terrain compiler), `libs/core`, `libs/render`, `libs/platform`, `libs/net`, `tools/cigi-test-host`, `config/`, `docs/`.
-- C++20, CMake, Vulkan 1.3, volk, VMA, vk-bootstrap, SDL3, toml++, Slang (see `docs/decisions.md`).
+- C++20, CMake, Vulkan 1.3, volk, VMA, vk-bootstrap, SDL3, toml++, Slang, glm, Dear ImGui, stb_image (see `docs/decisions.md`).
 - GDAL is used **only** in the compiler, never in the runtime.
 - Use one shader toolchain targeting SPIR-V (Slang or GLSL). Pick it before significant shader work starts.
 - Record design choices in `docs/decisions.md`. Summarize the architecture in `docs/architecture.md`.
