@@ -66,6 +66,41 @@ FetchContent_Declare(SDL3
 FetchContent_MakeAvailable(SDL3)
 fovea_mark_system_includes(SDL3-static)
 
+# --- Vulkan (libs/render only, D-005) ------------------------------------------
+# Headers, loader, setup and memory, all pinned to the Vulkan SDK 1.4.363
+# release, so every platform builds against the same headers; the Vulkan
+# loader itself is found at run time by volk. No Vulkan SDK is needed to
+# build (only for validation layers and the shader compiler).
+FetchContent_Declare(vulkan_headers
+    URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-1.4.363.0.tar.gz
+    URL_HASH SHA256=4a078be12bef21cfebc09d878b77a63cff9d68f899254a0b00d0e37ef73e7f7e)
+FetchContent_MakeAvailable(vulkan_headers)
+fovea_mark_system_includes(Vulkan-Headers)
+
+set(VOLK_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(volk
+    URL https://github.com/zeux/volk/archive/refs/tags/vulkan-sdk-1.4.363.0.tar.gz
+    URL_HASH SHA256=1547d8d74395d4048fb3f4a6313da56db626e89b55db238d0d7e8944c8a645f3)
+FetchContent_GetProperties(vulkan_headers)
+set(VULKAN_HEADERS_INSTALL_DIR "${vulkan_headers_SOURCE_DIR}" CACHE PATH "" FORCE)
+FetchContent_MakeAvailable(volk)
+fovea_mark_system_includes(volk)
+
+set(VK_BOOTSTRAP_TEST OFF CACHE BOOL "" FORCE)
+set(VK_BOOTSTRAP_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(vk_bootstrap
+    URL https://github.com/charles-lunarg/vk-bootstrap/archive/refs/tags/v1.4.363.tar.gz
+    URL_HASH SHA256=11927b43a5c5d64646982b273d6436d2243acaa2da8834f7ba382060431155fe)
+FetchContent_MakeAvailable(vk_bootstrap)
+fovea_mark_system_includes(vk-bootstrap)
+
+set(VMA_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(vma
+    URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.4.0.tar.gz
+    URL_HASH SHA256=822aa850c6ce77346ae96a8a1d351d52e77e85929f35363849a0a4e638e0a2a1)
+FetchContent_MakeAvailable(vma)
+fovea_mark_system_includes(VulkanMemoryAllocator)
+
 # --- GoogleTest 1.15.2 (tests only) -------------------------------------------
 if(FOVEA_BUILD_TESTS)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)

@@ -29,6 +29,8 @@ struct WindowDesc {
     // Windowed size, when not fullscreen.
     std::uint32_t width = 1280;
     std::uint32_t height = 720;
+    // Usable for a Vulkan surface. Such a window can't also use fill().
+    bool vulkan = false;
 };
 
 // Made by Platform::create_window; the Platform must outlive it.
@@ -57,8 +59,11 @@ public:
     // a Vulkan surface afterwards. Returns false if SDL can't draw it.
     bool fill(std::uint8_t r, std::uint8_t g, std::uint8_t b);
 
-    // The SDL_Window, for the Vulkan surface (step 5) inside libs/platform.
-    void* native() const { return handle_; }
+    // Creates a VkSurfaceKHR for this window on a VkInstance. Handles are
+    // passed as integers so this header needs no Vulkan headers. The window
+    // must have been created with WindowDesc::vulkan. Throws
+    // std::runtime_error on failure; the caller destroys the surface.
+    std::uint64_t create_vulkan_surface(std::uintptr_t vk_instance) const;
 
 private:
     friend class Platform;
@@ -99,6 +104,11 @@ public:
 
     // The name of the video driver in use ("windows", "x11", "dummy").
     std::string video_driver() const;
+
+    // Instance extensions Vulkan needs for this platform's windows
+    // (VK_KHR_surface and the platform's own). Loads the Vulkan library on
+    // first use; throws std::runtime_error if there is none.
+    std::vector<std::string> vulkan_instance_extensions();
 
 private:
     void list_monitors();

@@ -1,6 +1,7 @@
 #include "fovea/platform/platform.hpp"
 
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_vulkan.h>
 
 #include <algorithm>
 #include <atomic>
@@ -84,6 +85,16 @@ bool Window::fill(std::uint8_t r, std::uint8_t g, std::uint8_t b) {
            SDL_UpdateWindowSurface(sdl(handle_));
 }
 
+std::uint64_t Window::create_vulkan_surface(std::uintptr_t vk_instance) const {
+    VkSurfaceKHR surface{};
+    // NOLINTNEXTLINE(performance-no-int-to-ptr): VkInstance passed as an integer
+    if (!SDL_Vulkan_CreateSurface(sdl(handle_), reinterpret_cast<VkInstance>(vk_instance), nullptr,
+                                  &surface)) {
+        fail("cannot create a Vulkan surface");
+    }
+    return reinterpret_cast<std::uint64_t>(surface);
+}
+
 int Window::current_monitor() const {
     if (handle_ == nullptr) {
         return -1;
@@ -158,7 +169,10 @@ Window Platform::create_window(const WindowDesc& desc) {
 
     // Created hidden at the monitor's position, so it goes fullscreen on that
     // monitor and not wherever the window manager first puts it.
-    const SDL_WindowFlags flags = SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    SDL_WindowFlags flags = SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    if (desc.vulkan) {
+        flags |= SDL_WINDOW_VULKAN;
+    }
     const int w = static_cast<int>(desc.fullscreen ? m.width : desc.width);
     const int h = static_cast<int>(desc.fullscreen ? m.height : desc.height);
     SDL_Window* window = SDL_CreateWindow(desc.title.c_str(), w, h, flags);
@@ -207,6 +221,19 @@ EventSummary Platform::wait_events(int timeout_ms) {
     // The rest of the batch folds into the same summary, so no event's
     // flags are lost whichever comes first.
     return poll_into(summary);
+}
+
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+std::vector<std::string> Platform::vulkan_instance_extensions() {
+    if (!SDL_Vulkan_LoadLibrary(nullptr)) {
+        fail("cannot load the Vulkan library");
+    }
+    Uint32 count = 0;
+    char const* const* names = SDL_Vulkan_GetInstanceExtensions(&count);
+    if (names == nullptr) {
+        fail("cannot get Vulkan's instance extensions");
+    }
+    return {names, names + count};
 }
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)

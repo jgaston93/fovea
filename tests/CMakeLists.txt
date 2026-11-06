@@ -11,6 +11,7 @@ add_executable(fovea_unit_tests
     unit/test_monitors.cpp
     unit/test_platform.cpp
     unit/test_projection.cpp
+    unit/test_renderer.cpp
     unit/test_scene.cpp
     unit/test_terrain.cpp
     unit/test_time.cpp
@@ -42,7 +43,7 @@ set_tests_properties(IncludeRules.CatchesPlantedViolations PROPERTIES
 # monitors than there are, and reports an unreadable config.
 set(dummy_display "SDL_VIDEO_DRIVER=dummy")
 add_test(NAME App.OpensItsWindowsAndExits
-    COMMAND fovea --seconds 0.2 ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
+    COMMAND fovea --seconds 0.2 --identify ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
 set_tests_properties(App.OpensItsWindowsAndExits PROPERTIES
     ENVIRONMENT ${dummy_display} TIMEOUT 20
     PASS_REGULAR_EXPRESSION "window \"only\": on monitor 0, [0-9]+x[0-9]+ px")
@@ -51,11 +52,19 @@ add_test(NAME App.IdentifyFillsTheWindows
 set_tests_properties(App.IdentifyFillsTheWindows PROPERTIES
     ENVIRONMENT ${dummy_display} TIMEOUT 20
     PASS_REGULAR_EXPRESSION "Identifying: red" FAIL_REGULAR_EXPRESSION "cannot fill")
-add_test(NAME App.OffscreenNeedsNoDisplay
+# Offscreen rendering on Vulkan with no display at all: the clear colour
+# comes back from the GPU. Skipped where there is no Vulkan driver (CI has
+# lavapipe and sets FOVEA_REQUIRE_VULKAN, so it runs there).
+add_test(NAME App.OffscreenRendersWithoutADisplay
     COMMAND fovea ${CMAKE_CURRENT_SOURCE_DIR}/data/offscreen.toml)
-set_tests_properties(App.OffscreenNeedsNoDisplay PROPERTIES
-    ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver" TIMEOUT 20
-    PASS_REGULAR_EXPRESSION "offscreen: no windows" FAIL_REGULAR_EXPRESSION "cannot start SDL")
+set_tests_properties(App.OffscreenRendersWithoutADisplay PROPERTIES
+    ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver" TIMEOUT 60
+    PASS_REGULAR_EXPRESSION "offscreen \"only\": 1024x768, middle rgb\\(200,30,30\\).*0 validation messages"
+    FAIL_REGULAR_EXPRESSION "cannot start SDL")
+if(NOT DEFINED ENV{FOVEA_REQUIRE_VULKAN})
+    set_tests_properties(App.OffscreenRendersWithoutADisplay PROPERTIES
+        SKIP_REGULAR_EXPRESSION "no Vulkan loader found|no GPU with Vulkan 1.3")
+endif()
 add_test(NAME App.RejectsABadSecondsValue
     COMMAND fovea --seconds -1 ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
 set_tests_properties(App.RejectsABadSecondsValue PROPERTIES
