@@ -28,7 +28,8 @@ FrameLoop::FrameLoop(Renderer& renderer, SceneState& scene, std::span<const Scen
       stats_(stats),
       start_(now()),
       schedule_(start_, options.rate_hz),
-      first_renderer_frame_(renderer.frames_drawn()) {
+      first_renderer_frame_(renderer.frames_drawn()),
+      display_clock_(options.rate_hz) {
     intervals_.fill(static_cast<float>(1000.0 / options.rate_hz));
     if (options.rig != nullptr) {
         if (options.rig->views.size() != views.size()) {
@@ -74,7 +75,12 @@ const FrameRecord& FrameLoop::step() {
     // The latest published scene, taken once for the whole frame.
     const SceneSnapshot& scene = scene_.latest();
     if (options_.rig != nullptr) {
-        summary_.views_below_ground += ride_entities(*options_.rig, scene, rigged_, started);
+        // Moving things are drawn for when the frame will be seen: with
+        // present-wait pacing, the next vsync (DisplayClock), not the
+        // frame's own jittery start; otherwise the start.
+        const LocalTime shown =
+            renderer_.paced_by_display() ? display_clock_.frame_started(started) : started;
+        summary_.views_below_ground += ride_entities(*options_.rig, scene, rigged_, shown);
     }
 
     // The overlay shows the stats up to the previous frame.
@@ -117,10 +123,7 @@ const FrameRecord& FrameLoop::step() {
     r.missed = r.interval_ms > options_.missed_after_periods * period_ms;
     r.scene_sequence = scene.sequence;
     if (options_.rig != nullptr && !options_.rig->views.empty()) {
-        // The first view's heading: its centre ray, in the level frame.
-        const Vec4 ray = rigged_[0].clip_to_local * Vec4(0.0F, 0.0F, 1.0F, 1.0F);
-        r.heading_deg =
-            glm::degrees(std::atan2(static_cast<double>(ray.y), static_cast<double>(ray.x)));
+        r.heading_deg = view_heading_deg(rigged_[0]);
         if (const EntityState* e = find_entity(scene, options_.rig->views[0].pose.entity)) {
             r.sample_age_ms = ms_between(e->cur.sample_t, started);
             r.recv_age_ms = ms_between(e->cur.recv_t, started);

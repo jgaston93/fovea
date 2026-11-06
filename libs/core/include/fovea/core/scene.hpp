@@ -52,9 +52,9 @@ struct EntityState {
     // An inactive entity is kept (its model stays loaded) but not drawn, and
     // views can't ride it until it is active again.
     bool active = true;
-    // The host allows the renderer to extrapolate or interpolate its samples
-    // (CIGI: Extrapolation/Interpolation Enable, in IG Control and in the
-    // entity's own Entity Control).
+    // The host allows the renderer to extrapolate or interpolate this
+    // entity's samples (CIGI: the entity's Extrapolation/Interpolation
+    // Enable); SceneSnapshot::smoothing_allowed must allow it too.
     bool smooth = false;
     // The last two samples, so the renderer can interpolate or extrapolate
     // to its own frame time without the writer knowing about frames.
@@ -70,6 +70,9 @@ struct EnvironmentState {
 struct SceneSnapshot {
     FixedArray<EntityState, kMaxEntities> entities;
     EnvironmentState environment;
+    // The host allows smoothing at all (CIGI: IG Control's Extrapolation/
+    // Interpolation Enable); off turns it off for every entity.
+    bool smoothing_allowed = false;
     std::uint64_t sequence = 0;  // incremented by every publish
 };
 

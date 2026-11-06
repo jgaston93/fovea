@@ -64,7 +64,7 @@ SceneView ride(const ReferenceScene& s, const ViewDesc& view, const SceneSnapsho
                std::size_t* below = nullptr) {
     const ViewRig rig{std::span<const ViewDesc>(&view, 1), s, 0.0};
     SceneView out = reference_scene_view(view, s);
-    const std::size_t n = ride_entities(rig, snapshot, std::span<SceneView>(&out, 1));
+    const std::size_t n = ride_entities(rig, snapshot, std::span<SceneView>(&out, 1), LocalTime{});
     if (below != nullptr) {
         *below = n;
     }
@@ -93,14 +93,14 @@ TEST(RideEntities, AViewWithoutItsEntityKeepsItsLastView) {
     const ViewRig rig{std::span<const ViewDesc>(&v, 1), s, 0.0};
     SceneView out = reference_scene_view(v, s);
     ASSERT_TRUE(snapshot->entities.push_back(entity_at(s, 500.0, 0.0, 50.0, {})));
-    (void)ride_entities(rig, *snapshot, std::span<SceneView>(&out, 1));
+    (void)ride_entities(rig, *snapshot, std::span<SceneView>(&out, 1), LocalTime{});
     const SceneView seen = out;
     EXPECT_NEAR(seen.eye_height_m, 50.0F - 0.5F * -1.0F, 1e-3F);
     snapshot->entities[0].active = false;
-    (void)ride_entities(rig, *snapshot, std::span<SceneView>(&out, 1));
+    (void)ride_entities(rig, *snapshot, std::span<SceneView>(&out, 1), LocalTime{});
     expect_same(out, seen, 0.0F);
     snapshot->entities.clear();
-    (void)ride_entities(rig, *snapshot, std::span<SceneView>(&out, 1));
+    (void)ride_entities(rig, *snapshot, std::span<SceneView>(&out, 1), LocalTime{});
     expect_same(out, seen, 0.0F);
 }
 
@@ -284,6 +284,37 @@ TEST(PoseAt, HoldsWhenNotAllowedOrTooFarAhead) {
     EXPECT_NEAR(glm::length(far.ecef - e.cur.ecef), 60.0 * kMaxExtrapolationS, 1e-3);
 }
 
+TEST(PoseAt, ARepositionIsNotExtrapolated) {
+    // The host moves the entity 10 km between two samples 1/60 s apart: a
+    // jump, not 600 km/s of motion. Drawn where it was put.
+    const auto s = test_scene();
+    const LocalTime t1 = LocalTime{} + std::chrono::seconds(100);
+    const EntityState jump = moving(s, 10000.0, 0.0, t1);
+    EXPECT_EQ(pose_at(jump, t1 + std::chrono::milliseconds(10)).ecef, jump.cur.ecef);
+    const EntityState spin = moving(s, 1.0, 90.0, t1);  // 5400 deg/s
+    EXPECT_EQ(pose_at(spin, t1 + std::chrono::milliseconds(10)).orientation, spin.cur.orientation);
+}
+
+TEST(PoseAt, NeverFurtherBackThanTheEarlierSample) {
+    // A frame time long before the samples (a stale clock, a caller's
+    // mistake): the earlier sample, not an extrapolation back in time.
+    const auto s = test_scene();
+    const LocalTime t1 = LocalTime{} + std::chrono::seconds(100);
+    const EntityState e = moving(s, 1.0, 0.5, t1);
+    EXPECT_LT(glm::length(pose_at(e, LocalTime{}).ecef - e.prev.ecef), 1e-6);
+}
+
+TEST(PoseAt, NeedsSamplesOnOneClockAndTheScenesLeave) {
+    const auto s = test_scene();
+    const LocalTime t1 = LocalTime{} + std::chrono::seconds(100);
+    EntityState e = moving(s, 1.0, 0.5, t1);
+    const LocalTime later = t1 + std::chrono::milliseconds(10);
+    EXPECT_NE(pose_at(e, later).ecef, e.cur.ecef);         // smoothed
+    EXPECT_EQ(pose_at(e, later, false).ecef, e.cur.ecef);  // the host's global flag off
+    e.cur.host_t.valid = true;                             // stamped; the earlier wasn't
+    EXPECT_EQ(pose_at(e, later).ecef, e.cur.ecef);
+}
+
 TEST(RideEntities, SmoothingRemovesTheJudderOfDriftingClocks) {
     // What the owner saw: a host turning steadily, sending at exactly 60 Hz,
     // drawn by frames at 59.95 Hz; samples land 0 or 2 to a frame. Without
@@ -305,6 +336,7 @@ TEST(RideEntities, SmoothingRemovesTheJudderOfDriftingClocks) {
             return e.cur;
         };
         snapshot->entities.push_back(entity_at(s, 0.0, 0.0, 100.0, {}));
+        snapshot->smoothing_allowed = true;
         EntityState& e = snapshot->entities[0];
         e.smooth = smooth;
         e.prev = sample(-1);
@@ -321,9 +353,7 @@ TEST(RideEntities, SmoothingRemovesTheJudderOfDriftingClocks) {
             }
             SceneView out = reference_scene_view(v, s);
             (void)ride_entities(rig, *snapshot, std::span<SceneView>(&out, 1), at(t));
-            const Vec4 ray = out.clip_to_local * Vec4(0.0F, 0.0F, 1.0F, 1.0F);
-            const double heading =
-                glm::degrees(std::atan2(static_cast<double>(ray.y), static_cast<double>(ray.x)));
+            const double heading = view_heading_deg(out);
             if (f > 0) {
                 min_step = std::min(min_step, heading - last_heading);
                 max_step = std::max(max_step, heading - last_heading);
@@ -350,7 +380,7 @@ TEST(RideEntities, AllocatesNothing) {
     std::vector<SceneView> out(3);
     const test::AllocationCounter counter;
     for (int i = 0; i < 100; ++i) {
-        ride_entities(rig, *snapshot, out);
+        ride_entities(rig, *snapshot, out, LocalTime{});
     }
     EXPECT_EQ(counter.count(), 0U);
 }

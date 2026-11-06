@@ -135,6 +135,9 @@ bool CigiAdapter::apply(std::span<const std::uint8_t> message, SceneSnapshot& sc
             ++stats_.stale_messages;
             return false;
         }
+        if (step < 0) {
+            host_epoch_.reset();  // a restarted clock: its zero is placed afresh
+        }
         if (step > 0) {
             host_ticks_ += static_cast<std::uint64_t>(step);
         }
@@ -155,13 +158,14 @@ bool CigiAdapter::apply(std::span<const std::uint8_t> message, SceneSnapshot& sc
         host_epoch_updated_ = received;
     }
     host_time_valid_ = ig->timestamp_valid;
-    smoothing_allowed_ = ig->extrapolation_enable;
+    scene.smoothing_allowed = ig->extrapolation_enable;
     ++stats_.messages;
     last_host_frame_ = ig->host_frame_number;
     if (ig->ig_mode == cigi::IgMode::reset_standby) {
         if (mode_ != cigi::IgMode::reset_standby) {
             scene.entities.clear();    // entering Reset/Standby destroys every entity
-            last_host_ticks_.reset();  // a new session may start its clock afresh
+            last_host_ticks_.reset();  // a new session may start its clock afresh,
+            host_epoch_.reset();       // and its zero is placed afresh
         }
         mode_ = cigi::IgMode::reset_standby;
         ++stats_.ignored_in_standby;
@@ -238,7 +242,7 @@ void CigiAdapter::apply_entity(const cigi::EntityControl& e, SceneSnapshot& scen
     }
     entity->model = e.entity_type;
     entity->active = e.entity_state == cigi::EntityState::active;
-    entity->smooth = smoothing_allowed_ && e.extrapolation_enable;
+    entity->smooth = e.extrapolation_enable;
     ++stats_.entity_updates;
 }
 

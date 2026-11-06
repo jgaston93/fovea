@@ -102,19 +102,27 @@ struct ViewRig {
 
 // Updates out[i] for each of the rig's views (as many as both hold), and
 // returns how many eyes were at or below the grid (drawn from just above
-// it). An entity whose host allows it (EntityState::smooth) is drawn where
-// its last two samples put it at `at` (the frame's time): extrapolated at
-// their velocity, at most kMaxExtrapolation past the newest; otherwise at
-// its newest sample. No allocation: for the render thread.
+// it). Entities are drawn for `at`, the time the frame will be seen
+// (pose_at). No allocation: for the render thread.
 std::size_t ride_entities(const ViewRig& rig, const SceneSnapshot& snapshot,
-                          std::span<SceneView> out, LocalTime at = {});
+                          std::span<SceneView> out, LocalTime at);
 
 // How far past its newest sample an entity is extrapolated, at most: past
 // this (a host that stopped sending), it holds there.
 inline constexpr double kMaxExtrapolationS = 0.1;
 
-// An entity's pose at `at` (see ride_entities).
-Pose pose_at(const EntityState& entity, LocalTime at);
+// An entity's pose at `at`. Where the host allows it (`allowed`, the
+// scene's smoothing_allowed, and the entity's smooth), its last two samples
+// are continued at their velocity to `at`: back no further than the earlier
+// sample, ahead no more than kMaxExtrapolationS past the newer. Otherwise,
+// and when the samples can't give a velocity (one sample, a gap of over half
+// a second, timestamps on different clocks, or a jump faster than any
+// vehicle: a host repositioning it), its newest sample.
+Pose pose_at(const EntityState& entity, LocalTime at, bool allowed = true);
+
+// A view's heading: the direction of its centre ray in the level frame,
+// degrees clockwise from north.
+double view_heading_deg(const SceneView& view);
 
 // Up to this many outputs get GPU timings.
 inline constexpr std::size_t kMaxTimedOutputs = 8;

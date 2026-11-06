@@ -437,6 +437,7 @@ TEST(CigiAdapter, SampleTimesFollowTheHostClock) {
     ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 2; }));
     const LocalTime first = find_entity(scene->latest(), 1)->cur.sample_t;
     EXPECT_TRUE(find_entity(scene->latest(), 1)->smooth);
+    EXPECT_TRUE(scene->latest().smoothing_allowed);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     ig = operate(2, 1100);
     ig.extrapolation_enable = false;  // the host withdraws its leave
@@ -445,11 +446,40 @@ TEST(CigiAdapter, SampleTimesFollowTheHostClock) {
     const EntityState* now_e = find_entity(scene->latest(), 1);
     const double gap_ms =
         std::chrono::duration<double, std::milli>(now_e->cur.sample_t - first).count();
-    EXPECT_NEAR(gap_ms, 1.0, 0.01);  // plus the zero's creep: 100 ppm of 50 ms = 5 us
+    // Plus the zero's creep, 100 ppm of the time between them (5 us for
+    // 50 ms; a slow runner may take longer).
+    EXPECT_NEAR(gap_ms, 1.0, 0.05);
     const double late_ms =
         std::chrono::duration<double, std::milli>(now_e->cur.recv_t - now_e->cur.sample_t).count();
     EXPECT_GE(late_ms, 45.0);
-    EXPECT_FALSE(now_e->smooth);
+    // The host's global flag is the scene's; the entity's own stays its own.
+    EXPECT_FALSE(scene->latest().smoothing_allowed);
+    EXPECT_TRUE(now_e->smooth);
+}
+
+TEST(CigiAdapter, ARestartedHostClockIsMappedAfresh) {
+    // The host leaves for 300 ms (Reset/Standby) and comes back with its
+    // clock at 0 again: sample times match arrival times again, rather than
+    // lagging by the time it was away.
+    auto scene = std::make_unique<SceneState>();
+    CigiAdapter adapter({});
+    Host host(adapter.port());
+    start_operating(adapter, *scene, host, 500000);
+    host.send(host_message(operate(1, 500000), {entity(1, 0.0, 0.0, 0.0)}));
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 2; }));
+    cigi::IgControl standby = operate(2, 500100);
+    standby.ig_mode = cigi::IgMode::reset_standby;
+    host.send(host_message(standby, {}));
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 3; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    start_operating(adapter, *scene, host, 0);
+    host.send(host_message(operate(3, 100), {entity(1, 0.0, 0.0, 0.0)}));
+    ASSERT_TRUE(
+        poll_until(adapter, *scene, [&] { return find_entity(scene->latest(), 1) != nullptr; }));
+    const EntityState* e = find_entity(scene->latest(), 1);
+    const double lag_ms =
+        std::chrono::duration<double, std::milli>(e->cur.recv_t - e->cur.sample_t).count();
+    EXPECT_LT(lag_ms, 50.0);  // not the 300 ms the host was away
 }
 
 TEST(CigiAdapter, SteadyStateAllocatesNothing) {

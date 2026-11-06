@@ -22,6 +22,7 @@
 #include "fovea/core/log.hpp"
 #include "fovea/core/scene.hpp"
 #include "fovea/core/time.hpp"
+#include "fovea/render/display_clock.hpp"
 #include "fovea/render/renderer.hpp"
 
 namespace fovea {
@@ -146,6 +147,7 @@ private:
     std::size_t next_interval_ = 0;  // the oldest, once the ring is full
     OverlayContent overlay_;
     std::uint64_t first_renderer_frame_;
+    DisplayClock display_clock_;
     std::atomic<bool> running_{false};
     std::atomic<bool> failed_{false};
     std::atomic<std::uint64_t> frames_completed_{0};

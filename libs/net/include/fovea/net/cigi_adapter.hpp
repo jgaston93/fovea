@@ -118,8 +118,7 @@ private:
     // The host's timestamp, unwrapped: the last raw value and the total.
     std::optional<std::uint32_t> last_host_ticks_;
     std::uint64_t host_ticks_ = 0;
-    bool host_time_valid_ = false;    // the current message's Timestamp Valid
-    bool smoothing_allowed_ = false;  // the current message's Extrapolation/Interpolation Enable
+    bool host_time_valid_ = false;  // the current message's Timestamp Valid
     // Where the host clock's zero falls on this computer's clock (see above).
     std::optional<LocalTime> host_epoch_;
     LocalTime host_epoch_updated_;

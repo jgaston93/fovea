@@ -112,27 +112,46 @@ std::vector<SceneView> reference_scene_views(const DisplayConfig& config) {
     return views;
 }
 
-Pose pose_at(const EntityState& e, LocalTime at) {
+namespace {
+
+// Samples further apart than this give no velocity (a host that paused).
+constexpr double kMaxSampleGapS = 0.5;
+// Faster than any vehicle: two samples this far apart in this little time
+// are a reposition, not motion.
+constexpr double kMaxSpeedMps = 1000.0;
+constexpr double kMaxTurnDps = 720.0;
+
+}  // namespace
+
+double view_heading_deg(const SceneView& view) {
+    const Vec4 ray = view.clip_to_local * Vec4(0.0F, 0.0F, 1.0F, 1.0F);
+    return glm::degrees(std::atan2(static_cast<double>(ray.y), static_cast<double>(ray.x)));
+}
+
+Pose pose_at(const EntityState& e, LocalTime at, bool allowed) {
     const Pose& cur = e.cur;
     const Pose& prev = e.prev;
     const double span = std::chrono::duration<double>(cur.sample_t - prev.sample_t).count();
-    // Smoothing needs the host's leave and two samples close enough together
-    // to give a velocity (not a first sample, nor a gap of seconds).
-    if (!e.smooth || span <= 1e-4 || span > 0.5) {
+    if (!allowed || !e.smooth || span <= 1e-4 || span > kMaxSampleGapS ||
+        cur.host_t.valid != prev.host_t.valid) {
         return cur;
     }
-    const double lead =
-        std::min(std::chrono::duration<double>(at - cur.sample_t).count(), kMaxExtrapolationS);
-    const double f = lead / span;  // negative: between the samples
-    Pose p = cur;
-    p.ecef = cur.ecef + (cur.ecef - prev.ecef) * f;
-    // The rotation from the previous sample to the newest, continued by f
-    // of itself (in ECEF axes, applied after the newest).
+    // The rotation from the earlier sample to the newer (in ECEF axes,
+    // applied after the earlier one).
     DQuat step = cur.orientation * glm::inverse(prev.orientation);
     if (step.w < 0.0) {
         step = -step;  // the short way round
     }
     const double angle = 2.0 * std::acos(std::clamp(step.w, -1.0, 1.0));
+    if (glm::length(cur.ecef - prev.ecef) / span > kMaxSpeedMps ||
+        glm::degrees(angle) / span > kMaxTurnDps) {
+        return cur;  // a jump, not motion: the host moved it
+    }
+    const double lead = std::clamp(std::chrono::duration<double>(at - cur.sample_t).count(), -span,
+                                   kMaxExtrapolationS);
+    const double f = lead / span;  // negative: between the samples
+    Pose p = cur;
+    p.ecef = cur.ecef + (cur.ecef - prev.ecef) * f;
     if (angle > 1e-12) {
         const DVec3 axis = glm::normalize(DVec3(step.x, step.y, step.z));
         p.orientation = glm::normalize(glm::angleAxis(angle * f, axis) * cur.orientation);
@@ -152,7 +171,7 @@ std::size_t ride_entities(const ViewRig& rig, const SceneSnapshot& snapshot,
             eye = {view.pose.world_ecef, view.pose.world_orientation};
         } else if (const EntityState* e = find_entity(snapshot, view.pose.entity);
                    e != nullptr && e->active) {
-            const Pose p = pose_at(*e, at);
+            const Pose p = pose_at(*e, at, snapshot.smoothing_allowed);
             eye = eye_on(view, p.ecef, p.orientation);
         } else {
             continue;  // keeps its last view: a missing entity doesn't snap it away
