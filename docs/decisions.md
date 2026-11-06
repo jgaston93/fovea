@@ -100,3 +100,38 @@ The codec is Fovea's own: fixed-size encode and decode of the packets in use, wi
 
 Packet layouts come from the ICD itself, never from memory: `tools/fetch-cigi-icd.sh` downloads the CIGI 3.3 ICD (Boeing document TST08I016, 3 Nov 2008) and its errata (Appendix C, 4 May 2009) into the git-ignored `docs/reference/`, checked against pinned SHA-256 hashes. The ICD calls itself "intended to be a public domain document" but asks not to be reproduced for modifying the interface, so it isn't committed. Codec code cites the ICD section and page for each packet. One ICD quirk: the 3.3 document gives Minor Version = 2 in IG Control and Start of Frame, and the errata don't change it. Fovea sends 2, as written, and accepts any minor version on receive, checking only Major Version = 3.
 
+## D-015 Tiling: a geographic quadtree
+
+**Status:** Proposed
+
+Terrain tiles split latitude and longitude in half at each level, from two root tiles (east and west hemispheres). The scheme covers the whole Earth, matches how sources are indexed, and has no zone seams (UTM grids, simpler for one small area, do). Each tile holds a square grid of heights with edges shared with its neighbours and an imagery texture; its vertices are relative to the tile's own ECEF origin, so the GPU stays camera-relative. Tiles shrink in longitude toward the poles; that is a cost only far from any likely database.
+
+## D-016 Terrain level of detail: chunked quadtree by screen-space error
+
+**Status:** Proposed
+
+Each frame a tile splits into its children where its geometric error (recorded by the compiler) would show as more than about a pixel. Skirts hide cracks between levels. Popping is measured on the desk; morphing between levels (CDLOD-style) follows if it shows. Clipmaps are smoother but harder to combine with paging mixed-resolution sources.
+
+## D-017 Terrain imagery: BC7 with mips
+
+**Status:** Proposed
+
+Imagery is stored as BC7 (sRGB) with full mip chains, encoded by the compiler with a pinned encoder library (chosen and licence-checked in milestone 3 step 4): about 1 byte per texel, so 0.6 m imagery is 3-4 MB per km² with mips. BC1 halves that but blocks visibly on aerial photography.
+
+## D-018 Terrain database: a manifest and one file per tile
+
+**Status:** Proposed
+
+`manifest.toml` holds the schema version, area, layers and sources. Each tile is one binary file: a header (magic, schema version, tile key) and a table of named layers (elevation and imagery first; materials, placements and lights later), so a new layer needs no rebuild of the others (foundational decision 2). Binary, little-endian, with a checksum per layer.
+
+## D-019 The terrain compiler runs on Linux
+
+**Status:** Proposed
+
+GDAL is the compiler's main dependency. On Ubuntu 24.04 it is one package (`libgdal-dev`, GDAL 3.8.4); on Windows it means building GDAL and PROJ through vcpkg, or a conda environment. Databases are plain files any runtime reads, so the compiler builds and runs on Linux (WSL and CI) only, and the Windows runtime flies the result. A Windows compiler can follow if needed.
+
+## D-020 Database heights are ellipsoidal
+
+**Status:** Proposed
+
+The compiler converts the sources' NAVD88 heights to WGS-84 ellipsoid heights with NOAA's GEOID18 (h = H + N), so the runtime works in one vertical datum. The database also carries the geoid height over its area, which lets the runtime convert a host's sea-level altitudes properly there (issue #19) instead of with one constant.
