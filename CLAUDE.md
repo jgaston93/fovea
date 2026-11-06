@@ -26,6 +26,8 @@ ctest --preset debug -R 'Toolchain\.FloatingPointIsIeeeWithoutFastMath'   # one 
 ./build/debug/apps/fovea/fovea --identify --seconds 10 config/<file>.toml  # same, filled in software
 ./build/debug/apps/fovea/fovea tests/data/offscreen.toml                   # headless Vulkan, no display
 # a [host] section (see config/channels.example.toml) makes fovea listen for CIGI 3.3 over UDP
+./build/debug/apps/fovea/fovea --overlay config/cigi-test-host.toml        # then, alongside:
+./build/debug/tools/cigi-test-host/cigi-test-host tools/cigi-test-host/scripts/circuit.toml
 ./build/debug/apps/fovea/fovea --headless --dump out config/<file>.toml    # any config headless, out/<channel>.png
 FOVEA_UPDATE_GOLDEN=1 ctest --preset debug -R Golden                       # rewrite tests/data/golden (on lavapipe)
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json FOVEA_REQUIRE_VULKAN=1 ctest --preset debug  # GPU tests on lavapipe

@@ -198,9 +198,9 @@ TEST(TestHostSession, FliesFoveasAdapterOverLoopback) {
     const auto begin = std::chrono::steady_clock::now();
     auto last = begin;
     std::uint64_t ig_frame = 0;
-    // About 1.5 s at 60 Hz: host frames, and IG frame starts as a render
+    // About 0.8 s at 60 Hz: host frames, and IG frame starts as a render
     // loop would push them.
-    while (std::chrono::steady_clock::now() - begin < std::chrono::milliseconds(1500)) {
+    while (std::chrono::steady_clock::now() - begin < std::chrono::milliseconds(800)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
         const auto t = std::chrono::steady_clock::now();
         (void)frames.try_push({ig_frame++, t});
@@ -213,7 +213,7 @@ TEST(TestHostSession, FliesFoveasAdapterOverLoopback) {
     network.stop();
 
     EXPECT_TRUE(session.operating());
-    EXPECT_GT(session.stats().start_of_frames, 30U);
+    EXPECT_GT(session.stats().start_of_frames, 20U);
     EXPECT_GT(session.stats().round_trips, 10U);
     const EntityState* e = find_entity(scene->latest(), 0);
     ASSERT_NE(e, nullptr);

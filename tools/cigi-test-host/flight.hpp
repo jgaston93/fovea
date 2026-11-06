@@ -7,7 +7,7 @@
 // rolls. Bank and pitch ease toward each segment's targets, so segments join
 // without jumps.
 
-#include <string>
+#include <cstdint>
 #include <vector>
 
 #include "fovea/core/attitude.hpp"
@@ -16,7 +16,7 @@
 namespace fovea::test_host {
 
 struct Segment {
-    enum class Kind { hold, straight, turn, roll, figure_eight };
+    enum class Kind : std::uint8_t { hold, straight, turn, roll, figure_eight };
     Kind kind = Kind::straight;
     double duration_s = 0.0;  // figure_eight: two full turns, so 720 / |turn_rate|
     double speed_mps = 0.0;
