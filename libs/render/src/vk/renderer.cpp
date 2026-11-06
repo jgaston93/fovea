@@ -367,11 +367,17 @@ void Renderer::Impl::create_device(bool present) {
     f12.descriptorBindingPartiallyBound = VK_TRUE;
     f12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 
+    // Slang compiles SV_VertexID with SPIR-V's DrawParameters capability.
+    VkPhysicalDeviceVulkan11Features f11{};
+    f11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+    f11.shaderDrawParameters = VK_TRUE;
+
     vkb::PhysicalDeviceSelector selector(instance);
     selector.set_minimum_version(1, 3)
         .prefer_gpu_device_type(vkb::PreferredDeviceType::discrete)
         .set_required_features_13(f13)
-        .set_required_features_12(f12);
+        .set_required_features_12(f12)
+        .set_required_features_11(f11);
     if (present) {
         selector.set_surface(swapchains.front().surface)
             .add_required_extension(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
