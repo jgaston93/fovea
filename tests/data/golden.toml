@@ -1,0 +1,31 @@
+# The golden-image views (tests/unit/test_golden.cpp): small, and between
+# them they exercise yaw, pitch, roll, an eye offset and an asymmetric
+# frustum. Regenerate the images with FOVEA_UPDATE_GOLDEN=1.
+[display]
+presenter = "offscreen"
+
+[reference_scene]
+eye_height_m = 10.0
+grid_spacing_m = 10.0
+
+[[channel]]
+name = "yawed"
+monitor = 0
+render_extent = [320, 180]
+view_rotation = { yaw = -60.0, pitch = 0.0, roll = 0.0 }
+frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
+
+[[channel]]
+name = "pitched-rolled"
+monitor = 1
+render_extent = [320, 180]
+eye_offset = { x = 0.0, y = 3.0, z = -5.0 }
+view_rotation = { yaw = 20.0, pitch = -10.0, roll = 8.0 }
+frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
+
+[[channel]]
+name = "asymmetric"
+monitor = 2
+render_extent = [320, 180]
+view_rotation = { yaw = 45.0, pitch = 0.0, roll = 0.0 }
+frustum = { left = -15.0, right = 40.0, top = 25.0, bottom = -8.0 }

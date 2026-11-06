@@ -1,0 +1,85 @@
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include "fovea/core/config.hpp"
+#include "fovea/core/image_file.hpp"
+#include "fovea/render/renderer.hpp"
+#include "fovea/render/view.hpp"
+
+namespace fovea {
+namespace {
+
+// Golden images: the reference scene for tests/data/golden.toml, compared
+// with the PNGs in tests/data/golden. FOVEA_UPDATE_GOLDEN=1 rewrites them
+// (on lavapipe, as CI renders) instead of comparing.
+//
+// GPUs differ in rounding and antialiasing, so the comparison allows small
+// differences: kThreshold per channel, on at most kMaxFractionOver of the
+// pixels (measured on lavapipe against the RTX 5070 Ti; see PR text).
+constexpr std::uint8_t kThreshold = 24;
+constexpr double kMaxFractionOver = 0.005;
+
+const std::filesystem::path kGoldenDir = FOVEA_SOURCE_DIR "/tests/data/golden";
+
+TEST(Golden, ReferenceSceneMatchesTheGoldenImages) {
+    const auto loaded = load_display_config(FOVEA_SOURCE_DIR "/tests/data/golden.toml");
+    ASSERT_TRUE(loaded.ok());
+    const DisplayConfig& config = *loaded.config;
+
+    std::vector<OffscreenOutput> outputs;
+    std::vector<SceneView> views;
+    for (std::size_t i = 0; i < config.channels.size(); ++i) {
+        const ChannelConfig& ch = config.channels[i];
+        outputs.push_back({ch.render_width, ch.render_height});
+        views.push_back(
+            reference_scene_view(view_from_channel(ch, config, i), config.reference_scene));
+    }
+    RendererOptions options;
+    if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
+        options.validation = Validation::required;
+    }
+    std::unique_ptr<Renderer> r;
+    try {
+        r = Renderer::offscreen(outputs, options);
+    } catch (const std::runtime_error& e) {
+        if (std::getenv("FOVEA_REQUIRE_VULKAN") != nullptr) {
+            FAIL() << "no Vulkan: " << e.what();
+        }
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    r->draw_scene_frame(views);
+    EXPECT_EQ(r->validation_messages(), 0U);
+
+    const bool update = std::getenv("FOVEA_UPDATE_GOLDEN") != nullptr;
+    for (std::uint32_t i = 0; i < outputs.size(); ++i) {
+        const RgbaImage image{outputs[i].width, outputs[i].height, r->read_back_rgba(i)};
+        const auto file = kGoldenDir / (config.channels[i].name + ".png");
+        if (update) {
+            ASSERT_TRUE(write_png(file, image)) << file;
+            continue;
+        }
+        const auto golden = read_png(file);
+        ASSERT_TRUE(golden.has_value())
+            << "missing " << file << " (FOVEA_UPDATE_GOLDEN=1 makes it)";
+        const ImageDifference d = compare_images(image, *golden, kThreshold);
+        ASSERT_TRUE(d.same_size) << file;
+        EXPECT_LE(d.fraction_over, kMaxFractionOver)
+            << config.channels[i].name << ": " << d.fraction_over * 100.0
+            << "% of pixels differ by more than " << int{kThreshold} << " (mean " << d.mean_abs
+            << ", max " << int{d.max_abs} << ")";
+        // For tuning the tolerance: what this GPU differs by.
+        std::printf("golden %-16s mean %.3f  max %3d  over %d: %.4f%%\n",
+                    config.channels[i].name.c_str(), d.mean_abs, int{d.max_abs}, int{kThreshold},
+                    d.fraction_over * 100.0);
+    }
+}
+
+}  // namespace
+}  // namespace fovea

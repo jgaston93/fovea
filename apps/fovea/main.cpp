@@ -12,8 +12,10 @@
 //       GPU needed)
 //   fovea --list-monitors     print the monitors and exit
 //
-// An offscreen config renders one frame headless and prints the colour read
-// back from the middle of each output.
+//   fovea --headless [--frames N] [--dump DIR] [--clear] <config.toml>
+//       render every channel offscreen (no display needed), N frames, and
+//       write each channel's last frame to DIR/<name>.png; an offscreen
+//       config does this without --headless
 
 #include <algorithm>
 #include <array>
@@ -21,6 +23,7 @@
 #include <chrono>
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -28,6 +31,7 @@
 #include <vector>
 
 #include "fovea/core/config.hpp"
+#include "fovea/core/image_file.hpp"
 #include "fovea/core/log.hpp"
 #include "fovea/core/scene.hpp"
 #include "fovea/platform/monitors.hpp"
@@ -49,8 +53,11 @@ fovea::Rgb8 colour_of(std::size_t channel) {
 
 struct Options {
     std::string config;
-    double seconds = 0.0;  // 0: until Esc
-    std::string stats;     // CSV file for per-frame timing, or empty
+    double seconds = 0.0;      // 0: until Esc
+    std::string stats;         // CSV file for per-frame timing, or empty
+    bool headless = false;     // render offscreen, whatever the config's presenter
+    std::uint32_t frames = 1;  // headless: frames to draw
+    std::string dump;          // headless: directory for each channel's PNG
     bool overlay = false;
     bool clear = false;
     bool identify = false;
@@ -125,6 +132,19 @@ std::optional<Options> parse_args(int argc, char** argv) {
             o.seconds = *s;
         } else if (args[i] == "--overlay") {
             o.overlay = true;
+        } else if (args[i] == "--headless") {
+            o.headless = true;
+        } else if (args[i] == "--dump" && i + 1 < args.size()) {
+            o.dump = std::string(args[++i]);
+        } else if (args[i] == "--frames" && i + 1 < args.size()) {
+            const std::string_view text = args[++i];
+            std::uint32_t n = 0;
+            const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), n);
+            if (ec != std::errc{} || end != text.data() + text.size() || n == 0 || n > 100000) {
+                (void)std::fprintf(stderr, "fovea: --frames needs a count from 1 to 100000\n");
+                return std::nullopt;
+            }
+            o.frames = n;
         } else if (args[i] == "--stats" && i + 1 < args.size()) {
             o.stats = std::string(args[++i]);
         } else if (args[i] == "--identify" && !o.clear) {
@@ -153,6 +173,7 @@ int usage() {
     (void)std::fprintf(stderr,
                        "usage: fovea [--seconds N] [--stats FILE] [--overlay] [--clear | "
                        "--identify] <config.toml>\n"
+                       "       fovea --headless [--frames N] [--dump DIR] [--clear] <config.toml>\n"
                        "       fovea --list-monitors\n");
     return 2;
 }
@@ -184,9 +205,11 @@ std::vector<fovea::SceneView> scene_views(const fovea::DisplayConfig& config) {
     return views;
 }
 
-// The offscreen presenter: one frame, no windows or display, and the colour
-// read back from the middle of each output.
-int run_offscreen(const Options& options, const fovea::DisplayConfig& config) {
+// Headless: every channel rendered offscreen, with no windows or display
+// (the offscreen presenter, or --headless with any config). Draws the given
+// number of frames, prints the colour read back from the middle of each
+// channel, and with --dump writes each channel's last frame as <name>.png.
+int run_headless(const Options& options, const fovea::DisplayConfig& config) {
     print_views(config);
     std::vector<fovea::OffscreenOutput> outputs;
     std::vector<fovea::Rgb8> clears;
@@ -196,19 +219,35 @@ int run_offscreen(const Options& options, const fovea::DisplayConfig& config) {
     }
     const auto renderer = fovea::Renderer::offscreen(outputs);
     print_gpu(*renderer);
-    if (options.clear) {
-        renderer->draw_clear_frame(clears);
-    } else {
-        renderer->draw_scene_frame(scene_views(config));
+    const auto views = scene_views(config);
+    for (std::uint32_t f = 0; f < options.frames; ++f) {
+        if (options.clear) {
+            renderer->draw_clear_frame(clears);
+        } else {
+            renderer->draw_scene_frame(views);
+        }
+    }
+    if (!options.dump.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(options.dump, ec);
     }
     for (std::uint32_t i = 0; i < renderer->output_count(); ++i) {
-        const auto px = renderer->read_back_rgba(i);
         const auto& o = outputs[i];
+        fovea::RgbaImage image{o.width, o.height, renderer->read_back_rgba(i)};
         const std::size_t mid =
             (static_cast<std::size_t>(o.height / 2) * o.width + o.width / 2) * 4;
         std::printf("  offscreen \"%s\": %ux%u, middle rgb(%u,%u,%u)\n",
-                    config.channels[i].name.c_str(), o.width, o.height, px[mid], px[mid + 1],
-                    px[mid + 2]);
+                    config.channels[i].name.c_str(), o.width, o.height, image.pixels[mid],
+                    image.pixels[mid + 1], image.pixels[mid + 2]);
+        if (!options.dump.empty()) {
+            const auto file =
+                std::filesystem::path(options.dump) / (config.channels[i].name + ".png");
+            if (!fovea::write_png(file, image)) {
+                (void)std::fprintf(stderr, "fovea: cannot write %s\n", file.string().c_str());
+                return 1;
+            }
+            std::printf("  wrote %s\n", file.string().c_str());
+        }
     }
     return finish(*renderer);
 }
@@ -418,18 +457,25 @@ int run(const Options& options) {
         return 1;
     }
     const fovea::DisplayConfig& config = *result.config;
+    if (options.headless || config.presenter == fovea::PresenterKind::offscreen) {
+        if (options.overlay || !options.stats.empty() || options.seconds > 0.0) {
+            (void)std::fprintf(stderr,
+                               "%s: --overlay, --stats and --seconds are for on-screen "
+                               "runs; headless renders --frames frames\n",
+                               options.config.c_str());
+            return 1;
+        }
+        return run_headless(options, config);
+    }
+    if (options.frames != 1 || !options.dump.empty()) {
+        (void)std::fprintf(stderr, "fovea: --frames and --dump need --headless\n");
+        return 2;
+    }
     switch (config.presenter) {
         case fovea::PresenterKind::multi_swapchain:
             return run_windows(options, config);
         case fovea::PresenterKind::offscreen:
-            if (options.overlay || !options.stats.empty()) {
-                (void)std::fprintf(stderr,
-                                   "%s: --overlay and --stats are for on-screen "
-                                   "configs; offscreen renders one frame\n",
-                                   options.config.c_str());
-                return 1;
-            }
-            return run_offscreen(options, config);
+            return run_headless(options, config);
         case fovea::PresenterKind::spanned:
             (void)std::fprintf(stderr, "%s: the spanned presenter is not implemented yet\n",
                                options.config.c_str());

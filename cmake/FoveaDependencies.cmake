@@ -147,6 +147,23 @@ target_compile_definitions(fovea_imgui PUBLIC
 target_link_libraries(fovea_imgui PUBLIC volk::volk Vulkan::Headers)
 set_target_properties(fovea_imgui PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# --- stb_image 2.30 / stb_image_write 1.16 (PNG files; libs/core only) --------
+# Two public-domain headers, pinned by commit and SHA-256. Used for headless
+# image dumps and golden-image tests, never on the render path.
+set(stb_commit a7d4c2175630e1ea5b6f8dd00ab96fed0b97b96d)
+FetchContent_Declare(stb_image
+    URL https://raw.githubusercontent.com/nothings/stb/${stb_commit}/stb_image.h
+    URL_HASH SHA256=594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3
+    DOWNLOAD_NO_EXTRACT TRUE)
+FetchContent_Declare(stb_image_write
+    URL https://raw.githubusercontent.com/nothings/stb/${stb_commit}/stb_image_write.h
+    URL_HASH SHA256=cbd5f0ad7a9cf4468affb36354a1d2338034f2c12473cf1a8e32053cb6914a05
+    DOWNLOAD_NO_EXTRACT TRUE)
+FetchContent_MakeAvailable(stb_image stb_image_write)
+add_library(fovea_stb INTERFACE)
+target_include_directories(fovea_stb SYSTEM INTERFACE
+    "${stb_image_SOURCE_DIR}" "${stb_image_write_SOURCE_DIR}")
+
 # --- GoogleTest 1.15.2 (tests only) -------------------------------------------
 if(FOVEA_BUILD_TESTS)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)

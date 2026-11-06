@@ -7,6 +7,7 @@ add_executable(fovea_unit_tests
     unit/test_config.cpp
     unit/test_containers.cpp
     unit/test_geodesy.cpp
+    unit/test_image_file.cpp
     unit/test_log.cpp
     unit/test_monitors.cpp
     unit/test_platform.cpp
@@ -32,9 +33,11 @@ gtest_discover_tests(fovea_unit_tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT
 add_executable(fovea_gpu_tests
     support/alloc_counter.cpp
     unit/test_frame_loop.cpp
+    unit/test_golden.cpp
     unit/test_renderer.cpp)
 target_include_directories(fovea_gpu_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(fovea_gpu_tests PRIVATE fovea::render GTest::gtest_main)
+target_compile_definitions(fovea_gpu_tests PRIVATE FOVEA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 fovea_target_defaults(fovea_gpu_tests)
 gtest_discover_tests(fovea_gpu_tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT 120)
 
