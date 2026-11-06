@@ -108,6 +108,7 @@ const FrameRecord& FrameLoop::step() {
     record(r);
     log(r);
     last_ = r;
+    frames_completed_.store(frames_, std::memory_order_release);
     return last_;
 }
 
