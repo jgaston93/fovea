@@ -297,7 +297,7 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
                 (void)std::fprintf(stderr, "fovea: cannot write %s\n", options.stats.c_str());
                 return 1;
             }
-            stats = std::make_unique<fovea::Logger>(16384);
+            stats = std::make_unique<fovea::Logger>(std::size_t{16384});
             stats->start(fovea::make_text_sink(stats_file));
         }
         loop = std::make_unique<fovea::FrameLoop>(
