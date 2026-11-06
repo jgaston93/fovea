@@ -46,9 +46,10 @@ std::string toml_string(const std::string& v) {
             out += c;
         } else if (static_cast<unsigned char>(c) < 0x20) {
             static constexpr std::string_view kHex = "0123456789ABCDEF";
+            const auto u = static_cast<unsigned char>(c);
             out += "\\u00";
-            out += kHex[(c >> 4) & 0xF];
-            out += kHex[c & 0xF];
+            out += kHex[(u >> 4U) & 0xFU];
+            out += kHex[u & 0xFU];
         } else {
             out += c;
         }
