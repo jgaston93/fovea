@@ -16,14 +16,9 @@ constexpr int kMaxMessagesPerPoll = 64;
 
 constexpr double kSecondsPerTick = 10e-6;  // CIGI timestamps (ICD p. 44)
 
-EntityState* find(SceneSnapshot& scene, EntityId id) {
-    for (EntityState& e : scene.entities) {
-        if (e.id == id) {
-            return &e;
-        }
-    }
-    return nullptr;
-}
+// A message stamped earlier than the last by up to this much arrived out of
+// order; further back, the host's clock restarted.
+constexpr std::int64_t kReorderWindowTicks = 100000;  // one second
 
 // Removes an entity by moving the last one into its slot (order is not kept).
 void remove(SceneSnapshot& scene, EntityState* e) {
@@ -50,25 +45,34 @@ void CigiAdapter::report_frames() {
     if (frame_starts_ == nullptr) {
         return;
     }
+    // Only the newest: older ones waited through a stall and are stale.
+    std::optional<FrameStart> newest;
     while (const auto f = frame_starts_->try_pop()) {
-        const std::optional<UdpEndpoint> to = options_.host ? options_.host : last_sender_;
-        if (!to) {
-            ++stats_.frames_unreported;
-            continue;
+        if (newest) {
+            ++stats_.frames_coalesced;
         }
-        cigi::StartOfFrame sof;
-        sof.ig_mode = mode_;
-        sof.timestamp_valid = true;
-        sof.timestamp = ig_ticks(f->t);
-        sof.ig_frame_number = static_cast<std::uint32_t>(f->frame);
-        sof.last_host_frame_number = last_host_frame_;
-        std::array<std::uint8_t, cigi::kStartOfFrameSize> out{};
-        const std::size_t n = cigi::encode(sof, out);
-        if (socket_.send_to(std::span(out).first(n), *to)) {
-            ++stats_.frames_reported;
-        } else {
-            ++stats_.frames_unreported;
-        }
+        newest = f;
+    }
+    if (!newest) {
+        return;
+    }
+    const std::optional<UdpEndpoint> to = options_.host ? options_.host : last_sender_;
+    if (!to) {
+        ++stats_.frames_unreported;
+        return;
+    }
+    cigi::StartOfFrame sof;
+    sof.ig_mode = mode_;
+    sof.timestamp_valid = true;
+    sof.timestamp = ig_ticks(newest->t);
+    sof.ig_frame_number = static_cast<std::uint32_t>(newest->frame);
+    sof.last_host_frame_number = last_host_frame_;
+    std::array<std::uint8_t, cigi::kStartOfFrameSize> out{};
+    const std::size_t n = cigi::encode(sof, out);
+    if (socket_.send_to(std::span(out).first(n), *to)) {
+        ++stats_.frames_reported;
+    } else {
+        ++stats_.frames_unreported;
     }
 }
 
@@ -112,18 +116,37 @@ bool CigiAdapter::apply(std::span<const std::uint8_t> message, SceneSnapshot& sc
         ++stats_.rejected_messages;
         return false;
     }
-    ++stats_.messages;
-    last_host_frame_ = ig->host_frame_number;
+    if (ig->timestamp_valid && last_host_ticks_) {
+        // Signed: a small step back is a late datagram, a large one a
+        // restarted clock; forward steps (rollover included) add up.
+        const auto step = static_cast<std::int32_t>(ig->timestamp - *last_host_ticks_);
+        if (step < 0 && step >= -kReorderWindowTicks) {
+            ++stats_.stale_messages;
+            return false;
+        }
+        if (step > 0) {
+            host_ticks_ += static_cast<std::uint64_t>(step);
+        }
+    }
     if (ig->timestamp_valid) {
-        // Unsigned difference: correct across the 32-bit rollover.
-        host_ticks_ += last_host_ticks_ ? ig->timestamp - *last_host_ticks_ : 0U;
         last_host_ticks_ = ig->timestamp;
     }
+    host_time_valid_ = ig->timestamp_valid;
+    ++stats_.messages;
+    last_host_frame_ = ig->host_frame_number;
     if (ig->ig_mode == cigi::IgMode::reset_standby) {
         if (mode_ != cigi::IgMode::reset_standby) {
-            scene.entities.clear();  // entering Reset/Standby destroys every entity
+            scene.entities.clear();    // entering Reset/Standby destroys every entity
+            last_host_ticks_.reset();  // a new session may start its clock afresh
         }
         mode_ = cigi::IgMode::reset_standby;
+        ++stats_.ignored_in_standby;
+        return true;
+    }
+    if (mode_ == cigi::IgMode::reset_standby) {
+        // The IG leaves Reset/Standby now; the rest of this message was sent
+        // while it was there, and is ignored (ICD 2.8, p. 13).
+        mode_ = ig->ig_mode;
         ++stats_.ignored_in_standby;
         return true;
     }
@@ -148,14 +171,19 @@ bool CigiAdapter::apply(std::span<const std::uint8_t> message, SceneSnapshot& sc
 
 void CigiAdapter::apply_entity(const cigi::EntityControl& e, SceneSnapshot& scene,
                                LocalTime received) {
-    if (e.attach) {
-        ++stats_.attached_entities;
-        return;
-    }
-    EntityState* entity = find(scene, e.entity_id);
+    EntityState* entity = find_entity(scene, e.entity_id);
     if (e.entity_state == cigi::EntityState::destroyed) {
         if (entity != nullptr) {
             remove(scene, entity);
+        }
+        return;
+    }
+    if (e.attach) {
+        // Child entities arrive in milestone 6. Until then one that was top
+        // level is hidden rather than left at its old place.
+        ++stats_.attached_entities;
+        if (entity != nullptr) {
+            entity->active = false;
         }
         return;
     }
@@ -166,6 +194,7 @@ void CigiAdapter::apply_entity(const cigi::EntityControl& e, SceneSnapshot& scen
     pose.ecef = geodetic_to_ecef(g);
     pose.orientation = body_to_ecef(g, attitude);
     pose.host_t.seconds = static_cast<double>(host_ticks_) * kSecondsPerTick;
+    pose.host_t.valid = host_time_valid_;
     pose.recv_t = received;
     if (entity == nullptr) {
         EntityState created;

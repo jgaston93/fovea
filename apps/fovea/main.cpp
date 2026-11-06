@@ -211,6 +211,13 @@ void print_host_stats(const fovea::CigiAdapter& adapter) {
         static_cast<unsigned long long>(s.entity_updates),
         static_cast<unsigned long long>(s.frames_reported),
         static_cast<unsigned long long>(s.frames_unreported));
+    if (s.stale_messages > 0 || s.frames_coalesced > 0) {
+        std::printf(
+            "CIGI: %llu messages out of order (dropped), %llu Start of Frame skipped "
+            "after stalls\n",
+            static_cast<unsigned long long>(s.stale_messages),
+            static_cast<unsigned long long>(s.frames_coalesced));
+    }
     if (s.attached_entities > 0 || s.entity_table_full > 0) {
         std::printf(
             "CIGI: %llu attached-entity updates not applied yet, %llu entities over the "
@@ -481,10 +488,36 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         }
     }
     if (loop) {
-        loop->stop();  // rethrows a render thread failure
+        // Both threads stop, and both report, before either failure is
+        // rethrown (the render thread's first).
+        std::exception_ptr render_error;
+        try {
+            loop->stop();
+        } catch (...) {
+            render_error = std::current_exception();
+        }
         if (host_thread) {
-            host_thread->stop();  // rethrows a network thread failure
+            std::exception_ptr host_error;
+            try {
+                host_thread->stop();
+            } catch (...) {
+                host_error = std::current_exception();
+            }
             print_host_stats(*host_adapter);
+            if (host_error && !render_error) {
+                std::rethrow_exception(host_error);
+            }
+            if (host_error) {
+                try {
+                    std::rethrow_exception(host_error);
+                } catch (const std::exception& e) {
+                    (void)std::fprintf(stderr, "fovea: the network thread failed too: %s\n",
+                                       e.what());
+                }
+            }
+        }
+        if (render_error) {
+            std::rethrow_exception(render_error);
         }
         if (stats) {
             stats->stop();

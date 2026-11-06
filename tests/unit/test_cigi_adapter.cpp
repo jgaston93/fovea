@@ -79,6 +79,15 @@ bool poll_until(CigiAdapter& adapter, SceneState& scene, const std::function<boo
     return false;
 }
 
+// The ICD's startup (2.8, p. 13): the host asks for Operate in an IG Control
+// on its own; the IG ignores anything else until it has switched.
+void start_operating(CigiAdapter& adapter, SceneState& scene, Host& host,
+                     std::uint32_t timestamp = 0) {
+    host.send(host_message(operate(0, timestamp), {}));
+    ASSERT_TRUE(
+        poll_until(adapter, scene, [&] { return adapter.ig_mode() == cigi::IgMode::operate; }));
+}
+
 TEST(Udp, ParsesAndFormatsAddresses) {
     EXPECT_EQ(parse_ipv4("127.0.0.1"), kLoopback);
     EXPECT_EQ(parse_ipv4("192.168.1.20"), 0xC0A80114U);
@@ -126,8 +135,9 @@ TEST(CigiAdapter, EntityControlPlacesTheEntity) {
     options.geoid_height_m = -30.0;
     CigiAdapter adapter(options);
     Host host(adapter.port());
+    start_operating(adapter, *scene, host, 1000);
     host.send(host_message(operate(1, 1000), {entity(0, 34.6372, -86.7751, 600.0)}));
-    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 1; }));
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 2; }));
 
     const SceneSnapshot& s = scene->latest();
     ASSERT_EQ(s.entities.size(), 1U);
@@ -143,6 +153,7 @@ TEST(CigiAdapter, EntityControlPlacesTheEntity) {
     const DQuat q = body_to_ecef(g, Euler{90.0, 10.0, -5.0});
     EXPECT_GT(std::abs(glm::dot(e.cur.orientation, q)), 1.0 - 1e-9);
     EXPECT_DOUBLE_EQ(e.cur.host_t.seconds, 0.0);  // the first timestamp is the origin
+    EXPECT_TRUE(e.cur.host_t.valid);
     EXPECT_EQ(adapter.ig_mode(), cigi::IgMode::operate);
 }
 
@@ -150,11 +161,12 @@ TEST(CigiAdapter, SamplesShiftAndTimestampsUnwrap) {
     auto scene = std::make_unique<SceneState>();
     CigiAdapter adapter({});
     Host host(adapter.port());
+    start_operating(adapter, *scene, host, 0xFFFFFF00U);
     // Across the 32-bit rollover: 0xFFFFFF00 to 0x100 is 0x200 ticks.
     host.send(host_message(operate(1, 0xFFFFFF00U), {entity(3, 10.0, 20.0, 100.0)}));
-    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 1; }));
-    host.send(host_message(operate(2, 0x100U), {entity(3, 10.0, 20.0, 200.0)}));
     ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 2; }));
+    host.send(host_message(operate(2, 0x100U), {entity(3, 10.0, 20.0, 200.0)}));
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 3; }));
     const EntityState& e = scene->latest().entities[0];
     EXPECT_NEAR(e.cur.host_t.seconds, 0x200 * 10e-6, 1e-12);
     EXPECT_DOUBLE_EQ(e.prev.host_t.seconds, 0.0);
@@ -174,6 +186,12 @@ TEST(CigiAdapter, StandbyIgnoresTheHostAndDestroysEntities) {
         poll_until(adapter, *scene, [&] { return adapter.stats().ignored_in_standby == 1; }));
     EXPECT_TRUE(scene->latest().entities.empty());
 
+    // The message switching to Operate was sent in Reset/Standby: its
+    // entities are ignored too (ICD 2.8, p. 13).
+    host.send(host_message(operate(), {entity(1, 0.0, 0.0, 0.0), entity(2, 1.0, 1.0, 0.0)}));
+    ASSERT_TRUE(
+        poll_until(adapter, *scene, [&] { return adapter.ig_mode() == cigi::IgMode::operate; }));
+    EXPECT_TRUE(scene->latest().entities.empty());
     host.send(host_message(operate(), {entity(1, 0.0, 0.0, 0.0), entity(2, 1.0, 1.0, 0.0)}));
     ASSERT_TRUE(poll_until(adapter, *scene, [&] { return scene->latest().entities.size() == 2; }));
     // Back to Reset/Standby: every entity is destroyed (ICD p. 214).
@@ -186,6 +204,7 @@ TEST(CigiAdapter, InactiveDestroyedAndAttachedEntities) {
     auto scene = std::make_unique<SceneState>();
     CigiAdapter adapter({});
     Host host(adapter.port());
+    start_operating(adapter, *scene, host);
     host.send(host_message(
         operate(), {entity(1, 0.0, 0.0, 0.0), entity(2, 0.0, 0.0, 0.0), entity(3, 0.0, 0.0, 0.0)}));
     ASSERT_TRUE(poll_until(adapter, *scene, [&] { return scene->latest().entities.size() == 3; }));
@@ -198,7 +217,7 @@ TEST(CigiAdapter, InactiveDestroyedAndAttachedEntities) {
     child.attach = true;
     child.parent_id = 3;
     host.send(host_message(operate(2), {inactive, destroyed, child}));
-    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 2; }));
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 3; }));
 
     const SceneSnapshot& s = scene->latest();
     ASSERT_EQ(s.entities.size(), 2U);  // 2 destroyed; the child (4) not applied yet
@@ -281,11 +300,12 @@ TEST(CigiAdapter, GarbageIsCountedNotFatal) {
                                    [&] { return adapter.stats().rejected_messages == sent; }));
         }
     }
+    start_operating(adapter, *scene, host);
     host.send(host_message(operate(), {entity(9, 1.0, 2.0, 3.0)}));
     ASSERT_TRUE(
         poll_until(adapter, *scene, [&] { return find_entity(scene->latest(), 9) != nullptr; }));
     EXPECT_EQ(adapter.stats().rejected_messages, 300U);
-    EXPECT_EQ(adapter.stats().messages, 1U);
+    EXPECT_EQ(adapter.stats().messages, 2U);
 }
 
 TEST(CigiAdapter, AFloodCantHoldUpStartOfFrame) {
@@ -315,6 +335,92 @@ TEST(Udp, ReceiveBufferIsAtLeastTheDefault) {
     EXPECT_GE(s.receive_buffer_bytes(), 64U * 1024U);
 }
 
+TEST(CigiAdapter, LateMessagesAreDroppedAndRestartedClocksFollowed) {
+    auto scene = std::make_unique<SceneState>();
+    CigiAdapter adapter({});
+    Host host(adapter.port());
+    start_operating(adapter, *scene, host, 1000);
+    host.send(host_message(operate(1, 2000), {entity(1, 0.0, 0.0, 100.0)}));
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 2; }));
+    // 100 ticks (1 ms) earlier than the last: arrived out of order. Not
+    // applied, and not read as a 12-hour jump forward.
+    host.send(host_message(operate(2, 1900), {entity(1, 0.0, 0.0, 999.0)}));
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().stale_messages == 1; }));
+    const EntityState* e = find_entity(scene->latest(), 1);
+    ASSERT_NE(e, nullptr);
+    EXPECT_NEAR(ecef_to_geodetic(e->cur.ecef).alt_m, 100.0, 1e-6);
+    EXPECT_NEAR(e->cur.host_t.seconds, 1000 * 10e-6, 1e-12);
+    // Ten seconds back: the host's clock restarted. Applied, and host time
+    // carries on from where it was instead of going back.
+    host.send(host_message(operate(3, 2000U - 1000000U), {entity(1, 0.0, 0.0, 300.0)}));
+    host.send(host_message(operate(4, 2000U - 1000000U + 500U), {entity(1, 0.0, 0.0, 400.0)}));
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 4; }));
+    e = find_entity(scene->latest(), 1);
+    ASSERT_NE(e, nullptr);
+    EXPECT_NEAR(ecef_to_geodetic(e->cur.ecef).alt_m, 400.0, 1e-6);
+    EXPECT_NEAR(e->cur.host_t.seconds, 1500 * 10e-6, 1e-12);
+    EXPECT_NEAR(e->prev.host_t.seconds, 1000 * 10e-6, 1e-12);
+}
+
+TEST(CigiAdapter, UnstampedSamplesSayTheirHostTimeIsInvalid) {
+    auto scene = std::make_unique<SceneState>();
+    CigiAdapter adapter({});
+    Host host(adapter.port());
+    start_operating(adapter, *scene, host);
+    cigi::IgControl unstamped = operate();
+    unstamped.timestamp_valid = false;
+    host.send(host_message(unstamped, {entity(1, 0.0, 0.0, 0.0)}));
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 2; }));
+    ASSERT_NE(find_entity(scene->latest(), 1), nullptr);
+    EXPECT_FALSE(find_entity(scene->latest(), 1)->cur.host_t.valid);
+}
+
+TEST(CigiAdapter, AttachingHidesAnEntityAndDestroyingRemovesIt) {
+    auto scene = std::make_unique<SceneState>();
+    CigiAdapter adapter({});
+    Host host(adapter.port());
+    start_operating(adapter, *scene, host);
+    host.send(host_message(operate(1), {entity(1, 0.0, 0.0, 0.0), entity(2, 0.0, 0.0, 0.0)}));
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return scene->latest().entities.size() == 2; }));
+    // Entity 1 becomes a child: not drawn at its old top-level place.
+    cigi::EntityControl attach = entity(1, 1.0, 2.0, 3.0);
+    attach.attach = true;
+    attach.parent_id = 2;
+    host.send(host_message(operate(2), {attach}));
+    ASSERT_TRUE(
+        poll_until(adapter, *scene, [&] { return adapter.stats().attached_entities == 1; }));
+    ASSERT_NE(find_entity(scene->latest(), 1), nullptr);
+    EXPECT_FALSE(find_entity(scene->latest(), 1)->active);
+    // Destroyed removes it, attached or not (ICD p. 49).
+    attach.entity_state = cigi::EntityState::destroyed;
+    host.send(host_message(operate(3), {attach}));
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return scene->latest().entities.size() == 1; }));
+    EXPECT_EQ(find_entity(scene->latest(), 1), nullptr);
+}
+
+TEST(CigiAdapter, AfterAStallOnlyTheNewestFrameIsReported) {
+    auto scene = std::make_unique<SceneState>();
+    FrameStartRing frames;
+    UdpSocket host_socket(0, kLoopback);
+    CigiAdapterOptions options;
+    options.host = UdpEndpoint{kLoopback, host_socket.local_port()};
+    CigiAdapter adapter(options, &frames);
+    for (std::uint64_t f = 10; f < 40; ++f) {  // 30 frames while the thread was held up
+        ASSERT_TRUE(frames.try_push({f, now()}));
+    }
+    (void)adapter.poll(*scene);
+    EXPECT_EQ(adapter.stats().frames_reported, 1U);
+    EXPECT_EQ(adapter.stats().frames_coalesced, 29U);
+    ASSERT_TRUE(host_socket.wait_readable(1000));
+    std::array<std::uint8_t, 64> buffer{};
+    const auto r = host_socket.receive(buffer);
+    ASSERT_TRUE(r.has_value());
+    const auto sof = cigi::decode_start_of_frame(std::span(buffer).first(r->size), false);
+    ASSERT_TRUE(sof.has_value());
+    EXPECT_EQ(sof->ig_frame_number, 39U);
+    EXPECT_FALSE(host_socket.wait_readable(50));  // just the one
+}
+
 TEST(CigiAdapter, SteadyStateAllocatesNothing) {
     auto scene = std::make_unique<SceneState>();
     FrameStartRing frames;
@@ -333,6 +439,7 @@ TEST(CigiAdapter, SteadyStateAllocatesNothing) {
         while (host_socket.receive(drain)) {
         }
     };
+    start_operating(adapter, *scene, host);
     round(0);  // warm-up
     const test::AllocationCounter counter;
     for (std::uint64_t f = 1; f <= 50; ++f) {
@@ -341,7 +448,7 @@ TEST(CigiAdapter, SteadyStateAllocatesNothing) {
     // The adapter's own allocations: poll_until's std::function is the
     // test's, made before counting.
     EXPECT_EQ(counter.count(), 0U);
-    EXPECT_EQ(adapter.stats().messages, 51U);
+    EXPECT_EQ(adapter.stats().messages, 52U);
 }
 
 TEST(HostThread, RunsTheAdapterUntilStopped) {
@@ -353,9 +460,11 @@ TEST(HostThread, RunsTheAdapterUntilStopped) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     std::uint64_t seen = 0;
     while (seen == 0 && std::chrono::steady_clock::now() < deadline) {
+        // The first message switches to Operate; later ones place entity 5.
         host.send(host_message(operate(), {entity(5, 1.0, 1.0, 1.0)}));
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        seen = scene->latest().sequence;
+        const SceneSnapshot& latest = scene->latest();
+        seen = find_entity(latest, 5) != nullptr ? latest.sequence : 0;
     }
     thread.stop();
     EXPECT_GT(seen, 0U);
