@@ -3,9 +3,10 @@
 // Each window shows its channel's view of the reference scene (a ground
 // grid, the horizon and the sky).
 //
-//   fovea [--seconds N] [--stats FILE] [--clear | --identify] <display-config.toml>
+//   fovea [--seconds N] [--stats FILE] [--overlay] [--clear | --identify] <config.toml>
 //       run; N > 0: exit after N seconds; --stats: write every frame's timing
-//       to FILE as CSV; --clear: clear each window to its
+//       to FILE as CSV; --overlay: show frame timing on the first channel;
+//       --clear: clear each window to its
 //       channel's colour (red, green, blue, ... in config order) on the GPU
 //       instead; --identify: fill them with those colours in software (no
 //       GPU needed)
@@ -50,6 +51,7 @@ struct Options {
     std::string config;
     double seconds = 0.0;  // 0: until Esc
     std::string stats;     // CSV file for per-frame timing, or empty
+    bool overlay = false;
     bool clear = false;
     bool identify = false;
     bool list_monitors = false;
@@ -121,6 +123,8 @@ std::optional<Options> parse_args(int argc, char** argv) {
                 return std::nullopt;
             }
             o.seconds = *s;
+        } else if (args[i] == "--overlay") {
+            o.overlay = true;
         } else if (args[i] == "--stats" && i + 1 < args.size()) {
             o.stats = std::string(args[++i]);
         } else if (args[i] == "--identify" && !o.clear) {
@@ -136,20 +140,20 @@ std::optional<Options> parse_args(int argc, char** argv) {
     if (o.config.empty()) {
         return std::nullopt;
     }
-    if (!o.stats.empty() && (o.clear || o.identify)) {
+    if ((!o.stats.empty() || o.overlay) && (o.clear || o.identify)) {
         (void)std::fprintf(stderr,
-                           "fovea: --stats times the scene; it can't be used with "
-                           "--clear or --identify\n");
+                           "fovea: --stats and --overlay time the scene; they can't be used "
+                           "with --clear or --identify\n");
         return std::nullopt;
     }
     return o;
 }
 
 int usage() {
-    (void)std::fprintf(
-        stderr,
-        "usage: fovea [--seconds N] [--stats FILE] [--clear | --identify] <display-config.toml>\n"
-        "       fovea --list-monitors\n");
+    (void)std::fprintf(stderr,
+                       "usage: fovea [--seconds N] [--stats FILE] [--overlay] [--clear | "
+                       "--identify] <config.toml>\n"
+                       "       fovea --list-monitors\n");
     return 2;
 }
 
@@ -311,8 +315,13 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
             stats = std::make_unique<fovea::Logger>(std::size_t{16384});
             stats->start(fovea::make_text_sink(stats_file.get()));
         }
-        loop = std::make_unique<fovea::FrameLoop>(
-            *renderer, *scene_state, views, fovea::FrameLoopOptions{config.target_hz}, stats.get());
+        fovea::FrameLoopOptions loop_options{config.target_hz};
+        if (options.overlay) {
+            renderer->enable_overlay(0);  // the first channel: the debug channel
+            loop_options.overlay = true;
+        }
+        loop = std::make_unique<fovea::FrameLoop>(*renderer, *scene_state, views, loop_options,
+                                                  stats.get());
         loop->start();
     }
 
@@ -382,6 +391,10 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
             }
         }
         print_summary(loop->summary());
+        if (renderer->overlay_skipped_frames() > 0) {
+            std::printf("overlay: left out of %llu frames (a texture upload was pending)\n",
+                        static_cast<unsigned long long>(renderer->overlay_skipped_frames()));
+        }
         return finish(*renderer);
     }
     if (renderer) {
@@ -409,6 +422,13 @@ int run(const Options& options) {
         case fovea::PresenterKind::multi_swapchain:
             return run_windows(options, config);
         case fovea::PresenterKind::offscreen:
+            if (options.overlay || !options.stats.empty()) {
+                (void)std::fprintf(stderr,
+                                   "%s: --overlay and --stats are for on-screen "
+                                   "configs; offscreen renders one frame\n",
+                                   options.config.c_str());
+                return 1;
+            }
             return run_offscreen(options, config);
         case fovea::PresenterKind::spanned:
             (void)std::fprintf(stderr, "%s: the spanned presenter is not implemented yet\n",

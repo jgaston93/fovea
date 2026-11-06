@@ -126,6 +126,27 @@ if(NOT FOVEA_SLANGC)
     set(FOVEA_SLANGC "${slang_SOURCE_DIR}/bin/${slangc_name}" CACHE FILEPATH "" FORCE)
 endif()
 
+# --- Dear ImGui 1.93.0 (debug overlay, D-006; libs/render only) ----------------
+# No CMake project of its own: the core and the Vulkan backend are built here,
+# with Vulkan functions from volk. No platform backend: the overlay takes no
+# input and runs on the render thread. Its default font is built in.
+FetchContent_Declare(imgui
+    URL https://github.com/ocornut/imgui/archive/refs/tags/v1.93.0.tar.gz
+    URL_HASH SHA256=f7bf6bc76e5d79d40d751096663e6c5d18daf08129dd52e7f7b09e4251c8eeee
+    SOURCE_SUBDIR do-not-configure)
+FetchContent_MakeAvailable(imgui)
+add_library(fovea_imgui STATIC
+    "${imgui_SOURCE_DIR}/imgui.cpp"
+    "${imgui_SOURCE_DIR}/imgui_draw.cpp"
+    "${imgui_SOURCE_DIR}/imgui_tables.cpp"
+    "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
+    "${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp")
+target_include_directories(fovea_imgui SYSTEM PUBLIC "${imgui_SOURCE_DIR}" "${imgui_SOURCE_DIR}/backends")
+target_compile_definitions(fovea_imgui PUBLIC
+    IMGUI_IMPL_VULKAN_USE_VOLK IMGUI_DISABLE_OBSOLETE_FUNCTIONS VK_NO_PROTOTYPES)
+target_link_libraries(fovea_imgui PUBLIC volk::volk Vulkan::Headers)
+set_target_properties(fovea_imgui PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # --- GoogleTest 1.15.2 (tests only) -------------------------------------------
 if(FOVEA_BUILD_TESTS)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)

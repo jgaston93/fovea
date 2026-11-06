@@ -27,7 +27,11 @@
 #include <utility>
 #include <vector>
 
+#include <imgui.h>
+#include <imgui_impl_vulkan.h>
+
 #include "fovea/render/renderer.hpp"
+#include "overlay_ui.hpp"
 #include "shaders/kFsScene.hpp"
 #include "shaders/kFsTonemap.hpp"
 #include "shaders/kVsFullscreen.hpp"
@@ -167,6 +171,66 @@ void memory_barrier(VkCommandBuffer cmd, VkPipelineStageFlags2 src_stage, VkAcce
     vkCmdPipelineBarrier2(cmd, &d);
 }
 
+// Draws the overlay's ImGui data over what a target already holds.
+void draw_overlay(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent, ImDrawData* data) {
+    // After the tone map's writes to the same target.
+    memory_barrier(cmd, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    VkRenderingAttachmentInfo colour{};
+    colour.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colour.imageView = target;
+    colour.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colour.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    colour.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    info.renderArea = {{0, 0}, extent};
+    info.layerCount = 1;
+    info.colorAttachmentCount = 1;
+    info.pColorAttachments = &colour;
+    vkCmdBeginRendering(cmd, &info);
+    ImGui_ImplVulkan_RenderDrawData(data, cmd);
+    vkCmdEndRendering(cmd);
+}
+
+// ImGui's memory through operator new, so allocation checks see it too.
+void* imgui_alloc(std::size_t size, void* /*user*/) {
+    return ::operator new(size);
+}
+void imgui_free(void* p, void* /*user*/) {
+    ::operator delete(p);
+}
+
+// Builds this frame's overlay and draws it over the target.
+// Returns false, drawing nothing, when ImGui wants a texture created or
+// updated: its backend would upload it with vkQueueWaitIdle, blocking the
+// render thread. enable_overlay uploads everything the overlay normally
+// shows, so this means new content (a glyph never drawn before).
+bool overlay_frame(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
+                   const OverlayContent& content) {
+    ImGui_ImplVulkan_NewFrame();
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(static_cast<float>(extent.width), static_cast<float>(extent.height));
+    io.DeltaTime = std::max(content.target_ms, 1.0F) / 1000.0F;
+    ImGui::NewFrame();
+    build_overlay_ui(content);
+    ImGui::Render();
+    const auto& textures = ImGui::GetPlatformIO().Textures;
+    const bool pending = std::any_of(textures.begin(), textures.end(), [](const ImTextureData* t) {
+        return t->Status != ImTextureStatus_OK;
+    });
+    if (pending) {
+        return false;
+    }
+    // Null: the backend may not touch textures at all while drawing.
+    ImDrawData* data = ImGui::GetDrawData();
+    data->Textures = nullptr;
+    draw_overlay(cmd, target, extent, data);
+    return true;
+}
+
 // Draws the fullscreen triangle into one colour target with dynamic rendering.
 void draw_fullscreen(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent) {
     VkRenderingAttachmentInfo colour{};
@@ -250,6 +314,7 @@ struct DrawRequest {
     std::span<const Rgb8> colours;
     std::span<const SceneView> views;
     bool scene = false;
+    const OverlayContent* overlay = nullptr;
 };
 
 }  // namespace
@@ -290,6 +355,13 @@ struct Renderer::Impl {
     std::array<std::uint64_t, kFramesInFlight> slot_frame{};  // frame number in each slot
     std::vector<std::uint64_t> query_results;                 // sized once
     FrameTiming timing;
+
+    // The debug overlay (Dear ImGui), on one output.
+    bool overlay = false;
+    std::uint32_t overlay_output = 0;
+    VkFormat overlay_format = VK_FORMAT_UNDEFINED;  // ImGui's pipeline reads it by pointer
+    ImGuiContext* imgui = nullptr;
+    std::uint64_t overlay_skipped = 0;  // frames without the overlay: a texture was pending
 
     // Present pacing (VK_KHR_present_id / present_wait), when supported.
     bool present_wait = false;
@@ -1025,6 +1097,15 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
             tonemap_into(s.views[image_index[i]], s.chain.extent, s.chain.image_format, i);
+            // Only while the swapchain has the format ImGui's pipeline was
+            // made for (a rebuild could, rarely, change it).
+            if (overlay && request.overlay != nullptr && i == overlay_output &&
+                s.chain.image_format == overlay_format) {
+                if (!overlay_frame(f.cmd, s.views[image_index[i]], s.chain.extent,
+                                   *request.overlay)) {
+                    ++overlay_skipped;
+                }
+            }
             transition(f.cmd, image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1073,6 +1154,11 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
             tonemap_into(o.view, {o.width, o.height}, kOffscreenFormat, i);
+            if (overlay && request.overlay != nullptr && swapchains.size() + i == overlay_output) {
+                if (!overlay_frame(f.cmd, o.view, {o.width, o.height}, *request.overlay)) {
+                    ++overlay_skipped;
+                }
+            }
             transition(f.cmd, o.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1178,6 +1264,13 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
 }
 
 Renderer::Impl::~Impl() {
+    if (imgui != nullptr) {
+        if (device.device != VK_NULL_HANDLE) {
+            (void)vkDeviceWaitIdle(device.device);
+        }
+        ImGui_ImplVulkan_Shutdown();
+        ImGui::DestroyContext(imgui);
+    }
     if (device.device != VK_NULL_HANDLE) {
         (void)vkDeviceWaitIdle(device.device);
         for (Frame& f : frames) {
@@ -1304,8 +1397,93 @@ std::uint32_t Renderer::draw_clear_frame(std::span<const Rgb8> colours) {
     return impl_->draw({colours, {}, false});
 }
 
-std::uint32_t Renderer::draw_scene_frame(std::span<const SceneView> views) {
-    return impl_->draw({{}, views, true});
+std::uint32_t Renderer::draw_scene_frame(std::span<const SceneView> views,
+                                         const OverlayContent* overlay) {
+    return impl_->draw({{}, views, true, overlay});
+}
+
+void Renderer::enable_overlay(std::uint32_t output) {
+    Impl& m = *impl_;
+    if (output >= m.output_total()) {
+        fail("enable_overlay: there is no output " + std::to_string(output));
+    }
+    if (m.overlay) {
+        return;
+    }
+    std::uint32_t image_count = 3;
+    if (output < m.swapchains.size()) {
+        // The format a swapchain gets, if it isn't built yet (a window that
+        // starts minimized builds it later).
+        const Swapchain& s = m.swapchains[output];
+        m.overlay_format =
+            s.chain.swapchain != VK_NULL_HANDLE ? s.chain.image_format : kSwapchainFormat;
+        image_count = std::max<std::uint32_t>(2, static_cast<std::uint32_t>(s.images.size()));
+    } else {
+        m.overlay_format = kOffscreenFormat;
+    }
+    ImGui::SetAllocatorFunctions(&imgui_alloc, &imgui_free);
+    ImGuiContext* context = ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr;  // no files: nothing to read or write while drawing
+    io.LogFilename = nullptr;
+    ImGui::StyleColorsDark();
+
+    ImGui_ImplVulkan_InitInfo init{};
+    init.ApiVersion = VK_API_VERSION_1_3;
+    init.Instance = m.instance.instance;
+    init.PhysicalDevice = m.physical.physical_device;
+    init.Device = m.device.device;
+    init.QueueFamily = m.queue_family;
+    init.Queue = m.queue;
+    init.DescriptorPoolSize = 8;  // the backend's own pool, for its font texture
+    init.MinImageCount = 2;
+    init.ImageCount = image_count;
+    init.UseDynamicRendering = true;
+    init.PipelineInfoMain.PipelineRenderingCreateInfo.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    init.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+    init.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &m.overlay_format;
+    if (!ImGui_ImplVulkan_Init(&init)) {
+        ImGui::DestroyContext(context);  // nothing to shut down: the backend never started
+        fail("enable_overlay: cannot start ImGui's Vulkan backend");
+    }
+    m.imgui = context;
+
+    // Upload the font now, with every glyph the overlay can show (printable
+    // ASCII). ImGui uploads textures from inside drawing with a submit and
+    // vkQueueWaitIdle; done here, the render thread never waits for it.
+    ImGui_ImplVulkan_NewFrame();
+    io.DisplaySize = ImVec2(1024.0F, 1024.0F);
+    io.DeltaTime = 1.0F / 60.0F;
+    ImGui::NewFrame();
+    std::array<char, 96> ascii{};
+    for (std::size_t c = 0; c < 95; ++c) {
+        ascii[c] = static_cast<char>(' ' + c);
+    }
+    ImGui::Begin("warm-up");
+    ImGui::TextUnformatted(ascii.data());
+    ImGui::End();
+    ImGui::Render();
+    for (ImTextureData* tex : ImGui::GetPlatformIO().Textures) {
+        if (tex->Status != ImTextureStatus_OK) {
+            ImGui_ImplVulkan_UpdateTexture(tex);
+        }
+    }
+    m.overlay = true;
+    m.overlay_output = output;
+}
+
+std::uint64_t Renderer::overlay_skipped_frames() const {
+    return impl_->overlay_skipped;
+}
+
+bool Renderer::overlay_ready() const {
+    if (!impl_->overlay) {
+        return false;
+    }
+    const auto& textures = ImGui::GetPlatformIO().Textures;
+    return std::all_of(textures.begin(), textures.end(),
+                       [](const ImTextureData* tex) { return tex->Status == ImTextureStatus_OK; });
 }
 
 std::vector<std::uint8_t> Renderer::read_back_rgba(std::uint32_t output) {

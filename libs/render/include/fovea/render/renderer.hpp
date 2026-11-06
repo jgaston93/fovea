@@ -9,6 +9,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "fovea/core/config.hpp"
@@ -87,7 +88,23 @@ struct FrameTiming {
     double work_ms = 0.0;           // recording, submitting and presenting
     std::uint64_t gpu_frame = 0;    // the frame (frames_drawn() numbering) these GPU times are for
     std::uint32_t gpu_outputs = 0;  // how many are valid; 0 without timestamps
-    std::array<float, kMaxTimedOutputs> gpu_ms{};  // per output: scene plus tone map
+    std::array<float, kMaxTimedOutputs> gpu_ms{};  // per output: scene, tone map (and overlay)
+};
+
+// What the debug overlay shows for one frame (step 7; D-006). Plain data:
+// the frame loop fills it without allocating.
+struct OverlayContent {
+    std::span<const float> intervals_ms;  // a ring of recent frame intervals
+    std::size_t intervals_oldest = 0;     // index of the oldest in the ring
+    float target_ms = 16.667F;            // the frame period aimed for
+    std::uint64_t frames = 0;
+    std::uint64_t missed = 0;
+    double interval_mean_ms = 0.0;
+    double interval_max_ms = 0.0;
+    double work_mean_ms = 0.0;
+    std::uint32_t gpu_outputs = 0;
+    std::array<float, kMaxTimedOutputs> gpu_ms{};  // the latest GPU times per output
+    std::string_view note;                         // an optional extra line
 };
 
 // One Renderer at a time (Vulkan entry points are process-wide in volk);
@@ -127,7 +144,26 @@ public:
     // linear HDR at its render size, then the tone-map pass draws it into
     // the output. Presents and paces like draw_clear_frame, and returns the
     // same count.
-    std::uint32_t draw_scene_frame(std::span<const SceneView> views);
+    std::uint32_t draw_scene_frame(std::span<const SceneView> views,
+                                   const OverlayContent* overlay = nullptr);
+
+    // Shows the debug overlay (Dear ImGui) on one output, drawn after the
+    // tone map whenever draw_scene_frame is given content. One output only,
+    // never a sensor view; offscreen outputs are allowed for tests. Call
+    // before the first draw. Uploads the font for every printable ASCII
+    // glyph here, so drawing never waits for an upload. Throws
+    // std::runtime_error for a bad output. If a swapchain rebuild changes
+    // the overlay output's format, the overlay is no longer drawn.
+    void enable_overlay(std::uint32_t output);
+
+    // True once the overlay is enabled and its textures are on the GPU.
+    bool overlay_ready() const;
+
+    // Frames drawn without the overlay because ImGui wanted a texture
+    // uploaded (new content, such as a glyph never drawn before). Drawing
+    // never uploads: ImGui's backend would block the render thread with
+    // vkQueueWaitIdle, so the overlay is left out of that frame instead.
+    std::uint64_t overlay_skipped_frames() const;
 
     // Offscreen outputs only: the last frame's pixels, RGBA8, row by row.
     // Waits for the GPU to finish it.

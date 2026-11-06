@@ -8,7 +8,7 @@ if(NOT ROOT)
     message(FATAL_ERROR "set -DROOT=<repository root>")
 endif()
 
-set(gpu "vulkan/|volk|vk_mem_alloc|VkBootstrap|SDL")
+set(gpu "vulkan/|volk|vk_mem_alloc|VkBootstrap|SDL|imgui")
 # GDAL's headers: gdal*.h, cpl_*.h (its portability layer), ogr*.h.
 set(gdal "gdal|cpl_|ogr")
 
