@@ -4,6 +4,7 @@
 // (architecture.md, "Threads and data handoff"). All memory is reserved at
 // construction; nothing here allocates afterwards.
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cassert>
@@ -26,6 +27,22 @@ inline constexpr std::size_t kCacheLine = 64;
 template <typename T, std::size_t N>
 class FixedArray {
 public:
+    FixedArray() = default;
+    ~FixedArray() = default;
+    // Copies only the live elements, not the whole capacity.
+    FixedArray(const FixedArray& other) : size_(other.size_) {
+        std::copy_n(other.items_.begin(), size_, items_.begin());
+    }
+    FixedArray& operator=(const FixedArray& other) {
+        if (this != &other) {
+            std::copy_n(other.items_.begin(), other.size_, items_.begin());
+            size_ = other.size_;
+        }
+        return *this;
+    }
+    FixedArray(FixedArray&&) = default;
+    FixedArray& operator=(FixedArray&&) = default;
+
     // Returns false when full.
     bool push_back(const T& value) {
         if (size_ == N) {

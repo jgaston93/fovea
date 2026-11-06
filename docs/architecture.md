@@ -48,8 +48,8 @@ Rules:
 ## Coordinates and precision
 
 - World positions are **ECEF in `double`** (WGS-84) on the CPU. Geodetic ↔ ECEF conversions live in `core`.
-- **Body frame** (ownship, entities, eye offsets): x forward, y right, z down, matching CIGI conventions. Orientation is yaw, pitch and roll in degrees at the interface and quaternions internally.
-- **GPU positions are camera-relative `float`.** Each frame, the render origin is the eyepoint's ECEF position. Tiles store vertices relative to a per-tile `double` origin, and the per-draw offset `(tile_origin - eye)` is computed in `double` and then narrowed.
+- **Body frame** (entities and the viewpoints on them): x forward, y right, z down, the common aerospace and vehicle convention (also CIGI's). Orientation is yaw, pitch and roll in degrees at the interface and quaternions internally.
+- **GPU positions are camera-relative `float`.** Each frame, each view's render origin is its own eye's ECEF position. Tiles store vertices relative to a per-tile `double` origin, and the per-draw offset `(tile_origin - eye)` is computed in `double` and then narrowed.
 - **Reverse-Z depth:** a `D32_SFLOAT` depth buffer cleared to 0, with an infinite far plane.
 
 ## Threads and data handoff
@@ -63,7 +63,7 @@ Rules:
 ```
 
 - **SceneState handoff** uses a wait-free triple buffer of a fixed-size snapshot. The writer publishes complete snapshots, and the render thread takes the latest one at the start of each frame. Neither side ever waits on the other.
-- **Snapshot contents:** the ownship eyepoint, a fixed-capacity entity table, and environment state (time of day, and later weather). Every sample carries two timestamps: host time from the protocol and local receive time from a monotonic clock. Each entity keeps its last two samples, so the renderer can interpolate or extrapolate without the network thread knowing about frames.
+- **Snapshot contents:** a fixed-capacity entity table (D-011: no entity is special; views attach their viewpoints to entities or fix them in the world), and environment state (time of day, and later weather). Every sample carries two timestamps: host time from the protocol and local receive time from a monotonic clock. Each entity keeps its last two samples, so the renderer can interpolate or extrapolate without the network thread knowing about frames.
 - **Paging** (milestone 3 and later): the render thread pushes visibility and prediction hints into an SPSC ring. The paging thread does the file I/O, decoding and staging, and submits copies on a dedicated transfer queue. Completions come back through another SPSC ring, along with the timeline semaphore value. The render thread uses a resource only after checking (not waiting on) that its semaphore has reached that value.
 - **Control and stats:** stats are written into a separate SPSC ring that a stats or control thread drains. Milestone 1 writes them to a log file. A later milestone exposes them, together with control commands, over a local socket for the external control UI. That traffic stays separate from CIGI.
 
@@ -77,57 +77,62 @@ The render path means everything the render thread does between frame start and 
 
 ## Core interfaces
 
-These are sketches of the intended shapes, not final signatures. Milestone 1 provides stubs for all of them.
+The headers are the reference; these are their shapes, as built in milestone 1 step 3. Keep this in step with them.
 
 ```cpp
-// libs/core — protocol-neutral scene state
-struct Pose { DVec3 ecef; Quat orientation; HostTime host_t; LocalTime recv_t; };
-struct EntityState { EntityId id; ModelId model; Pose cur, prev; ArticulationSet parts; bool active; };
+// libs/core/scene.hpp: protocol-neutral scene state
+struct Pose { DVec3 ecef; DQuat orientation; HostTime host_t; LocalTime recv_t; };
+struct EntityState { EntityId id; ModelId model; Pose cur, prev; FixedArray<Articulation, 8> parts; };
 struct SceneSnapshot {
-  Pose eyepoint;
-  FixedArray<EntityState, kMaxEntities> entities;
+  FixedArray<EntityState, kMaxEntities> entities;   // no special "ownship" (D-011)
   EnvironmentState environment;
   uint64_t sequence;
 };
-class SceneStateWriter { public: SceneSnapshot& begin(); void publish(); };   // adapter side
-class SceneStateReader { public: const SceneSnapshot& latest(); };            // render side
+class SceneState {                       // one writer thread, one reader thread
+  SceneSnapshot& edit();                 // writer: working copy, kept between publishes
+  void publish();                        // writer: copies it to the reader
+  const SceneSnapshot& latest();         // reader: valid until the next latest()
+};
+const EntityState* find_entity(const SceneSnapshot&, EntityId);
 
-// libs/terrain — CPU-only spatial queries
+// libs/net/host_adapter.hpp: CIGI first, other protocols later; the only SceneState writer
+class HostAdapter { virtual bool poll(SceneState&) = 0; };
+
+// libs/terrain/terrain_query.hpp: CPU-only spatial queries
 class TerrainQuery {
-public:
-  virtual std::optional<double> height_at(const GeoPoint&) const = 0;        // meters MSL
-  virtual bool line_of_sight(const DVec3& a, const DVec3& b) const = 0;     // ECEF
-  virtual std::optional<Hit> intersect(const DRay&) const = 0;              // + material ID
+  virtual std::optional<double> height_at(double lat, double lon) const = 0;  // m above WGS-84
+  virtual std::optional<TerrainHit> intersect(const DRay&, double max_distance_m) const = 0;
+  bool line_of_sight(const DVec3& a, const DVec3& b) const;  // via intersect, 0.1 m end tolerance
 };
 
-// libs/render — a View is the general rendering unit
+// libs/render/view.hpp: a View is the general rendering unit
 struct ViewDesc {
-  PoseSource pose;          // ownship eye + offset, entity-attached, or fixed
-  Projection projection;    // asymmetric frustum (angles) or screen-corner geometry
-  RenderMode mode;          // visual now; NVG/IR/lidar later
-  PostChain post;           // tone map + per-view effects
-  OutputTarget target;      // a Presenter output, or an offscreen image
-  Extent2D render_extent;   // independent of the output resolution
+  std::string name;
+  PoseSource pose;            // riding on an entity (offset, rotation), or fixed in the world
+  Projection projection;      // asymmetric frustum (angles) + near plane
+  RenderMode mode;            // visual now; NVG/IR/lidar later
+  PostChain post;             // tone map + per-view effects
+  OutputTarget target;        // a Presenter output, or an offscreen image
+  uint32_t render_width, render_height;  // independent of the output resolution
 };
+ViewDesc view_from_channel(const ChannelConfig&, const DisplayConfig&, size_t index);
 
-// libs/render — Presenter hides "3 swapchains" vs "1 spanned surface" vs "offscreen"
+// libs/render/presenter.hpp: hides "3 swapchains" vs "1 spanned surface" vs "offscreen"
 class Presenter {
-public:
   virtual std::span<const OutputDesc> outputs() const = 0;
-  virtual FrameImages acquire(FrameContext&) = 0;        // one image per output
-  virtual void present(FrameContext&) = 0;              // back-to-back presents
-  virtual PresentTiming last_timing() const = 0;        // for missed-frame and sync stats
+  virtual void acquire(FrameContext&) = 0;                 // an image for every output
+  virtual void present(FrameContext&) = 0;                 // back-to-back presents
+  virtual PresentTiming last_timing(uint32_t output) const = 0;  // missed-frame and sync stats
 };
-// Implementations: MultiSwapchainPresenter, SpannedPresenter, OffscreenPresenter (headless/replay)
+// Implementations, from step 5: MultiSwapchainPresenter, SpannedPresenter, OffscreenPresenter
 
-// libs/render — compiled-in modules, enabled through config
+// libs/render/module.hpp: compiled-in modules, enabled through config
 class Module {
-public:
   virtual void init(const ModuleContext&) = 0;
-  virtual void update(const FrameContext&, const SceneSnapshot&) = 0;
-  virtual void record(CommandRecorder&, const View&) = 0;
+  virtual void update(const FrameContext&) = 0;            // the scene is frame.scene
+  virtual void record(CommandRecorder&, const ViewDesc&) = 0;
   virtual void shutdown() = 0;
-  virtual GpuBudget budget() const = 0;                 // declared; actual cost reported via stats
+  virtual GpuBudget budget() const = 0;                    // declared; actual cost reported via stats
 };
 ```
 

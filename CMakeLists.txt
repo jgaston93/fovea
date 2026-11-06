@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(fovea
     VERSION 0.1.0
-    DESCRIPTION "Real-time Vulkan image generator for flight simulation"
+    DESCRIPTION "Real-time Vulkan image generator for geographic scenes"
     LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -21,6 +21,11 @@ include(FoveaCompilerFlags)
 include(FoveaDependencies)
 
 add_subdirectory(libs/core)
+add_subdirectory(libs/terrain)
+add_subdirectory(libs/platform)
+add_subdirectory(libs/net)
+add_subdirectory(libs/render)
+add_subdirectory(apps/fovea)
 
 if(FOVEA_BUILD_TESTS)
     enable_testing()

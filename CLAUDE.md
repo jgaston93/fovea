@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Fovea is an open-source, cross-platform Vulkan image generator (IG) for real-time flight simulation, driven by a host over CIGI. `docs/fovea-plan.md` is the authoritative design handoff, `docs/architecture.md` turns it into concrete structure, and `docs/decisions.md` records design choices (D-xxx). The build, test and CI stack is in place. There's no IG code yet.
+Fovea is an open-source, cross-platform Vulkan image generator (IG) for real-time geographic scenes, driven by a host program. Flight simulation over CIGI is its first application, not its definition (D-011): keep vehicle-, domain- and protocol-specific behaviour in adapters and modules, out of core and the renderer. `docs/fovea-plan.md` is the authoritative design handoff, `docs/architecture.md` turns it into concrete structure, and `docs/decisions.md` records design choices (D-xxx). The build, test and CI stack is in place. There's no IG code yet.
 
 ## Commands
 
@@ -18,9 +18,9 @@ ctest --preset debug -R 'Toolchain\.FloatingPointIsIeeeWithoutFastMath'   # one 
 CC=clang CXX=clang++ cmake --preset debug -B build/clang-debug --fresh     # Clang build
 ```
 
-GCC (≥ 11), Clang (≥ 14) and MSVC (VS 2022) must all build without warnings, and warnings are errors. On Windows, configure from a VS developer prompt with `CC=cl CXX=cl` and the same presets (ASan presets are GCC/Clang only). Every target must call `fovea_target_defaults()` (`cmake/FoveaCompilerFlags.cmake`). Fast-math is forbidden. Dependencies go in `cmake/FoveaDependencies.cmake`, pinned by version and SHA-256, and are added only when code needs them. The test presets fail when no tests match (`noTestsAction: error`).
+GCC (≥ 11), Clang (≥ 14) and MSVC (VS 2022) must all build without warnings, and warnings are errors. On Windows, configure from a VS developer prompt with `CC=cl CXX=cl` and the same presets (ASan presets are GCC/Clang only). Every compiled target must call `fovea_target_defaults()` (`cmake/FoveaCompilerFlags.cmake`). Header-only INTERFACE targets can't take its PRIVATE flags; their headers are compiled, and checked, in the targets that include them. Fast-math is forbidden. Dependencies go in `cmake/FoveaDependencies.cmake`, pinned by version and SHA-256, and are added only when code needs them. The test presets fail when no tests match (`noTestsAction: error`).
 
-Each library keeps its public headers in `libs/<lib>/include/fovea/<lib>/` and its sources in `libs/<lib>/src/`. Tests go in `tests/unit/`, added to `tests/CMakeLists.txt`. Use `test::AllocationCounter` (`tests/support/alloc_counter.hpp`) to prove that render-path code allocates nothing.
+Each library keeps its public headers in `libs/<lib>/include/fovea/<lib>/` and its sources in `libs/<lib>/src/`. Tests go in `tests/unit/`, added to `tests/CMakeLists.txt`. Use `test::AllocationCounter` (`tests/support/alloc_counter.hpp`) to prove that render-path code allocates nothing. The `IncludeRules.*` tests (`cmake/CheckIncludeRules.cmake`) enforce the library boundaries from `docs/architecture.md`. Update the rules there when a library gains a new dependency.
 
 The lint tools are pinned to CI's versions in a git-ignored venv:
 
@@ -47,7 +47,7 @@ The first session's tasks are listed in the plan under "First Claude Code sessio
 There are two halves. The **offline compiler** reprojects and tiles public source data (3DEP, NAIP, NLCD, OSM, FAA) into a versioned, layered, multi-resolution tile database with a manifest. The **runtime IG** streams that database.
 
 The runtime has three threads:
-1. **Network**: receives CIGI and writes the latest eyepoint and entity state into a lock-free buffer.
+1. **Network**: a host adapter (CIGI first) writes the latest entity state into a lock-free buffer.
 2. **Paging**: predicts motion, loads tiles and models from disk, and uploads them through a transfer queue. Models load only on this thread.
 3. **Render**: runs a fixed 60 Hz clock and consumes only prepared data.
 
@@ -56,7 +56,7 @@ Invariants that are expensive to retrofit, so respect them in all code:
 - Double-precision ECEF positions on the CPU, camera-relative floats on the GPU, and reverse-Z depth.
 - Linear HDR, scene-referred rendering, with tone mapping applied per view.
 - GPU-driven rendering: descriptor indexing, indirect draws, and clustered lighting for many airport lights.
-- **Protocol-neutral scene state.** CIGI (and later DIS) are adapters that write timestamped scene state. Nothing in the renderer depends on packet types.
+- **Protocol-neutral scene state.** CIGI (and later other protocols) are adapters that write timestamped scene state. Nothing in the renderer depends on packet types.
 - **View** is the general rendering unit: pose source, projection, render mode, post chain and output target. Display channels and future sensor views (EO, NVG, IR, lidar) share it. A channel is config-driven (monitor, eye offset, asymmetric frustum) so it can later move to another process or machine.
 - The **Presenter** abstraction must support three swapchains or one spanned surface. Render resolution is independent of output resolution.
 - Terrain database reading and spatial queries (height of terrain, LOS, collision) live in a CPU-only library with **no Vulkan dependency**, so hosts can share it.
