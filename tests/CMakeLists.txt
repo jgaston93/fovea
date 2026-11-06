@@ -83,6 +83,10 @@ if(NOT DEFINED ENV{FOVEA_REQUIRE_VULKAN})
     set_tests_properties(App.OffscreenRendersWithoutADisplay App.OffscreenRendersTheScene PROPERTIES
         SKIP_REGULAR_EXPRESSION "no Vulkan loader found|no GPU with Vulkan 1.3")
 endif()
+add_test(NAME App.StatsNeedsTheScene
+    COMMAND fovea --clear --stats out.csv ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
+set_tests_properties(App.StatsNeedsTheScene PROPERTIES
+    TIMEOUT 20 PASS_REGULAR_EXPRESSION "--stats times the scene")
 add_test(NAME App.RejectsABadSecondsValue
     COMMAND fovea --seconds -1 ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
 set_tests_properties(App.RejectsABadSecondsValue PROPERTIES

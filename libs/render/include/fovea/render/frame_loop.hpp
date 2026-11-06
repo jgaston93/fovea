@@ -3,11 +3,16 @@
 // The render thread's loop (milestone 1 step 7): a fixed-rate frame clock
 // that takes the latest scene state, draws every view and records each
 // frame's timing. The steady-state frame allocates nothing, does no I/O and
-// waits only on the GPU or the clock (architecture.md, "Render path rules").
+// waits only on the display, the GPU or the clock (architecture.md, "Render
+// path rules"). Rare events are exempt: a swapchain rebuild (a resize) waits
+// for the device and allocates. The views are fixed for now: the scene
+// state's sequence is recorded, and its entity poses drive the views once a
+// host sends them (milestone 2).
 
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <exception>
 #include <span>
 #include <thread>
 
@@ -72,9 +77,11 @@ public:
     // a loop; tests call it directly.
     const FrameRecord& step();
 
-    // Runs step() on a render thread until stop().
+    // Runs step() on a render thread until stop(). If a frame throws, the
+    // thread ends, failed() turns true, and stop() rethrows the exception.
     void start();
     void stop();
+    bool failed() const { return failed_.load(std::memory_order_acquire); }
 
     // Safe to read after stop(), or from the thread that calls step().
     const FrameSummary& summary() const { return summary_; }
@@ -94,7 +101,10 @@ private:
     std::uint64_t frames_ = 0;
     FrameRecord last_;
     FrameSummary summary_;
+    std::uint64_t first_renderer_frame_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> failed_{false};
+    std::exception_ptr error_;
     std::thread thread_;
 };
 

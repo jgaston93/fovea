@@ -114,8 +114,10 @@ VkClearColorValue clear_value(Rgb8 c, bool srgb_target) {
 // The size a swapchain for this surface must have now, from the surface
 // itself: SDL keeps reporting a minimized window's last size, while the
 // surface reports 0x0. UINT32_MAX means the surface takes the swapchain's
-// size, so the window's pixel size is used, clamped to the surface's limits.
-VkExtent2D surface_extent(VkPhysicalDevice gpu, VkSurfaceKHR surface, const Window& window) {
+// size; then the window's size from when the Renderer was made is used
+// (clamped to the surface's limits), because this runs on the render thread
+// and SDL's window functions belong to the main thread.
+VkExtent2D surface_extent(VkPhysicalDevice gpu, VkSurfaceKHR surface, VkExtent2D window_size) {
     VkSurfaceCapabilitiesKHR caps{};
     if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &caps) != VK_SUCCESS) {
         return {0, 0};
@@ -123,9 +125,8 @@ VkExtent2D surface_extent(VkPhysicalDevice gpu, VkSurfaceKHR surface, const Wind
     if (caps.currentExtent.width != UINT32_MAX) {
         return caps.currentExtent;
     }
-    const auto size = window.pixel_size();
-    return {std::clamp(size.width, caps.minImageExtent.width, caps.maxImageExtent.width),
-            std::clamp(size.height, caps.minImageExtent.height, caps.maxImageExtent.height)};
+    return {std::clamp(window_size.width, caps.minImageExtent.width, caps.maxImageExtent.width),
+            std::clamp(window_size.height, caps.minImageExtent.height, caps.maxImageExtent.height)};
 }
 
 // One image layout transition, recorded with synchronization2.
@@ -218,6 +219,8 @@ struct Swapchain {
     const Window* window = nullptr;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    VkExtent2D window_size{};      // read on the main thread when the Renderer was made
+    std::uint64_t generation = 0;  // incremented by every rebuild
     vkb::Swapchain chain;
     std::vector<VkImage> images;
     std::vector<VkImageView> views;
@@ -283,14 +286,16 @@ struct Renderer::Impl {
     // Timing: two timestamps per output per frame in flight.
     VkQueryPool timestamps = VK_NULL_HANDLE;
     double timestamp_period_ns = 0.0;                         // 0: no timestamps on this queue
+    std::uint64_t timestamp_mask = ~std::uint64_t{0};         // the queue's valid timestamp bits
     std::array<std::uint64_t, kFramesInFlight> slot_frame{};  // frame number in each slot
     std::vector<std::uint64_t> query_results;                 // sized once
     FrameTiming timing;
 
     // Present pacing (VK_KHR_present_id / present_wait), when supported.
     bool present_wait = false;
-    std::vector<std::uint64_t> present_ids;          // one per presented swapchain, sized once
-    VkSwapchainKHR last_presented = VK_NULL_HANDLE;  // swapchain 0's last present
+    std::vector<std::uint64_t> present_ids;  // one per presented swapchain, sized once
+    bool presented = false;                  // swapchain 0's last present was queued
+    std::uint64_t presented_generation = 0;  // ...to this build of swapchain 0
     std::uint64_t last_present_id = 0;
     double present_wait_ms = 0.0;  // waited before this frame, for its timing
 
@@ -545,7 +550,7 @@ VkImageView Renderer::Impl::make_view(VkImage image, VkFormat format) const {
 }
 
 void Renderer::Impl::build_swapchain(Swapchain& s) {
-    const VkExtent2D size = surface_extent(physical.physical_device, s.surface, *s.window);
+    const VkExtent2D size = surface_extent(physical.physical_device, s.surface, s.window_size);
     if (size.width == 0 || size.height == 0) {
         s.needs_rebuild = true;  // minimized or not sized yet: build when drawable
         return;
@@ -566,6 +571,7 @@ void Renderer::Impl::build_swapchain(Swapchain& s) {
     }
     destroy_swapchain(s);  // the old one, now retired
     s.chain = built.value();
+    ++s.generation;
     auto images = s.chain.get_images();
     if (!images) {
         fail("cannot get swapchain images: " + images.error().message());
@@ -846,6 +852,8 @@ void Renderer::Impl::create_timestamps() {
         return;  // no GPU timings on this queue
     }
     timestamp_period_ns = static_cast<double>(physical.properties.limits.timestampPeriod);
+    const std::uint32_t bits = families[queue_family].timestampValidBits;
+    timestamp_mask = bits >= 64 ? ~std::uint64_t{0} : (std::uint64_t{1} << bits) - 1;
     const std::uint32_t count = kFramesInFlight * output_total() * 2;
     VkQueryPoolCreateInfo ci{};
     ci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
@@ -873,12 +881,10 @@ void Renderer::Impl::read_gpu_times(std::size_t slot) {
     timing.gpu_outputs = std::min<std::uint32_t>(output_total(), kMaxTimedOutputs);
     for (std::uint32_t i = 0; i < timing.gpu_outputs; ++i) {
         const std::size_t k = std::size_t{2} * i;
-        const std::uint64_t begin = query_results[k];
-        const std::uint64_t end = query_results[k + 1];
+        // Modulo the valid bits: the counter may wrap between the two.
+        const std::uint64_t ticks = (query_results[k + 1] - query_results[k]) & timestamp_mask;
         timing.gpu_ms[i] =
-            end >= begin
-                ? static_cast<float>(static_cast<double>(end - begin) * timestamp_period_ns * 1e-6)
-                : 0.0F;
+            static_cast<float>(static_cast<double>(ticks) * timestamp_period_ns * 1e-6);
     }
 }
 
@@ -924,7 +930,7 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
     std::fill(image_index.begin(), image_index.end(), UINT32_MAX);
     for (std::size_t i = 0; i < swapchains.size(); ++i) {
         Swapchain& s = swapchains[i];
-        const VkExtent2D size = surface_extent(physical.physical_device, s.surface, *s.window);
+        const VkExtent2D size = surface_extent(physical.physical_device, s.surface, s.window_size);
         if (size.width == 0 || size.height == 0) {
             continue;  // minimized: nothing to draw into
         }
@@ -1147,7 +1153,10 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
             present.pNext = &ids;
         }
         const VkResult r = vkQueuePresentKHR(queue, &present);
-        last_presented = present_which[0] == 0 ? present_chains[0] : VK_NULL_HANDLE;
+        // Swapchain 0's present, if it was queued: what the next wait waits on.
+        presented = present_which[0] == 0 &&
+                    (present_results[0] == VK_SUCCESS || present_results[0] == VK_SUBOPTIMAL_KHR);
+        presented_generation = swapchains[0].generation;
         last_present_id = frame_number + 1;
         if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR && r != VK_ERROR_OUT_OF_DATE_KHR) {
             check(r, "vkQueuePresentKHR");
@@ -1242,6 +1251,7 @@ std::unique_ptr<Renderer> Renderer::for_windows(Platform& platform,
         s.surface = reinterpret_cast<VkSurfaceKHR>(o.window->create_vulkan_surface(
             reinterpret_cast<std::uintptr_t>(impl->instance.instance)));
         const auto size = o.window->pixel_size();
+        s.window_size = {size.width, size.height};
         const VkExtent2D extent{o.render_width != 0 ? o.render_width : size.width,
                                 o.render_height != 0 ? o.render_height : size.height};
         if (extent.width == 0 || extent.height == 0) {
@@ -1325,23 +1335,29 @@ const FrameTiming& Renderer::last_timing() const {
     return impl_->timing;
 }
 
-double Renderer::wait_for_last_present() {
+double Renderer::wait_for_last_present(double timeout_ms) {
     Impl& m = *impl_;
-    if (!m.present_wait || m.last_presented == VK_NULL_HANDLE || m.swapchains.empty() ||
-        m.swapchains[0].chain.swapchain != m.last_presented) {
-        return 0.0;  // unsupported, nothing presented, or that swapchain was rebuilt
+    if (!m.present_wait || !m.presented || m.swapchains.empty() ||
+        m.swapchains[0].generation != m.presented_generation ||
+        m.swapchains[0].chain.swapchain == VK_NULL_HANDLE) {
+        return 0.0;  // unsupported, nothing queued, or that swapchain was rebuilt since
     }
     const auto started = now();
-    // A bounded wait: a minimized or covered window may never show it.
-    constexpr std::uint64_t kTimeoutNs = 100'000'000;
-    const VkResult r =
-        vkWaitForPresentKHR(m.device.device, m.last_presented, m.last_present_id, kTimeoutNs);
+    // Bounded: a covered window may not be shown, and must not hold back the
+    // others for long.
+    const auto timeout_ns = static_cast<std::uint64_t>(std::max(timeout_ms, 0.0) * 1e6);
+    const VkResult r = vkWaitForPresentKHR(m.device.device, m.swapchains[0].chain.swapchain,
+                                           m.last_present_id, timeout_ns);
     if (r != VK_SUCCESS && r != VK_TIMEOUT && r != VK_SUBOPTIMAL_KHR &&
         r != VK_ERROR_OUT_OF_DATE_KHR) {
         check(r, "vkWaitForPresentKHR");
     }
     m.present_wait_ms = std::chrono::duration<double, std::milli>(now() - started).count();
     return m.present_wait_ms;
+}
+
+std::uint64_t Renderer::frames_drawn() const {
+    return impl_->frame_number;
 }
 
 bool Renderer::has_present_wait() const {

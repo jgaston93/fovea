@@ -90,6 +90,24 @@ TEST(FrameLoop, GpuTimesArriveForTheFrameTwoBack) {
     EXPECT_GT(loop.summary().gpu_samples, 0U);
 }
 
+TEST(FrameLoop, GpuFramesUseTheLoopsNumbering) {
+    // Frames drawn before the loop (the app draws one first) don't shift the
+    // GPU frame numbers in the stats.
+    auto r = make_offscreen(1);
+    FOVEA_NEED_VULKAN(r);
+    const auto v = views(1);
+    r->draw_scene_frame(v);
+    r->draw_scene_frame(v);
+    auto scene = std::make_unique<SceneState>();
+    FrameLoop loop(*r, *scene, v, {1000.0});
+    FrameRecord last;
+    for (int i = 0; i < 5; ++i) {
+        last = loop.step();
+    }
+    ASSERT_GT(last.gpu_outputs, 0U);
+    EXPECT_EQ(last.gpu_frame, last.frame - 2);
+}
+
 TEST(FrameLoop, ALateFrameCountsAsMissed) {
     auto r = make_offscreen(1);
     FOVEA_NEED_VULKAN(r);

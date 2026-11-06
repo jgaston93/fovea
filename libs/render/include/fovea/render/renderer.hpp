@@ -85,7 +85,7 @@ inline constexpr std::size_t kMaxTimedOutputs = 8;
 struct FrameTiming {
     double wait_ms = 0.0;           // blocked: present wait, the frame fence and image acquires
     double work_ms = 0.0;           // recording, submitting and presenting
-    std::uint64_t gpu_frame = 0;    // the frame the GPU times below belong to
+    std::uint64_t gpu_frame = 0;    // the frame (frames_drawn() numbering) these GPU times are for
     std::uint32_t gpu_outputs = 0;  // how many are valid; 0 without timestamps
     std::array<float, kMaxTimedOutputs> gpu_ms{};  // per output: scene plus tone map
 };
@@ -142,10 +142,15 @@ public:
 
     // Blocks until the last frame drawn is on the first output's display
     // (VK_KHR_present_wait), so the next frame can start right after a
-    // vsync: evenly spaced and with the least latency. Returns the time
-    // waited, in ms; returns at once (0) without present wait support or
-    // when there is nothing on screen to wait for.
-    double wait_for_last_present();
+    // vsync: evenly spaced and with the least latency. Waits at most
+    // timeout_ms (a covered first window must not hold back the others).
+    // Returns the time waited, in ms; returns at once (0) without present
+    // wait support or when there is nothing queued to wait for.
+    double wait_for_last_present(double timeout_ms);
+
+    // Frames drawn so far (draw_clear_frame and draw_scene_frame calls): the
+    // numbering FrameTiming::gpu_frame uses.
+    std::uint64_t frames_drawn() const;
 
     // Whether wait_for_last_present can wait (the GPU and surface support it).
     bool has_present_wait() const;

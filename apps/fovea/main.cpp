@@ -136,6 +136,12 @@ std::optional<Options> parse_args(int argc, char** argv) {
     if (o.config.empty()) {
         return std::nullopt;
     }
+    if (!o.stats.empty() && (o.clear || o.identify)) {
+        (void)std::fprintf(stderr,
+                           "fovea: --stats times the scene; it can't be used with "
+                           "--clear or --identify\n");
+        return std::nullopt;
+    }
     return o;
 }
 
@@ -290,18 +296,20 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
     // The scene on the render thread (step 7): a fixed-rate loop drawing the
     // latest scene state, while this (main) thread handles window events.
     auto scene_state = std::make_unique<fovea::SceneState>();
-    std::FILE* stats_file = nullptr;
+    // Declared before the logger, so the logger stops (flushing) before the
+    // file closes, whichever way this function exits.
+    std::unique_ptr<std::FILE, int (*)(std::FILE*)> stats_file(nullptr, &std::fclose);
     std::unique_ptr<fovea::Logger> stats;
     std::unique_ptr<fovea::FrameLoop> loop;
     if (renderer && !options.clear) {
         if (!options.stats.empty()) {
-            stats_file = std::fopen(options.stats.c_str(), "w");
+            stats_file.reset(std::fopen(options.stats.c_str(), "w"));
             if (stats_file == nullptr) {
                 (void)std::fprintf(stderr, "fovea: cannot write %s\n", options.stats.c_str());
                 return 1;
             }
             stats = std::make_unique<fovea::Logger>(std::size_t{16384});
-            stats->start(fovea::make_text_sink(stats_file));
+            stats->start(fovea::make_text_sink(stats_file.get()));
         }
         loop = std::make_unique<fovea::FrameLoop>(
             *renderer, *scene_state, views, fovea::FrameLoopOptions{config.target_hz}, stats.get());
@@ -315,7 +323,10 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         }
         if (loop) {
             // Rendering runs on its own thread; wake for events, or at least
-            // every 100 ms to check the time limit.
+            // every 100 ms to check the time limit and the loop's health.
+            if (loop->failed()) {
+                break;  // stop() below rethrows what went wrong
+            }
             int timeout_ms = 100;
             if (timed) {
                 const auto left =
@@ -362,14 +373,13 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         }
     }
     if (loop) {
-        loop->stop();
+        loop->stop();  // rethrows a render thread failure
         if (stats) {
             stats->stop();
             if (stats->dropped() > 0) {
                 std::printf("stats: %llu records dropped\n",
                             static_cast<unsigned long long>(stats->dropped()));
             }
-            (void)std::fclose(stats_file);
         }
         print_summary(loop->summary());
         return finish(*renderer);

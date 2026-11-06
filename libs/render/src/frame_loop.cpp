@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <utility>
 
 namespace fovea {
 
@@ -21,7 +22,8 @@ FrameLoop::FrameLoop(Renderer& renderer, SceneState& scene, std::span<const Scen
       options_(options),
       stats_(stats),
       start_(now()),
-      schedule_(start_, options.rate_hz) {
+      schedule_(start_, options.rate_hz),
+      first_renderer_frame_(renderer.frames_drawn()) {
     if (stats_ != nullptr) {
         stats_->write(
             LogLevel::info,
@@ -30,7 +32,12 @@ FrameLoop::FrameLoop(Renderer& renderer, SceneState& scene, std::span<const Scen
 }
 
 FrameLoop::~FrameLoop() {
-    stop();
+    // Stops the thread; an exception it stored is dropped here (call stop()
+    // to get it).
+    running_.store(false, std::memory_order_release);
+    if (thread_.joinable()) {
+        thread_.join();
+    }
 }
 
 const FrameRecord& FrameLoop::step() {
@@ -39,7 +46,8 @@ const FrameRecord& FrameLoop::step() {
     // Presentation (FIFO) without it: by blocking inside the draw. Otherwise
     // (offscreen, mailbox): by the clock.
     if (renderer_.paced_by_display()) {
-        (void)renderer_.wait_for_last_present();
+        // At most two periods: a covered first window can't stall the rest.
+        (void)renderer_.wait_for_last_present(2000.0 / options_.rate_hz);
     } else if (frames_ > 0) {
         std::this_thread::sleep_until(schedule_.next_deadline());
     }
@@ -65,8 +73,10 @@ const FrameRecord& FrameLoop::step() {
     const double period_ms = 1000.0 / options_.rate_hz;
     r.missed = r.interval_ms > options_.missed_after_periods * period_ms;
     r.scene_sequence = scene.sequence;
-    r.gpu_frame = t.gpu_frame;
-    r.gpu_outputs = t.gpu_outputs;
+    // In this loop's numbering (draws before the loop started don't count).
+    const bool ours = t.gpu_outputs > 0 && t.gpu_frame >= first_renderer_frame_;
+    r.gpu_frame = ours ? t.gpu_frame - first_renderer_frame_ : 0;
+    r.gpu_outputs = ours ? t.gpu_outputs : 0;
     r.gpu_ms = t.gpu_ms;
     last_start_ = started;
     ++frames_;
@@ -126,8 +136,15 @@ void FrameLoop::start() {
         return;
     }
     thread_ = std::thread([this] {
-        while (running_.load(std::memory_order_acquire)) {
-            (void)step();
+        // An exception must not escape the thread (that terminates the
+        // process): the loop stops and stop() rethrows it to the owner.
+        try {
+            while (running_.load(std::memory_order_acquire)) {
+                (void)step();
+            }
+        } catch (...) {
+            error_ = std::current_exception();
+            failed_.store(true, std::memory_order_release);
         }
     });
 }
@@ -136,6 +153,9 @@ void FrameLoop::stop() {
     running_.store(false, std::memory_order_release);
     if (thread_.joinable()) {
         thread_.join();
+    }
+    if (error_) {
+        std::rethrow_exception(std::exchange(error_, nullptr));
     }
 }
 
