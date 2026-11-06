@@ -192,16 +192,17 @@ TEST(FrameLoop, SteadyFramesWithTheOverlayAllocateNothing) {
     FrameLoop loop(*r, *scene, v, options);
     {
         // A short warm-up allocates (ImGui's first frames build its draw
-        // lists), which shows the counter sees ImGui's memory: the zero below
-        // is real.
+        // lists; measured, the last allocation is in the fifth frame), which
+        // shows the counter sees ImGui's memory: the zero below is real.
         const test::AllocationCounter warm_up;
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 10; ++i) {
             (void)loop.step();
         }
         EXPECT_GT(warm_up.count(), 0U);
     }
+    // Past a full trip round the overlay's 240-frame graph.
     const test::AllocationCounter counter;
-    for (int i = 0; i < 100; ++i) {
+    for (int i = 0; i < 300; ++i) {
         (void)loop.step();
     }
     EXPECT_EQ(counter.count(), 0U);

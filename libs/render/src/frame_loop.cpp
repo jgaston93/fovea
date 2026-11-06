@@ -24,6 +24,7 @@ FrameLoop::FrameLoop(Renderer& renderer, SceneState& scene, std::span<const Scen
       start_(now()),
       schedule_(start_, options.rate_hz),
       first_renderer_frame_(renderer.frames_drawn()) {
+    intervals_.fill(static_cast<float>(1000.0 / options.rate_hz));
     if (stats_ != nullptr) {
         stats_->write(
             LogLevel::info,
@@ -60,13 +61,12 @@ const FrameRecord& FrameLoop::step() {
     // The overlay shows the stats up to the previous frame.
     const OverlayContent* overlay = nullptr;
     if (options_.overlay) {
-        // Only the intervals recorded so far: until the ring fills, the
-        // oldest is at 0 and the rest is unwritten.
-        const std::size_t recorded = frames_ > 0 ? frames_ - 1 : 0;
-        const bool full = recorded >= intervals_.size();
-        overlay_.intervals_ms =
-            std::span<const float>(intervals_).first(full ? intervals_.size() : recorded);
-        overlay_.intervals_oldest = full ? next_interval_ : 0;
+        // Always the whole ring, so ImGui's draw list keeps one size (a graph
+        // growing a point a frame grew its buffers until the ring filled);
+        // slots not yet recorded hold the target period (set in the
+        // constructor), a flat line at the target.
+        overlay_.intervals_ms = intervals_;
+        overlay_.intervals_oldest = next_interval_;
         overlay_.target_ms = static_cast<float>(1000.0 / options_.rate_hz);
         overlay_.frames = summary_.frames;
         overlay_.missed = summary_.missed;

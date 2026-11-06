@@ -1456,12 +1456,9 @@ bool Renderer::overlay_ready() const {
     if (!impl_->overlay) {
         return false;
     }
-    for (const ImTextureData* tex : ImGui::GetPlatformIO().Textures) {
-        if (tex->Status != ImTextureStatus_OK) {
-            return false;
-        }
-    }
-    return true;
+    const auto& textures = ImGui::GetPlatformIO().Textures;
+    return std::all_of(textures.begin(), textures.end(),
+                       [](const ImTextureData* tex) { return tex->Status == ImTextureStatus_OK; });
 }
 
 std::vector<std::uint8_t> Renderer::read_back_rgba(std::uint32_t output) {
