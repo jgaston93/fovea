@@ -15,7 +15,7 @@ For a first area of about 20 x 20 km around KHSV (34.55-34.72 N, 86.90-86.65 W):
 - **Volume:** about 1.6 GB of 1 m elevation and 4.4 GB of 0.6 m imagery uncompressed for 20 x 20 km; the compiled database is smaller (compressed textures).
 - All US Government works (public domain), with credits requested; `ATTRIBUTION.md` lists each.
 
-## Decisions to make first (proposed in `decisions.md`)
+## Decisions (accepted 2026-11-06, in `decisions.md`)
 
 - **D-015 Tiling: a geographic quadtree.** Tiles split latitude and longitude in half at each level from two root tiles (east and west hemispheres), so the scheme covers the whole Earth and matches how sources are indexed. Each tile holds a square grid of heights (for example 257 x 257, edges shared with neighbours) and an imagery texture, with vertices relative to the tile's own ECEF origin (camera-relative on the GPU, as now). The alternative, UTM grids, is simpler for one small area but has seams between zones.
 - **D-016 Level of detail: chunked quadtree by screen-space error.** Each frame, a tile splits into its four children when its geometric error would show as more than about a pixel on screen. Cracks between levels are hidden with skirts. Popping as tiles change level is measured on the desk; if it shows, morphing between levels follows (CDLOD-style). Clipmaps are the alternative: smooth, but harder to mix with the paging of mixed-resolution sources.
@@ -62,6 +62,6 @@ For a first area of about 20 x 20 km around KHSV (34.55-34.72 N, 86.90-86.65 W):
 
 | Needed by | Input |
 |---|---|
-| Step 1 | Approve D-015 to D-020; the area (20 x 20 km to start?) and imagery (NAIP 2023 at 0.6 m, or 2021 at 0.3 m: four times the data) |
+| Step 1 | ~~Approve D-015 to D-020; the area and imagery~~ accepted: 20 x 20 km, NAIP 2023 at 0.6 m (0.3 m around the airport may follow) |
 | Step 1 | About 10 GB of disk in WSL for sources and the database |
 | Step 7 | An hour at the desk |

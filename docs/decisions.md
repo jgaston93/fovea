@@ -102,25 +102,25 @@ Packet layouts come from the ICD itself, never from memory: `tools/fetch-cigi-ic
 
 ## D-015 Tiling: a geographic quadtree
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-06)
 
 Terrain tiles split latitude and longitude in half at each level, from two root tiles (east and west hemispheres). The scheme covers the whole Earth, matches how sources are indexed, and has no zone seams (UTM grids, simpler for one small area, do). Each tile holds a square grid of heights with edges shared with its neighbours and an imagery texture; its vertices are relative to the tile's own ECEF origin, so the GPU stays camera-relative. Tiles shrink in longitude toward the poles; that is a cost only far from any likely database.
 
 ## D-016 Terrain level of detail: chunked quadtree by screen-space error
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-06)
 
 Each frame a tile splits into its children where its geometric error (recorded by the compiler) would show as more than about a pixel. Skirts hide cracks between levels. Popping is measured on the desk; morphing between levels (CDLOD-style) follows if it shows. Clipmaps are smoother but harder to combine with paging mixed-resolution sources.
 
 ## D-017 Terrain imagery: compressed, the format chosen per database
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-06)
 
 Imagery is stored as GPU-compressed textures with full mip chains, in a format chosen per database: BC7 (sRGB) by default, about 1 byte per texel, so 0.6 m imagery is 3-4 MB per km² with mips; BC1 at half that, blockier up close; uncompressed RGBA8 for exact colour at four times BC7's size. The compiler takes the format as a build setting and the manifest and each tile's imagery layer record it, so the runtime reads whichever it finds and one database can mix formats by region (detail where a deployment needs it, size elsewhere). Close-range and wide-area uses are both first-class (D-011), so neither format is assumed. Encoders come from a pinned library, chosen and licence-checked in milestone 3 step 4.
 
 ## D-018 Terrain database: a manifest and one file per tile
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-06)
 
 `manifest.toml` holds the schema version, area, layers and sources. Each tile is one binary file: a header (magic, schema version, tile key) and a table of named layers (elevation and imagery first; materials, placements and lights later), so a new layer needs no rebuild of the others (foundational decision 2). Binary, little-endian, with a checksum per layer.
 
@@ -128,12 +128,12 @@ Alternatives considered: one pack file per database (fewer files, but rebuilds a
 
 ## D-019 The terrain compiler runs on Linux
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-06)
 
 GDAL is the compiler's main dependency. On Ubuntu 24.04 it is one package (`libgdal-dev`, GDAL 3.8.4); on Windows it means building GDAL and PROJ through vcpkg, or a conda environment. Databases are plain files any runtime reads, so the compiler builds and runs on Linux (WSL and CI) only, and the Windows runtime flies the result. A Windows compiler can follow if needed.
 
 ## D-020 Database heights are ellipsoidal
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-06)
 
 The compiler converts the sources' NAVD88 heights to WGS-84 ellipsoid heights with NOAA's GEOID18 (h = H + N), so the runtime works in one vertical datum. The database also carries the geoid height over its area, which lets the runtime convert a host's sea-level altitudes properly there (issue #19) instead of with one constant.
