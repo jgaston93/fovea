@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
-#include <iterator>
+#include <limits>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -42,12 +42,19 @@ bool write_png(const std::filesystem::path& file, const RgbaImage& image) {
 }
 
 std::optional<RgbaImage> read_png(const std::filesystem::path& file) {
-    std::ifstream in(file, std::ios::binary);
+    std::ifstream in(file, std::ios::binary | std::ios::ate);
     if (!in) {
         return std::nullopt;
     }
-    const std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(in),
-                                          std::istreambuf_iterator<char>()};
+    const std::streamoff size = in.tellg();
+    if (size <= 0 || size > std::numeric_limits<int>::max()) {
+        return std::nullopt;
+    }
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+    in.seekg(0);
+    if (!in.read(reinterpret_cast<char*>(bytes.data()), size)) {
+        return std::nullopt;
+    }
     int w = 0;
     int h = 0;
     int channels = 0;
