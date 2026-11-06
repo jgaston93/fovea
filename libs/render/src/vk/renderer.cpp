@@ -85,6 +85,23 @@ VkClearColorValue clear_value(Rgb8 c, bool srgb_target) {
     return v;
 }
 
+// The size a swapchain for this surface must have now, from the surface
+// itself: SDL keeps reporting a minimized window's last size, while the
+// surface reports 0x0. UINT32_MAX means the surface takes the swapchain's
+// size, so the window's pixel size is used, clamped to the surface's limits.
+VkExtent2D surface_extent(VkPhysicalDevice gpu, VkSurfaceKHR surface, const Window& window) {
+    VkSurfaceCapabilitiesKHR caps{};
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &caps) != VK_SUCCESS) {
+        return {0, 0};
+    }
+    if (caps.currentExtent.width != UINT32_MAX) {
+        return caps.currentExtent;
+    }
+    const auto size = window.pixel_size();
+    return {std::clamp(size.width, caps.minImageExtent.width, caps.maxImageExtent.width),
+            std::clamp(size.height, caps.minImageExtent.height, caps.maxImageExtent.height)};
+}
+
 // One image layout transition, recorded with synchronization2.
 void transition(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayout to,
                 VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
@@ -261,8 +278,9 @@ void Renderer::Impl::create_device(bool present) {
         fail("no GPU with Vulkan 1.3 and the features Fovea needs" +
              (candidates ? std::string() : ": " + candidates.error().message()));
     }
-    // Among the GPUs that can draw and present to every window from one
-    // queue, the first discrete one, else the first.
+    // Among the GPUs whose graphics queue can present to every window, the
+    // first discrete one, else the first. The queue checked is the one used
+    // below: vk-bootstrap's graphics queue, its first graphics family.
     const auto reaches_every_window = [&](const vkb::PhysicalDevice& d) {
         const auto families = d.get_queue_families();
         for (std::uint32_t q = 0; q < families.size(); ++q) {
@@ -277,9 +295,7 @@ void Renderer::Impl::create_device(bool present) {
                           VK_SUCCESS &&
                       ok == VK_TRUE;
             }
-            if (all) {
-                return true;
-            }
+            return all;  // only the first graphics family counts
         }
         return false;
     };
@@ -372,7 +388,7 @@ void Renderer::Impl::create_frames() {
 }
 
 void Renderer::Impl::build_swapchain(Swapchain& s) const {
-    const auto size = s.window->pixel_size();
+    const VkExtent2D size = surface_extent(physical.physical_device, s.surface, *s.window);
     if (size.width == 0 || size.height == 0) {
         s.needs_rebuild = true;  // minimized or not sized yet: build when drawable
         return;
@@ -482,11 +498,12 @@ std::uint32_t Renderer::Impl::draw(std::span<const Rgb8> colours) {
     std::fill(image_index.begin(), image_index.end(), UINT32_MAX);
     for (std::size_t i = 0; i < swapchains.size(); ++i) {
         Swapchain& s = swapchains[i];
-        const auto size = s.window->pixel_size();
+        const VkExtent2D size = surface_extent(physical.physical_device, s.surface, *s.window);
         if (size.width == 0 || size.height == 0) {
-            continue;  // minimized
+            continue;  // minimized: nothing to draw into
         }
-        // A resize that the driver doesn't report as out of date.
+        // A resize the driver doesn't report as out of date. The extent
+        // compared is the one a rebuild would use, so a rebuild settles it.
         if (s.chain.swapchain != VK_NULL_HANDLE &&
             (size.width != s.chain.extent.width || size.height != s.chain.extent.height)) {
             s.needs_rebuild = true;

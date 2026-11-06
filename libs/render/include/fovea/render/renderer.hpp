@@ -79,8 +79,10 @@ public:
     // One frame: clears output i to colours[i] on the GPU, then presents
     // every on-screen output in a single present call. Waits only for the
     // frame two frames back to finish, and for vsync with FIFO. Returns the
-    // number of outputs drawn: 0 when every window is minimized, in which
-    // case nothing paced the call and the caller should wait.
+    // number of outputs drawn. 0 means nothing could be drawn just now (every
+    // window minimized, or its swapchain being rebuilt): nothing paced the
+    // call, so the caller should wait a little before the next. After an
+    // exception, the Renderer must be destroyed, not drawn with again.
     std::uint32_t draw_clear_frame(std::span<const Rgb8> colours);
 
     // Offscreen outputs only: the last frame's pixels, RGBA8, row by row.
