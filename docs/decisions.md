@@ -86,3 +86,15 @@ Fovea is a real-time renderer for geographic scenes, not only an image generator
 
 Headless dumps and golden-image tests read and write PNG. `stb_image` 2.30 and `stb_image_write` 1.16 are two public-domain headers with no dependencies, pinned by commit and SHA-256 and built with only PNG enabled. They are used by `libs/core/src/image_file.cpp`, which is file I/O and never on the render path. libpng plus zlib would add two libraries to build on three platforms for the same job. When the runtime needs to load textures (KTX2 and compressed formats, from the terrain database and glTF), that is a separate choice, made by the paging work.
 
+## D-013 CIGI 3.3 first
+
+**Status:** Proposed
+
+The first host protocol is CIGI 3.3. It is the version most hosts and IGs implement, and its interface control document is freely available. CIGI 4.0 (SISO-STD-013-2014) changes packet sizes and IDs and is less widely supported. Version-specific packet layouts stay in one part of the codec, so 4.0 can be added beside 3.3 later.
+
+## D-014 Fovea's own CIGI codec
+
+**Status:** Proposed
+
+The codec is Fovea's own: fixed-size encode and decode of the packets in use, with no allocation, tested byte for byte against the ICD's layouts and fuzzed nightly. The Boeing CIGI Class Library is LGPL, older C++, and allocates per packet; only a handful of packets are needed for milestones 2 and 6. UDP sockets are a thin non-blocking wrapper in one file of `libs/net`, with no networking library.
+
