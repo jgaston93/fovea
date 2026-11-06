@@ -1,0 +1,62 @@
+# A circuit near the example origin (34.6, -86.8, 190 m): out, a climbing
+# turn, a figure eight, a roll, and back. Run Fovea with
+# config/cigi-test-host.toml, then:
+#   cigi-test-host tools/cigi-test-host/scripts/circuit.toml
+
+[ig]
+address = "127.0.0.1"
+port = 8004
+
+[host]
+port = 8005
+rate_hz = 60.0
+
+[start]
+lat = 34.6
+lon = -86.8
+alt = 290.0      # 100 m above the grid
+heading = 0.0
+speed = 50.0
+
+[flight]
+loop = true
+
+[[segment]]
+kind = "straight"
+duration = 8.0
+speed = 50.0
+
+[[segment]]
+kind = "turn"
+duration = 15.0
+speed = 50.0
+turn_rate = 12.0
+
+[[segment]]
+kind = "straight"
+duration = 6.0
+speed = 50.0
+climb = 5.0
+
+[[segment]]
+kind = "figure_eight"
+speed = 50.0
+turn_rate = 15.0
+
+[[segment]]
+kind = "roll"
+duration = 4.0
+speed = 50.0
+roll_rate = 90.0
+
+[[segment]]
+kind = "straight"
+duration = 6.0
+speed = 50.0
+climb = -5.0
+
+[[segment]]
+kind = "turn"
+duration = 15.0
+speed = 50.0
+turn_rate = -12.0

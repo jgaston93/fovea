@@ -1,0 +1,32 @@
+# Slow, steady motion for judging smoothness by eye: low and level, a long
+# gentle turn. Grid lines sweeping past are where stutter shows.
+#   cigi-test-host tools/cigi-test-host/scripts/gentle.toml
+
+[ig]
+address = "127.0.0.1"
+port = 8004
+
+[host]
+port = 8005
+rate_hz = 60.0
+
+[start]
+lat = 34.6
+lon = -86.8
+alt = 200.0      # 10 m above the grid
+heading = 0.0
+speed = 20.0
+
+[flight]
+loop = true
+
+[[segment]]
+kind = "straight"
+duration = 10.0
+speed = 20.0
+
+[[segment]]
+kind = "turn"
+duration = 60.0
+speed = 20.0
+turn_rate = 6.0

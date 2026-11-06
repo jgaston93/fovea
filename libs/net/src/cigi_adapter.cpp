@@ -32,7 +32,10 @@ void remove(SceneSnapshot& scene, EntityState* e) {
 }  // namespace
 
 CigiAdapter::CigiAdapter(const CigiAdapterOptions& options, FrameStartRing* frame_starts)
-    : options_(options), frame_starts_(frame_starts), socket_(options.port), start_(now()) {}
+    : options_(options),
+      frame_starts_(frame_starts),
+      socket_(options.port, options.address),
+      start_(now()) {}
 
 std::uint32_t CigiAdapter::ig_ticks(LocalTime t) const {
     const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t - start_).count();

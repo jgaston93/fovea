@@ -1,0 +1,42 @@
+# Flying the desk's three monitors with the CIGI test host (milestone 2
+# step 4): the channels of channels.landscape-two-portrait.toml, a ground
+# grid at the scripts' origin, and the host link on this computer only.
+#   fovea --overlay config/cigi-test-host.toml
+#   cigi-test-host tools/cigi-test-host/scripts/circuit.toml
+
+[display]
+presenter = "multi_swapchain"
+target_hz = 60
+near_m = 0.1
+
+[[channel]]
+name = "left"
+monitor = 0                     # Dell P2724DE, 2560x1440 landscape
+render_extent = [2560, 1440]
+view_rotation = { yaw = -40.0, pitch = 0.0, roll = 0.0 }
+frustum = { left = -30.0, right = 30.0, top = 18.0, bottom = -18.0 }    # covers yaw -70..-10
+
+[[channel]]
+name = "middle"
+monitor = 2                     # Samsung LF24T35, 1080x1920 portrait
+render_extent = [1080, 1920]
+view_rotation = { yaw = 5.0, pitch = 0.0, roll = 0.0 }
+frustum = { left = -15.0, right = 15.0, top = 25.5, bottom = -25.5 }    # covers yaw -10..20
+
+[[channel]]
+name = "right"
+monitor = 1                     # Samsung LF24T35, 1080x1920 portrait
+render_extent = [1080, 1920]
+view_rotation = { yaw = 35.0, pitch = 0.0, roll = 0.0 }
+frustum = { left = -15.0, right = 15.0, top = 25.5, bottom = -25.5 }    # covers yaw 20..50
+
+[reference_scene]
+grid_spacing_m = 10.0
+origin = { lat = 34.6, lon = -86.8, alt = 190.0 }   # where the test scripts fly
+
+[host]
+protocol = "cigi"
+port = 8004                  # the scripts' [ig] port
+listen_address = "127.0.0.1" # this computer only (no Windows Firewall prompt)
+host_address = "127.0.0.1"   # Start of Frame to the scripts' [host] port
+host_port = 8005

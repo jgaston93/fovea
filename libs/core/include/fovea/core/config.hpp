@@ -61,6 +61,10 @@ enum class HostProtocol : std::uint8_t { cigi };
 struct HostConfig {
     HostProtocol protocol = HostProtocol::cigi;
     std::uint16_t port = 0;  // UDP port host messages arrive on
+    // The local address to listen on: all interfaces when unset. 127.0.0.1
+    // takes messages from this computer only (a host running beside Fovea),
+    // which also keeps Windows Firewall from asking.
+    std::optional<std::uint32_t> listen_address;
     // Where Start of Frame goes: both set, or neither (then the address the
     // host's messages come from). A host that waits for Start of Frame before
     // sending needs them.
