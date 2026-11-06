@@ -15,6 +15,8 @@
 #include <unordered_map>
 #include <utility>
 
+#include "fovea/core/ipv4.hpp"
+
 namespace fovea {
 
 namespace {
@@ -213,6 +215,47 @@ void check_range(Parser& p, const toml::node& n, const std::string& path, double
     }
 }
 
+void parse_host(Parser& p, const toml::table& t, HostConfig& out) {
+    p.check_keys(t, {"protocol", "port", "host_address", "host_port", "geoid_height_m"}, "host");
+    if (const auto* n = p.required(t, "protocol", "host")) {
+        if (auto v = p.choice<HostProtocol>(*n, "host.protocol", {{"cigi", HostProtocol::cigi}})) {
+            out.protocol = *v;
+        }
+    }
+    if (const auto* n = p.required(t, "port", "host")) {
+        if (auto v = p.integer(*n, "host.port", 1, 65535)) {
+            out.port = static_cast<std::uint16_t>(*v);
+        }
+    }
+    const auto* address = t.get("host_address");
+    const auto* port = t.get("host_port");
+    if (address != nullptr) {
+        if (auto v = p.string(*address, "host.host_address")) {
+            out.host_address = parse_ipv4(*v);
+            if (!out.host_address) {
+                p.error(address->source(),
+                        "'host.host_address' must be an IPv4 address like 192.168.1.20 (got \"" +
+                            *v + "\")");
+            }
+        }
+    }
+    if (port != nullptr) {
+        if (auto v = p.integer(*port, "host.host_port", 1, 65535)) {
+            out.host_port = static_cast<std::uint16_t>(*v);
+        }
+    }
+    if ((address == nullptr) != (port == nullptr)) {
+        p.error((address != nullptr ? address : port)->source(),
+                "'host.host_address' and 'host.host_port' go together: set both, or neither");
+    }
+    if (const auto* n = t.get("geoid_height_m")) {
+        if (auto v = p.number(*n, "host.geoid_height_m")) {
+            check_range(p, *n, "host.geoid_height_m", *v, -150.0, 150.0, false);
+            out.geoid_height_m = *v;
+        }
+    }
+}
+
 void parse_reference_scene(Parser& p, const toml::table& t, ReferenceScene& out) {
     p.check_keys(t, {"eye_height_m", "grid_spacing_m", "exposure_ev"}, "reference_scene");
     if (const auto* n = t.get("eye_height_m")) {
@@ -387,7 +430,12 @@ ConfigResult parse_display_config(std::string_view text, std::string_view source
     }
 
     DisplayConfig config;
-    p.check_keys(root, {"display", "channel", "reference_scene"}, "");
+    p.check_keys(root, {"display", "channel", "reference_scene", "host"}, "");
+    if (const auto* n = root.get("host")) {
+        if (const auto* t = p.table(*n, "host")) {
+            parse_host(p, *t, config.host.emplace());
+        }
+    }
     if (const auto* n = root.get("reference_scene")) {
         if (const auto* t = p.table(*n, "reference_scene")) {
             parse_reference_scene(p, *t, config.reference_scene);

@@ -32,3 +32,13 @@ monitor = 1                     # Samsung LF24T35, 1080x1920 portrait
 render_extent = [1080, 1920]
 view_rotation = { yaw = 35.0, pitch = 0.0, roll = 0.0 }
 frustum = { left = -15.0, right = 15.0, top = 25.5, bottom = -25.5 }    # covers yaw 20..50
+
+# A host program driving the scene (milestone 2): CIGI 3.3 over UDP. Leave
+# it out and nothing listens. The ports are any free ones; the host's
+# settings must match (the CIGI ICD names none).
+# [host]
+# protocol = "cigi"
+# port = 8004                  # where the host's messages arrive
+# host_address = "127.0.0.1"   # where Start of Frame goes; set both, or neither
+# host_port = 8005             #   (neither: back to wherever the host sends from)
+# geoid_height_m = 0.0         # the geoid above the WGS-84 ellipsoid, here

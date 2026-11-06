@@ -54,6 +54,9 @@ const FrameRecord& FrameLoop::step() {
     }
     const LocalTime started = now();
     (void)schedule_.tick(started);  // keeps the self-paced deadlines going
+    if (options_.frame_starts != nullptr) {
+        (void)options_.frame_starts->try_push({frames_, started});
+    }
 
     // The latest published scene, taken once for the whole frame.
     const SceneSnapshot& scene = scene_.latest();

@@ -17,6 +17,7 @@
 #include <string_view>
 #include <thread>
 
+#include "fovea/core/frame_events.hpp"
 #include "fovea/core/log.hpp"
 #include "fovea/core/scene.hpp"
 #include "fovea/core/time.hpp"
@@ -37,6 +38,9 @@ struct FrameLoopOptions {
     // Fill the debug overlay each frame (the renderer must have one enabled).
     bool overlay = false;
     std::string_view overlay_note;  // an extra overlay line (must outlive the loop)
+    // Each frame's start goes here (for a host adapter's Start of Frame);
+    // if the ring is full, the frame start is dropped. Must outlive the loop.
+    FrameStartRing* frame_starts = nullptr;
 };
 
 // Recent frame intervals for the overlay's graph.

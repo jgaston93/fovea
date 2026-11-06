@@ -43,6 +43,9 @@ inline constexpr std::size_t kMaxEntities = 1024;
 struct EntityState {
     EntityId id = 0;
     ModelId model = 0;
+    // An inactive entity is kept (its model stays loaded) but not drawn, and
+    // views can't ride it until it is active again.
+    bool active = true;
     // The last two samples, so the renderer can interpolate or extrapolate
     // to its own frame time without the writer knowing about frames.
     Pose cur;
