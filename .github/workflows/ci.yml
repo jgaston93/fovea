@@ -44,7 +44,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install Ninja, ccache, SDL's X11 dependencies and lavapipe
-        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache libx11-dev libxext-dev libxrandr-dev mesa-vulkan-drivers libvulkan1 vulkan-validationlayers
+        timeout-minutes: 10
+        run: tools/ci/apt-install.sh ninja-build ccache libx11-dev libxext-dev libxrandr-dev mesa-vulkan-drivers libvulkan1 vulkan-validationlayers
       # Compiled objects (ours and the FetchContent dependencies) are reused
       # between runs; ccache only reuses an object when the compiler, flags
       # and preprocessed source match, so results are unchanged.
@@ -138,7 +139,8 @@ jobs:
         with:
           fetch-depth: 0  # the PR's base, for the changed files
       - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y ninja-build clang-format-18 clang-tidy-18 libx11-dev libxext-dev libxrandr-dev
+        timeout-minutes: 10
+        run: tools/ci/apt-install.sh ninja-build clang-format-18 clang-tidy-18 libx11-dev libxext-dev libxrandr-dev
       - name: clang-format
         run: git ls-files '*.cpp' '*.hpp' | xargs --no-run-if-empty clang-format-18 --dry-run --Werror
       - name: Configure (for compile_commands.json)

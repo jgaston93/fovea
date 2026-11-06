@@ -270,13 +270,19 @@ TEST(FrameLoop, RunsOnItsOwnThreadAndSeesNewScenes) {
     const auto v = views(1);
     FrameLoop loop(*r, *scene, v, {120.0});
     loop.start();
-    for (int i = 0; i < 5; ++i) {
-        scene->edit().environment.time_of_day_h = i;
+    // Publishes while the loop draws, until it has drawn 5 frames: counted,
+    // not timed, since a sanitizer build on a small CI runner can draw only a
+    // few frames in 200 ms. The deadline only stops a stuck loop.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    for (int i = 0; loop.frames_completed() < 5 && std::chrono::steady_clock::now() < deadline;
+         ++i) {
+        scene->edit().environment.time_of_day_h = i % 24;
         scene->publish();
-        std::this_thread::sleep_for(std::chrono::milliseconds(40));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     loop.stop();
     EXPECT_GE(loop.summary().frames, 5U);
+    EXPECT_EQ(loop.summary().frames, loop.frames_completed());
     EXPECT_EQ(r->validation_messages(), 0U);
 }
 

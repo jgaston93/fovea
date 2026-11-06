@@ -96,6 +96,11 @@ public:
     // Safe to read after stop(), or from the thread that calls step().
     const FrameSummary& summary() const { return summary_; }
 
+    // Frames finished so far; safe from any thread, while the loop runs.
+    std::uint64_t frames_completed() const {
+        return frames_completed_.load(std::memory_order_acquire);
+    }
+
 private:
     void record(const FrameRecord& r);
     void log(const FrameRecord& r);
@@ -117,6 +122,7 @@ private:
     std::uint64_t first_renderer_frame_;
     std::atomic<bool> running_{false};
     std::atomic<bool> failed_{false};
+    std::atomic<std::uint64_t> frames_completed_{0};
     std::exception_ptr error_;
     std::thread thread_;
 };

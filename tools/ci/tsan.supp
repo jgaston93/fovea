@@ -1,0 +1,11 @@
+# ThreadSanitizer suppressions for the GPU tests (the full-verification TSan
+# job). lavapipe, Mesa's CPU Vulkan driver, isn't built with TSan, so the
+# locking between its own worker threads reports as races (seen with Mesa
+# 25.2.8-0ubuntu0.24.04.4: a mutex locked on one driver thread while another
+# destroys it, both stacks inside the driver). The validation layer has the
+# same problem, and is turned off in that job.
+#
+# A race with a frame in the driver on either side is suppressed. Our own
+# threads (the render thread, the logger, the queues) race without it, and are
+# still reported.
+race:libvulkan_lvp.so
