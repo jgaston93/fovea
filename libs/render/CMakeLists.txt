@@ -1,6 +1,7 @@
 # Views, presenters, modules and the Vulkan backend (src/vk). Reads
 # SceneState only; never includes net headers.
 add_library(fovea_render STATIC
+    src/scene_view.cpp
     src/view.cpp
     src/vk/renderer.cpp
     src/vk/vma.cpp)
@@ -14,3 +15,9 @@ target_link_libraries(fovea_render
 target_compile_definitions(fovea_render PRIVATE
     VK_NO_PROTOTYPES VMA_STATIC_VULKAN_FUNCTIONS=0 VMA_DYNAMIC_VULKAN_FUNCTIONS=0)
 fovea_target_defaults(fovea_render)
+
+# The reference scene's shaders (step 6), compiled with slangc and embedded.
+set(scene_shader "${PROJECT_SOURCE_DIR}/shaders/reference_scene.slang")
+fovea_add_shader(fovea_render "${scene_shader}" vs_fullscreen vertex kVsFullscreen)
+fovea_add_shader(fovea_render "${scene_shader}" fs_scene fragment kFsScene)
+fovea_add_shader(fovea_render "${scene_shader}" fs_tonemap fragment kFsTonemap)

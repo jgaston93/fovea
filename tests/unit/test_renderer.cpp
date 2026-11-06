@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <memory>
 #include <stdexcept>
@@ -5,7 +7,9 @@
 
 #include <gtest/gtest.h>
 
+#include "fovea/core/math.hpp"
 #include "fovea/render/renderer.hpp"
+#include "fovea/render/view.hpp"
 
 namespace fovea {
 namespace {
@@ -89,6 +93,213 @@ TEST(Renderer, ReadBackNeedsAFrameAndAnOffscreenOutput) {
     EXPECT_THROW((void)r->read_back_rgba(0), std::runtime_error);  // nothing drawn yet
     r->draw_clear_frame(std::vector<Rgb8>{{1, 2, 3}});
     EXPECT_THROW((void)r->read_back_rgba(1), std::runtime_error);
+}
+
+// --- The reference scene (step 6) ------------------------------------------
+// Geometric checks, true on any GPU: where the horizon and grid lines land
+// follows from the projection, so the tests compute it independently.
+
+constexpr std::uint32_t kW = 320;
+constexpr std::uint32_t kH = 360;  // tall, so grid rows are well apart
+
+struct Rgb {
+    int r;
+    int g;
+    int b;
+};
+
+struct Image {
+    std::vector<std::uint8_t> px;
+    Rgb at(std::uint32_t x, std::uint32_t y) const {
+        const std::size_t i = (static_cast<std::size_t>(y) * kW + x) * 4;
+        return {px[i], px[i + 1], px[i + 2]};
+    }
+    bool sky(std::uint32_t x, std::uint32_t y) const {
+        const Rgb c = at(x, y);
+        return c.b > c.r + 15;  // blue sky; the ground and lines are not blue
+    }
+    int brightness(std::uint32_t x, std::uint32_t y) const {
+        const Rgb c = at(x, y);
+        return c.r + c.g + c.b;
+    }
+};
+
+ViewDesc channel_view(Euler rotation, Frustum frustum) {
+    ChannelConfig ch;
+    ch.name = "test";
+    ch.render_width = kW;
+    ch.render_height = kH;
+    ch.view_rotation = rotation;
+    ch.frustum = frustum;
+    return view_from_channel(ch, DisplayConfig{}, 0);
+}
+
+// Renders one frame of the scene for each view and reads every output back.
+std::vector<Image> render(const std::vector<ViewDesc>& views, const ReferenceScene& scene) {
+    auto r = make_offscreen(std::vector<OffscreenOutput>(views.size(), {kW, kH}));
+    if (r == nullptr) {
+        return {};
+    }
+    std::vector<SceneView> scene_views;
+    for (const ViewDesc& v : views) {
+        scene_views.push_back(reference_scene_view(v, scene));
+    }
+    r->draw_scene_frame(scene_views);
+    std::vector<Image> images;
+    for (std::uint32_t i = 0; i < views.size(); ++i) {
+        images.push_back({r->read_back_rgba(i)});
+    }
+    EXPECT_EQ(r->validation_messages(), 0U);
+    return images;
+}
+
+// The first row, from the top, that is not sky.
+int horizon_row(const Image& img, std::uint32_t x) {
+    for (std::uint32_t y = 0; y < kH; ++y) {
+        if (!img.sky(x, y)) {
+            return static_cast<int>(y);
+        }
+    }
+    return static_cast<int>(kH);
+}
+
+// The image row (in pixels, top 0) where a direction at `up_deg` above the
+// view axis lands, for a frustum spanning top..bottom degrees.
+double row_of(double up_deg, double top_deg, double bottom_deg) {
+    const double t = std::tan(deg_to_rad(top_deg));
+    const double b = std::tan(deg_to_rad(bottom_deg));
+    return (t - std::tan(deg_to_rad(up_deg))) / (t - b) * kH;
+}
+
+TEST(ReferenceScene, HorizonIsWhereTheProjectionPutsIt) {
+    // An asymmetric frustum: the level horizon is not in the middle.
+    const Frustum f{-30.0, 30.0, 25.0, -10.0};
+    const auto images = render({channel_view({}, f)}, ReferenceScene{});
+    if (images.empty()) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    EXPECT_NEAR(horizon_row(images[0], kW / 2), row_of(0.0, 25.0, -10.0), 2.0);
+}
+
+TEST(ReferenceScene, PitchingUpLowersTheHorizon) {
+    const Frustum f{-30.0, 30.0, 17.0, -17.0};
+    const auto images = render({channel_view({0.0, 10.0, 0.0}, f)}, ReferenceScene{});
+    if (images.empty()) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    // Nose up 10 degrees: the horizon is 10 degrees below the view axis.
+    EXPECT_NEAR(horizon_row(images[0], kW / 2), row_of(-10.0, 17.0, -17.0), 2.0);
+}
+
+TEST(ReferenceScene, RollTiltsTheHorizon) {
+    const Frustum f{-30.0, 30.0, 17.0, -17.0};
+    const auto images = render({channel_view({0.0, 0.0, 10.0}, f)}, ReferenceScene{});
+    if (images.empty()) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    // Right wing down: the horizon rises on the right of the picture.
+    const int left = horizon_row(images[0], kW / 8);
+    const int right = horizon_row(images[0], kW * 7 / 8);
+    EXPECT_GT(left - right, 20);
+    EXPECT_NEAR(horizon_row(images[0], kW / 2), kH / 2.0, 2.0);  // pivots about the centre
+}
+
+// The bright grid rows in one column, as row positions (centre of each run).
+std::vector<double> line_rows(const Image& img, std::uint32_t x, std::uint32_t from_row) {
+    std::vector<double> rows;
+    int threshold = 0;
+    for (std::uint32_t y = from_row; y < kH; ++y) {
+        threshold = std::max(threshold, img.brightness(x, y));
+    }
+    threshold = threshold * 2 / 3;
+    for (std::uint32_t y = from_row; y < kH;) {
+        if (img.brightness(x, y) < threshold) {
+            ++y;
+            continue;
+        }
+        const std::uint32_t start = y;
+        while (y < kH && img.brightness(x, y) >= threshold) {
+            ++y;
+        }
+        rows.push_back((start + y - 1) / 2.0);
+    }
+    return rows;
+}
+
+TEST(ReferenceScene, GridLinesAreAtTheirDistances) {
+    // Eye 10 m up, lines every 10 m, looking north: the east-west line k * 10 m
+    // ahead is atan(10 / (10 k)) below the horizon.
+    ReferenceScene scene;
+    scene.eye_height_m = 10.0;
+    scene.grid_spacing_m = 10.0;
+    const Frustum f{-30.0, 30.0, 17.0, -17.0};
+    const auto images = render({channel_view({}, f)}, scene);
+    if (images.empty()) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    // A column a little right of centre, clear of the north-south lines
+    // there (they converge on the centre).
+    const std::uint32_t x = kW / 2 + 3;
+    const auto rows = line_rows(images[0], x, kH / 2 + 2);
+    for (int k : {4, 5, 6}) {
+        const double expected = row_of(-rad_to_deg(std::atan(1.0 / k)), 17.0, -17.0);
+        double nearest = 1e9;
+        for (double r : rows) {
+            nearest = std::abs(r - expected) < std::abs(nearest - expected) ? r : nearest;
+        }
+        EXPECT_NEAR(nearest, expected, 1.5) << "line " << k * 10 << " m ahead";
+    }
+}
+
+constexpr double kEdgeTolerancePx = 2.0;
+
+TEST(ReferenceScene, LinesContinueAcrossTheSharedEdge) {
+    // Two channels of the example layout, 60 degrees apart, edge to edge: the
+    // grid lines leaving the left channel's right edge must enter the centre
+    // channel's left edge at the same heights.
+    ReferenceScene scene;
+    scene.eye_height_m = 10.0;
+    const Frustum f{-30.0, 30.0, 17.0, -17.0};
+    const auto images = render({channel_view({-60.0, 0.0, 0.0}, f), channel_view({}, f)}, scene);
+    if (images.empty()) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const auto left = line_rows(images[0], kW - 1, kH / 2 + 2);
+    const auto centre = line_rows(images[1], 0, kH / 2 + 2);
+    ASSERT_GE(left.size(), 5U);
+    ASSERT_GE(centre.size(), 5U);
+    // Match by position both ways, not by count: where two lines cross right
+    // at the edge, one column sees two runs and the next sees them merged.
+    // The two edge columns are one pixel apart in angle, so allow a little
+    // for the lines' slope.
+    const auto nearest = [](const std::vector<double>& rows, double r) {
+        double best = 1e9;
+        for (double v : rows) {
+            best = std::min(best, std::abs(v - r));
+        }
+        return best;
+    };
+    for (double r : left) {
+        EXPECT_LE(nearest(centre, r), kEdgeTolerancePx) << "left-edge line at row " << r;
+    }
+    for (double r : centre) {
+        EXPECT_LE(nearest(left, r), kEdgeTolerancePx) << "centre-edge line at row " << r;
+    }
+    EXPECT_EQ(horizon_row(images[0], kW - 1), horizon_row(images[1], 0));
+}
+
+TEST(ReferenceScene, RepeatedFramesAreIdentical) {
+    auto r = make_offscreen({{kW, kH}});
+    FOVEA_NEED_VULKAN(r);
+    const SceneView v = reference_scene_view(
+        channel_view({20.0, -5.0, 3.0}, {-30.0, 30.0, 17.0, -17.0}), ReferenceScene{});
+    r->draw_scene_frame(std::vector<SceneView>{v});
+    const auto first = r->read_back_rgba(0);
+    for (int i = 0; i < 3; ++i) {
+        r->draw_scene_frame(std::vector<SceneView>{v});
+    }
+    EXPECT_EQ(r->read_back_rgba(0), first);
+    EXPECT_EQ(r->validation_messages(), 0U);
 }
 
 }  // namespace

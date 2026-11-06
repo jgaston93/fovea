@@ -67,13 +67,18 @@ set_tests_properties(App.IdentifyFillsTheWindows PROPERTIES
 # FOVEA_REQUIRE_VULKAN is set when CMake configures (CI sets it for every
 # step); ctest can't read the variable at run time for this decision.
 add_test(NAME App.OffscreenRendersWithoutADisplay
-    COMMAND fovea ${CMAKE_CURRENT_SOURCE_DIR}/data/offscreen.toml)
+    COMMAND fovea --clear ${CMAKE_CURRENT_SOURCE_DIR}/data/offscreen.toml)
 set_tests_properties(App.OffscreenRendersWithoutADisplay PROPERTIES
     ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver" TIMEOUT 60
     PASS_REGULAR_EXPRESSION "offscreen \"only\": 1024x768, middle rgb\\(200,30,30\\).*0 validation messages"
     FAIL_REGULAR_EXPRESSION "cannot start SDL")
+add_test(NAME App.OffscreenRendersTheScene
+    COMMAND fovea ${CMAKE_CURRENT_SOURCE_DIR}/data/offscreen.toml)
+set_tests_properties(App.OffscreenRendersTheScene PROPERTIES
+    ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver" TIMEOUT 60
+    PASS_REGULAR_EXPRESSION "offscreen \"only\": 1024x768, middle rgb.*0 validation messages")
 if(NOT DEFINED ENV{FOVEA_REQUIRE_VULKAN})
-    set_tests_properties(App.OffscreenRendersWithoutADisplay PROPERTIES
+    set_tests_properties(App.OffscreenRendersWithoutADisplay App.OffscreenRendersTheScene PROPERTIES
         SKIP_REGULAR_EXPRESSION "no Vulkan loader found|no GPU with Vulkan 1.3")
 endif()
 add_test(NAME App.RejectsABadSecondsValue

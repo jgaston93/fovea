@@ -19,6 +19,7 @@ set(FOVEA_DEBUG_OPTIMIZATION "-Og" CACHE STRING "Optimization flag for Fovea tar
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(FoveaCompilerFlags)
 include(FoveaDependencies)
+include(FoveaShaders)
 
 add_subdirectory(libs/core)
 add_subdirectory(libs/terrain)

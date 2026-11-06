@@ -202,6 +202,39 @@ void parse_display(Parser& p, const toml::table& t, DisplayConfig& out) {
     }
 }
 
+// A number in [min, max] (or (min, max] with open_min), reported if not.
+void check_range(Parser& p, const toml::node& n, const std::string& path, double v, double min,
+                 double max, bool open_min) {
+    const bool low = open_min ? v <= min : v < min;
+    if (low || v > max) {
+        p.error(n.source(), "'" + path + "' must be " + (open_min ? "greater than " : "at least ") +
+                                format_number(min) + " and at most " + format_number(max) +
+                                " (got " + format_number(v) + ")");
+    }
+}
+
+void parse_reference_scene(Parser& p, const toml::table& t, ReferenceScene& out) {
+    p.check_keys(t, {"eye_height_m", "grid_spacing_m", "exposure_ev"}, "reference_scene");
+    if (const auto* n = t.get("eye_height_m")) {
+        if (auto v = p.number(*n, "reference_scene.eye_height_m")) {
+            check_range(p, *n, "reference_scene.eye_height_m", *v, 0.0, 100000.0, true);
+            out.eye_height_m = *v;
+        }
+    }
+    if (const auto* n = t.get("grid_spacing_m")) {
+        if (auto v = p.number(*n, "reference_scene.grid_spacing_m")) {
+            check_range(p, *n, "reference_scene.grid_spacing_m", *v, 0.0, 100000.0, true);
+            out.grid_spacing_m = *v;
+        }
+    }
+    if (const auto* n = t.get("exposure_ev")) {
+        if (auto v = p.number(*n, "reference_scene.exposure_ev")) {
+            check_range(p, *n, "reference_scene.exposure_ev", *v, -20.0, 20.0, false);
+            out.exposure_ev = *v;
+        }
+    }
+}
+
 // Reads the listed numeric fields of an inline table, all required.
 template <std::size_t N>
 std::optional<std::array<double, N>> number_fields(Parser& p, const toml::node& node,
@@ -341,7 +374,12 @@ ConfigResult parse_display_config(std::string_view text, std::string_view source
     }
 
     DisplayConfig config;
-    p.check_keys(root, {"display", "channel"}, "");
+    p.check_keys(root, {"display", "channel", "reference_scene"}, "");
+    if (const auto* n = root.get("reference_scene")) {
+        if (const auto* t = p.table(*n, "reference_scene")) {
+            parse_reference_scene(p, *t, config.reference_scene);
+        }
+    }
     if (const auto* n = root.get("display")) {
         if (const auto* t = p.table(*n, "display")) {
             parse_display(p, *t, config);

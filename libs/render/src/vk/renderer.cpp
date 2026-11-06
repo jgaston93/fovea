@@ -1,10 +1,13 @@
 // The Vulkan backend: instance and device (vk-bootstrap, volk), memory (VMA),
-// and the two presenters behind Renderer.
+// the two presenters behind Renderer, and the reference scene's pipelines.
 //
 // Frames: kFramesInFlight frames are recorded ahead, each with its own
 // command buffer, fence and per-output acquire semaphores. Every swapchain
 // image has its own "rendered" semaphore, since a present may still be
-// using it when the next frame's fence has already signalled.
+// using it when the next frame's fence has already signalled. Resources
+// written every frame but not duplicated per frame (offscreen images and
+// readback buffers, the HDR scene targets) are ordered after the previous
+// frame's use with barriers.
 
 #include <volk.h>
 
@@ -17,12 +20,16 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "fovea/render/renderer.hpp"
+#include "shaders/kFsScene.hpp"
+#include "shaders/kFsTonemap.hpp"
+#include "shaders/kVsFullscreen.hpp"
 
 namespace fovea {
 
@@ -30,14 +37,32 @@ namespace {
 
 constexpr std::uint32_t kFramesInFlight = 2;
 // UNORM, so a clear to 200 shows 200 on screen (the identify check reads
-// exact colours). The scene's tone-mapped output decides this again later.
+// exact colours); the tone-map pass encodes sRGB itself for UNORM targets.
 constexpr VkFormat kSwapchainFormat = VK_FORMAT_B8G8R8A8_UNORM;
 constexpr VkFormat kOffscreenFormat = VK_FORMAT_R8G8B8A8_UNORM;
+// Linear, scene-referred light values (foundational decision 3).
+constexpr VkFormat kHdrFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr const char* kValidationLayer = "VK_LAYER_KHRONOS_validation";
 
 // volk keeps the Vulkan entry points in process-wide variables, so a second
 // live Renderer would replace the first one's: one at a time.
 std::atomic<bool> g_renderer_alive{false};
+
+// The shaders' push-constant blocks (shaders/reference_scene.slang).
+struct ScenePush {
+    Mat4 clip_to_local{1.0F};
+    float eye_height_m = 0.0F;
+    float grid_spacing_m = 0.0F;
+    float unused[2] = {};  // NOLINT(modernize-avoid-c-arrays): matches the shader's float2
+};
+static_assert(sizeof(ScenePush) == 80, "must match ScenePush in reference_scene.slang");
+
+struct TonemapPush {
+    float exposure = 1.0F;
+    std::uint32_t encode_srgb = 1;
+    float unused[2] = {};  // NOLINT(modernize-avoid-c-arrays): matches the shader's float2
+};
+static_assert(sizeof(TonemapPush) == 16, "must match TonemapPush in reference_scene.slang");
 
 [[noreturn]] void fail(const std::string& what) {
     throw std::runtime_error(what);
@@ -125,6 +150,46 @@ void transition(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageL
     vkCmdPipelineBarrier2(cmd, &d);
 }
 
+void memory_barrier(VkCommandBuffer cmd, VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+                    VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+    VkMemoryBarrier2 m{};
+    m.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    m.srcStageMask = src_stage;
+    m.srcAccessMask = src_access;
+    m.dstStageMask = dst_stage;
+    m.dstAccessMask = dst_access;
+    VkDependencyInfo d{};
+    d.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    d.memoryBarrierCount = 1;
+    d.pMemoryBarriers = &m;
+    vkCmdPipelineBarrier2(cmd, &d);
+}
+
+// Draws the fullscreen triangle into one colour target with dynamic rendering.
+void draw_fullscreen(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent) {
+    VkRenderingAttachmentInfo colour{};
+    colour.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colour.imageView = target;
+    colour.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colour.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;  // every pixel is written
+    colour.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    info.renderArea = {{0, 0}, extent};
+    info.layerCount = 1;
+    info.colorAttachmentCount = 1;
+    info.pColorAttachments = &colour;
+    vkCmdBeginRendering(cmd, &info);
+    const VkViewport viewport{
+        0.0F, 0.0F, static_cast<float>(extent.width), static_cast<float>(extent.height),
+        0.0F, 1.0F};
+    const VkRect2D scissor{{0, 0}, extent};
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRendering(cmd);
+}
+
 VKAPI_ATTR VkBool32 VKAPI_CALL on_validation(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                                              VkDebugUtilsMessageTypeFlagsEXT /*types*/,
                                              const VkDebugUtilsMessengerCallbackDataEXT* data,
@@ -139,12 +204,23 @@ VKAPI_ATTR VkBool32 VKAPI_CALL on_validation(VkDebugUtilsMessageSeverityFlagBits
     return VK_FALSE;
 }
 
+// The linear HDR image a view renders into before tone mapping.
+struct HdrTarget {
+    VkExtent2D extent{};
+    VkImage image = VK_NULL_HANDLE;
+    VmaAllocation memory = nullptr;
+    VkImageView view = VK_NULL_HANDLE;
+    VkDescriptorSet set = VK_NULL_HANDLE;  // the tone-map pass samples it through this
+};
+
 struct Swapchain {
     const Window* window = nullptr;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    VkExtent2D render_extent{};  // 0x0: the window's size
     vkb::Swapchain chain;
     std::vector<VkImage> images;
+    std::vector<VkImageView> views;
     std::vector<VkSemaphore> rendered;  // one per image
     bool needs_rebuild = false;
 };
@@ -154,6 +230,7 @@ struct OffscreenImage {
     std::uint32_t height = 0;
     VkImage image = VK_NULL_HANDLE;
     VmaAllocation image_memory = nullptr;
+    VkImageView view = VK_NULL_HANDLE;
     VkBuffer readback = VK_NULL_HANDLE;
     VmaAllocation readback_memory = nullptr;
 };
@@ -163,6 +240,13 @@ struct Frame {
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence done = VK_NULL_HANDLE;
     std::vector<VkSemaphore> acquired;  // one per swapchain
+};
+
+// One frame's work: clear each output to a colour, or render the scene.
+struct DrawRequest {
+    std::span<const Rgb8> colours;
+    std::span<const SceneView> views;
+    bool scene = false;
 };
 
 }  // namespace
@@ -181,6 +265,20 @@ struct Renderer::Impl {
     std::array<Frame, kFramesInFlight> frames{};
     std::uint64_t frame_number = 0;
     bool owns_alive_flag = false;
+
+    // The reference scene: one HDR target per output, two pipelines, and a
+    // tone-map pipeline per output format (they rarely differ).
+    std::vector<HdrTarget> hdr;
+    VkSampler sampler = VK_NULL_HANDLE;
+    VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+    VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
+    VkPipelineLayout scene_layout = VK_NULL_HANDLE;
+    VkPipelineLayout tonemap_layout = VK_NULL_HANDLE;
+    VkShaderModule vs_fullscreen = VK_NULL_HANDLE;
+    VkShaderModule fs_scene = VK_NULL_HANDLE;
+    VkShaderModule fs_tonemap = VK_NULL_HANDLE;
+    VkPipeline scene_pipeline = VK_NULL_HANDLE;
+    std::vector<std::pair<VkFormat, VkPipeline>> tonemap_pipelines;
 
     // Per-frame scratch, sized once for the swapchain count: the render path
     // allocates nothing (architecture.md, "Render path rules").
@@ -201,13 +299,20 @@ struct Renderer::Impl {
     void create_instance(const std::vector<std::string>& extensions, Validation validation);
     void create_device(bool present);
     void create_frames();
-    void build_swapchain(Swapchain& s) const;
+    void build_swapchain(Swapchain& s);
     void destroy_swapchain(Swapchain& s) const;
     void create_offscreen(OffscreenOutput o);
+    void create_scene_resources(std::span<const VkExtent2D> render_extents);
+    VkShaderModule make_module(std::span<const std::uint32_t> spirv) const;
+    VkPipeline make_pipeline(VkPipelineLayout layout, VkShaderModule fragment,
+                             VkFormat format) const;
+    VkPipeline tonemap_pipeline(VkFormat format);
+    VkImageView make_view(VkImage image, VkFormat format) const;
     void claim();
     void size_scratch();
     Frame& begin_frame();
-    std::uint32_t draw(std::span<const Rgb8> colours);
+    std::uint32_t draw(const DrawRequest& request);
+    void record_scene(VkCommandBuffer cmd, std::size_t i, const SceneView& view);
 };
 
 void Renderer::Impl::create_instance(const std::vector<std::string>& extensions,
@@ -387,7 +492,19 @@ void Renderer::Impl::create_frames() {
     }
 }
 
-void Renderer::Impl::build_swapchain(Swapchain& s) const {
+VkImageView Renderer::Impl::make_view(VkImage image, VkFormat format) const {
+    VkImageViewCreateInfo vci{};
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image = image;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = format;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkImageView view = VK_NULL_HANDLE;
+    check(vkCreateImageView(device.device, &vci, nullptr, &view), "vkCreateImageView");
+    return view;
+}
+
+void Renderer::Impl::build_swapchain(Swapchain& s) {
     const VkExtent2D size = surface_extent(physical.physical_device, s.surface, *s.window);
     if (size.width == 0 || size.height == 0) {
         s.needs_rebuild = true;  // minimized or not sized yet: build when drawable
@@ -417,13 +534,24 @@ void Renderer::Impl::build_swapchain(Swapchain& s) const {
     VkSemaphoreCreateInfo sem{};
     sem.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     s.rendered.resize(s.images.size());
-    for (VkSemaphore& r : s.rendered) {
-        check(vkCreateSemaphore(device.device, &sem, nullptr, &r), "vkCreateSemaphore");
+    s.views.resize(s.images.size());
+    for (std::size_t k = 0; k < s.images.size(); ++k) {
+        check(vkCreateSemaphore(device.device, &sem, nullptr, &s.rendered[k]), "vkCreateSemaphore");
+        s.views[k] = make_view(s.images[k], s.chain.image_format);
+    }
+    // The tone-map pass's pipeline for this format, made here (not while
+    // drawing) when it is new.
+    if (scene_layout != VK_NULL_HANDLE) {
+        (void)tonemap_pipeline(s.chain.image_format);
     }
     s.needs_rebuild = false;
 }
 
 void Renderer::Impl::destroy_swapchain(Swapchain& s) const {
+    for (VkImageView v : s.views) {
+        vkDestroyImageView(device.device, v, nullptr);
+    }
+    s.views.clear();
     for (VkSemaphore r : s.rendered) {
         vkDestroySemaphore(device.device, r, nullptr);
     }
@@ -454,6 +582,7 @@ void Renderer::Impl::create_offscreen(OffscreenOutput o) {
     aci.usage = VMA_MEMORY_USAGE_AUTO;
     check(vmaCreateImage(allocator, &ici, &aci, &img.image, &img.image_memory, nullptr),
           "vmaCreateImage");
+    img.view = make_view(img.image, kOffscreenFormat);
     VkBufferCreateInfo bci{};
     bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bci.size = static_cast<VkDeviceSize>(o.width) * o.height * 4;
@@ -464,6 +593,191 @@ void Renderer::Impl::create_offscreen(OffscreenOutput o) {
     check(vmaCreateBuffer(allocator, &bci, &rci, &img.readback, &img.readback_memory, nullptr),
           "vmaCreateBuffer");
     offscreen.push_back(img);
+}
+
+VkShaderModule Renderer::Impl::make_module(std::span<const std::uint32_t> spirv) const {
+    VkShaderModuleCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    ci.codeSize = spirv.size_bytes();
+    ci.pCode = spirv.data();
+    VkShaderModule m = VK_NULL_HANDLE;
+    check(vkCreateShaderModule(device.device, &ci, nullptr, &m), "vkCreateShaderModule");
+    return m;
+}
+
+VkPipeline Renderer::Impl::make_pipeline(VkPipelineLayout layout, VkShaderModule fragment,
+                                         VkFormat format) const {
+    std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vs_fullscreen;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fragment;
+    stages[1].pName = "main";
+
+    VkPipelineVertexInputStateCreateInfo vertex_input{};
+    vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    VkPipelineInputAssemblyStateCreateInfo assembly{};
+    assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewport{};
+    viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport.viewportCount = 1;
+    viewport.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo raster{};
+    raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.cullMode = VK_CULL_MODE_NONE;
+    raster.lineWidth = 1.0F;
+    VkPipelineMultisampleStateCreateInfo multisample{};
+    multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineColorBlendAttachmentState blend_attachment{};
+    blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo blend{};
+    blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    blend.attachmentCount = 1;
+    blend.pAttachments = &blend_attachment;
+    const std::array<VkDynamicState, 2> dynamic_states{VK_DYNAMIC_STATE_VIEWPORT,
+                                                       VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{};
+    dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic.dynamicStateCount = static_cast<std::uint32_t>(dynamic_states.size());
+    dynamic.pDynamicStates = dynamic_states.data();
+    VkPipelineRenderingCreateInfo rendering{};
+    rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachmentFormats = &format;
+
+    VkGraphicsPipelineCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    ci.pNext = &rendering;
+    ci.stageCount = static_cast<std::uint32_t>(stages.size());
+    ci.pStages = stages.data();
+    ci.pVertexInputState = &vertex_input;
+    ci.pInputAssemblyState = &assembly;
+    ci.pViewportState = &viewport;
+    ci.pRasterizationState = &raster;
+    ci.pMultisampleState = &multisample;
+    ci.pColorBlendState = &blend;
+    ci.pDynamicState = &dynamic;
+    ci.layout = layout;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    check(vkCreateGraphicsPipelines(device.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipeline),
+          "vkCreateGraphicsPipelines");
+    return pipeline;
+}
+
+VkPipeline Renderer::Impl::tonemap_pipeline(VkFormat format) {
+    for (const auto& [f, p] : tonemap_pipelines) {
+        if (f == format) {
+            return p;
+        }
+    }
+    VkPipeline p = make_pipeline(tonemap_layout, fs_tonemap, format);  // a handle
+    tonemap_pipelines.emplace_back(format, p);
+    return p;
+}
+
+void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_extents) {
+    vs_fullscreen = make_module(kVsFullscreen);
+    fs_scene = make_module(kFsScene);
+    fs_tonemap = make_module(kFsTonemap);
+
+    VkSamplerCreateInfo sci{};
+    sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sci.magFilter = VK_FILTER_LINEAR;
+    sci.minFilter = VK_FILTER_LINEAR;
+    sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    check(vkCreateSampler(device.device, &sci, nullptr, &sampler), "vkCreateSampler");
+
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding = 0;
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binding.descriptorCount = 1;
+    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo lci{};
+    lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    lci.bindingCount = 1;
+    lci.pBindings = &binding;
+    check(vkCreateDescriptorSetLayout(device.device, &lci, nullptr, &set_layout),
+          "vkCreateDescriptorSetLayout");
+
+    const auto count = static_cast<std::uint32_t>(render_extents.size());
+    VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count};
+    VkDescriptorPoolCreateInfo pci{};
+    pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pci.maxSets = count;
+    pci.poolSizeCount = 1;
+    pci.pPoolSizes = &pool_size;
+    check(vkCreateDescriptorPool(device.device, &pci, nullptr, &descriptor_pool),
+          "vkCreateDescriptorPool");
+
+    VkPushConstantRange scene_push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ScenePush)};
+    VkPipelineLayoutCreateInfo scene_lci{};
+    scene_lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    scene_lci.pushConstantRangeCount = 1;
+    scene_lci.pPushConstantRanges = &scene_push;
+    check(vkCreatePipelineLayout(device.device, &scene_lci, nullptr, &scene_layout),
+          "vkCreatePipelineLayout");
+    VkPushConstantRange tonemap_push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(TonemapPush)};
+    VkPipelineLayoutCreateInfo tonemap_lci{};
+    tonemap_lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    tonemap_lci.setLayoutCount = 1;
+    tonemap_lci.pSetLayouts = &set_layout;
+    tonemap_lci.pushConstantRangeCount = 1;
+    tonemap_lci.pPushConstantRanges = &tonemap_push;
+    check(vkCreatePipelineLayout(device.device, &tonemap_lci, nullptr, &tonemap_layout),
+          "vkCreatePipelineLayout");
+
+    scene_pipeline = make_pipeline(scene_layout, fs_scene, kHdrFormat);
+    (void)tonemap_pipeline(kOffscreenFormat);
+    for (const Swapchain& s : swapchains) {
+        if (s.chain.swapchain != VK_NULL_HANDLE) {
+            (void)tonemap_pipeline(s.chain.image_format);
+        }
+    }
+
+    for (const VkExtent2D extent : render_extents) {
+        HdrTarget t;
+        t.extent = extent;
+        VkImageCreateInfo ici{};
+        ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = kHdrFormat;
+        ici.extent = {extent.width, extent.height, 1};
+        ici.mipLevels = 1;
+        ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        VmaAllocationCreateInfo aci{};
+        aci.usage = VMA_MEMORY_USAGE_AUTO;
+        check(vmaCreateImage(allocator, &ici, &aci, &t.image, &t.memory, nullptr),
+              "vmaCreateImage");
+        t.view = make_view(t.image, kHdrFormat);
+        VkDescriptorSetAllocateInfo ai{};
+        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ai.descriptorPool = descriptor_pool;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &set_layout;
+        check(vkAllocateDescriptorSets(device.device, &ai, &t.set), "vkAllocateDescriptorSets");
+        VkDescriptorImageInfo image_info{sampler, t.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = t.set;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &image_info;
+        vkUpdateDescriptorSets(device.device, 1, &write, 0, nullptr);
+        hdr.push_back(t);
+    }
 }
 
 void Renderer::Impl::claim() {
@@ -491,7 +805,30 @@ Frame& Renderer::Impl::begin_frame() {
     return f;
 }
 
-std::uint32_t Renderer::Impl::draw(std::span<const Rgb8> colours) {
+// The scene for output i into its HDR target, ready for the tone-map pass.
+void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t i, const SceneView& view) {
+    const HdrTarget& t = hdr[i];
+    // After the previous frame's tone-map pass read this target (write after
+    // read: an execution dependency is enough).
+    transition(cmd, t.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
+               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scene_pipeline);
+    ScenePush push;
+    push.clip_to_local = view.clip_to_local;
+    push.eye_height_m = view.eye_height_m;
+    push.grid_spacing_m = view.grid_spacing_m;
+    vkCmdPushConstants(cmd, scene_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+    draw_fullscreen(cmd, t.view, t.extent);
+    transition(cmd, t.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+}
+
+std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
     Frame& f = begin_frame();
 
     // Acquire an image from every swapchain that has a drawable size.
@@ -539,7 +876,29 @@ std::uint32_t Renderer::Impl::draw(std::span<const Rgb8> colours) {
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check(vkBeginCommandBuffer(f.cmd, &begin), "vkBeginCommandBuffer");
 
+    // The stage that first touches an acquired image: the clear's transfer,
+    // or the tone-map pass's colour output. The acquire semaphore is waited
+    // on there, and the first barrier's source scope starts there too.
+    const VkPipelineStageFlags2 first_use = request.scene
+                                                ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+                                                : VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
     const VkImageSubresourceRange all{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    const auto output_colour = [&](std::size_t i) {
+        return i < request.colours.size() ? request.colours[i] : Rgb8{};
+    };
+    const auto tonemap_into = [&](VkImageView target, VkExtent2D extent, VkFormat format,
+                                  std::size_t i) {
+        vkCmdBindPipeline(f.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, tonemap_pipeline(format));
+        vkCmdBindDescriptorSets(f.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, tonemap_layout, 0, 1,
+                                &hdr[i].set, 0, nullptr);
+        TonemapPush push;
+        push.exposure = i < request.views.size() ? request.views[i].exposure : 1.0F;
+        push.encode_srgb = is_srgb(format) ? 0U : 1U;
+        vkCmdPushConstants(f.cmd, tonemap_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push),
+                           &push);
+        draw_fullscreen(f.cmd, target, extent);
+    };
+
     std::uint32_t wait_count = 0;
     for (std::size_t i = 0; i < swapchains.size(); ++i) {
         if (image_index[i] == UINT32_MAX) {
@@ -547,22 +906,33 @@ std::uint32_t Renderer::Impl::draw(std::span<const Rgb8> colours) {
         }
         Swapchain& s = swapchains[i];
         VkImage image = s.images[image_index[i]];  // a handle, copied
-        // The acquire semaphore is waited on at the transfer stage, so the
-        // barrier's source scope starts there too.
-        transition(f.cmd, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                   VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, 0, VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                   VK_ACCESS_2_TRANSFER_WRITE_BIT);
-        const VkClearColorValue c =
-            clear_value(i < colours.size() ? colours[i] : Rgb8{}, is_srgb(s.chain.image_format));
-        vkCmdClearColorImage(f.cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &c, 1, &all);
-        transition(f.cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                   VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                   VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+        if (request.scene) {
+            record_scene(f.cmd, i, i < request.views.size() ? request.views[i] : SceneView{});
+            transition(f.cmd, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, first_use, 0,
+                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                       VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+            tonemap_into(s.views[image_index[i]], s.chain.extent, s.chain.image_format, i);
+            transition(f.cmd, image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                       VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                       VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+        } else {
+            transition(f.cmd, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, first_use, 0,
+                       VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            const VkClearColorValue c =
+                clear_value(output_colour(i), is_srgb(s.chain.image_format));
+            vkCmdClearColorImage(f.cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &c, 1, &all);
+            transition(f.cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                       VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+        }
         VkSemaphoreSubmitInfo& w = waits[wait_count];
         w = {};
         w.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
         w.semaphore = f.acquired[i];
-        w.stageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        w.stageMask = first_use;
         VkSemaphoreSubmitInfo& sig = signals[wait_count];
         sig = {};
         sig.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
@@ -570,34 +940,41 @@ std::uint32_t Renderer::Impl::draw(std::span<const Rgb8> colours) {
         sig.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         ++wait_count;
     }
+
     if (!offscreen.empty()) {
         // The offscreen images and readback buffers are shared by both frames
         // in flight: order this frame's transfers after the previous frame's
         // (its copy reads the image and writes the buffer).
-        VkMemoryBarrier2 prev{};
-        prev.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-        prev.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
-        prev.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        prev.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
-        prev.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        VkDependencyInfo d{};
-        d.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        d.memoryBarrierCount = 1;
-        d.pMemoryBarriers = &prev;
-        vkCmdPipelineBarrier2(f.cmd, &d);
+        memory_barrier(f.cmd, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
     }
     for (std::size_t i = 0; i < offscreen.size(); ++i) {
         const OffscreenImage& o = offscreen[i];
         // After the previous frame's copy out of this image (write after read).
-        transition(f.cmd, o.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                   VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, 0, VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                   VK_ACCESS_2_TRANSFER_WRITE_BIT);
-        const VkClearColorValue c = clear_value(i < colours.size() ? colours[i] : Rgb8{}, false);
-        vkCmdClearColorImage(f.cmd, o.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &c, 1, &all);
-        transition(f.cmd, o.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                   VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
-                   VK_ACCESS_2_TRANSFER_READ_BIT);
+        if (request.scene) {
+            record_scene(f.cmd, i, i < request.views.size() ? request.views[i] : SceneView{});
+            transition(f.cmd, o.image, VK_IMAGE_LAYOUT_UNDEFINED,
+                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, 0,
+                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                       VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+            tonemap_into(o.view, {o.width, o.height}, kOffscreenFormat, i);
+            transition(f.cmd, o.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                       VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+                       VK_ACCESS_2_TRANSFER_READ_BIT);
+        } else {
+            transition(f.cmd, o.image, VK_IMAGE_LAYOUT_UNDEFINED,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                       0, VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            const VkClearColorValue c = clear_value(output_colour(i), false);
+            vkCmdClearColorImage(f.cmd, o.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &c, 1, &all);
+            transition(f.cmd, o.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                       VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+                       VK_ACCESS_2_TRANSFER_READ_BIT);
+        }
         VkBufferImageCopy copy{};
         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         copy.imageExtent = {o.width, o.height, 1};
@@ -606,17 +983,8 @@ std::uint32_t Renderer::Impl::draw(std::span<const Rgb8> colours) {
     }
     if (!offscreen.empty()) {
         // Make the copies visible to the host once the fence signals.
-        VkMemoryBarrier2 host{};
-        host.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-        host.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-        host.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        host.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
-        host.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
-        VkDependencyInfo d{};
-        d.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        d.memoryBarrierCount = 1;
-        d.pMemoryBarriers = &host;
-        vkCmdPipelineBarrier2(f.cmd, &d);
+        memory_barrier(f.cmd, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
     }
     check(vkEndCommandBuffer(f.cmd), "vkEndCommandBuffer");
 
@@ -688,9 +1056,26 @@ Renderer::Impl::~Impl() {
             destroy_swapchain(s);
         }
         for (OffscreenImage& o : offscreen) {
+            vkDestroyImageView(device.device, o.view, nullptr);
             vmaDestroyBuffer(allocator, o.readback, o.readback_memory);
             vmaDestroyImage(allocator, o.image, o.image_memory);
         }
+        for (HdrTarget& t : hdr) {
+            vkDestroyImageView(device.device, t.view, nullptr);
+            vmaDestroyImage(allocator, t.image, t.memory);
+        }
+        for (const auto& [format, p] : tonemap_pipelines) {
+            vkDestroyPipeline(device.device, p, nullptr);
+        }
+        vkDestroyPipeline(device.device, scene_pipeline, nullptr);
+        vkDestroyPipelineLayout(device.device, tonemap_layout, nullptr);
+        vkDestroyPipelineLayout(device.device, scene_layout, nullptr);
+        vkDestroyDescriptorPool(device.device, descriptor_pool, nullptr);
+        vkDestroyDescriptorSetLayout(device.device, set_layout, nullptr);
+        vkDestroySampler(device.device, sampler, nullptr);
+        vkDestroyShaderModule(device.device, fs_tonemap, nullptr);
+        vkDestroyShaderModule(device.device, fs_scene, nullptr);
+        vkDestroyShaderModule(device.device, vs_fullscreen, nullptr);
         if (allocator != nullptr) {
             vmaDestroyAllocator(allocator);
         }
@@ -721,6 +1106,7 @@ std::unique_ptr<Renderer> Renderer::for_windows(Platform& platform,
     auto impl = std::make_unique<Impl>();
     impl->claim();
     impl->create_instance(platform.vulkan_instance_extensions(), options.validation);
+    std::vector<VkExtent2D> render_extents;
     for (const WindowOutput& o : outputs) {
         Swapchain s;
         s.window = o.window;
@@ -728,12 +1114,16 @@ std::unique_ptr<Renderer> Renderer::for_windows(Platform& platform,
         // NOLINTNEXTLINE(performance-no-int-to-ptr): handles cross the platform API as integers
         s.surface = reinterpret_cast<VkSurfaceKHR>(o.window->create_vulkan_surface(
             reinterpret_cast<std::uintptr_t>(impl->instance.instance)));
+        const auto size = o.window->pixel_size();
+        render_extents.push_back({o.render_width != 0 ? o.render_width : size.width,
+                                  o.render_height != 0 ? o.render_height : size.height});
         impl->swapchains.push_back(std::move(s));
     }
     impl->create_device(true);
     for (Swapchain& s : impl->swapchains) {
         impl->build_swapchain(s);  // deferred while a window has no size
     }
+    impl->create_scene_resources(render_extents);
     impl->size_scratch();
     impl->create_frames();
     return std::unique_ptr<Renderer>(new Renderer(std::move(impl)));
@@ -748,9 +1138,12 @@ std::unique_ptr<Renderer> Renderer::offscreen(std::span<const OffscreenOutput> o
     impl->claim();
     impl->create_instance({}, options.validation);
     impl->create_device(false);
+    std::vector<VkExtent2D> render_extents;
     for (const OffscreenOutput& o : outputs) {
         impl->create_offscreen(o);
+        render_extents.push_back({o.width, o.height});
     }
+    impl->create_scene_resources(render_extents);
     impl->size_scratch();
     impl->create_frames();
     return std::unique_ptr<Renderer>(new Renderer(std::move(impl)));
@@ -765,7 +1158,11 @@ std::uint32_t Renderer::output_count() const {
 }
 
 std::uint32_t Renderer::draw_clear_frame(std::span<const Rgb8> colours) {
-    return impl_->draw(colours);
+    return impl_->draw({colours, {}, false});
+}
+
+std::uint32_t Renderer::draw_scene_frame(std::span<const SceneView> views) {
+    return impl_->draw({{}, views, true});
 }
 
 std::vector<std::uint8_t> Renderer::read_back_rgba(std::uint32_t output) {
