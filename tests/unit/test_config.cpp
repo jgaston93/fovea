@@ -207,6 +207,7 @@ TEST(Config, HostSectionReadsItsFields) {
 [host]
 protocol = "cigi"
 port = 8004
+listen_address = "192.168.1.10"
 host_address = "192.168.1.20"
 host_port = 8005
 geoid_height_m = -29.5
@@ -216,6 +217,7 @@ geoid_height_m = -29.5
     const HostConfig& h = *r.config->host;
     EXPECT_EQ(h.protocol, HostProtocol::cigi);
     EXPECT_EQ(h.port, 8004);
+    EXPECT_EQ(h.listen_address, 0xC0A8010AU);
     EXPECT_EQ(h.host_address, 0xC0A80114U);
     EXPECT_EQ(h.host_port, 8005);
     EXPECT_DOUBLE_EQ(h.geoid_height_m, -29.5);
@@ -233,6 +235,10 @@ TEST(Config, HostSectionIsChecked) {
                      "go together");
     expect_one_error(parse(head + "protocol = \"cigi\"\nport = 8004\ngeoid_height_m = 400\n"), 10,
                      "host.geoid_height_m");
+    expect_one_error(
+        parse(head + "protocol = \"cigi\"\nport = 8004\nlisten_address = "
+                     "\"127.0.0.1\"\nhost_address = \"192.168.1.20\"\nhost_port = 1\n"),
+        11, "this computer only");
 }
 
 TEST(Config, ReferenceSceneOrigin) {

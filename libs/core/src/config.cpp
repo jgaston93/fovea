@@ -216,7 +216,19 @@ void check_range(Parser& p, const toml::node& n, const std::string& path, double
 }
 
 void parse_host(Parser& p, const toml::table& t, HostConfig& out) {
-    p.check_keys(t, {"protocol", "port", "host_address", "host_port", "geoid_height_m"}, "host");
+    p.check_keys(
+        t, {"protocol", "port", "listen_address", "host_address", "host_port", "geoid_height_m"},
+        "host");
+    if (const auto* n = t.get("listen_address")) {
+        if (auto v = p.string(*n, "host.listen_address")) {
+            out.listen_address = parse_ipv4(*v);
+            if (!out.listen_address) {
+                p.error(n->source(),
+                        "'host.listen_address' must be an IPv4 address like 127.0.0.1 (got \"" +
+                            *v + "\")");
+            }
+        }
+    }
     if (const auto* n = p.required(t, "protocol", "host")) {
         if (auto v = p.choice<HostProtocol>(*n, "host.protocol", {{"cigi", HostProtocol::cigi}})) {
             out.protocol = *v;
@@ -243,6 +255,15 @@ void parse_host(Parser& p, const toml::table& t, HostConfig& out) {
         if (auto v = p.integer(*port, "host.host_port", 1, 65535)) {
             out.host_port = static_cast<std::uint16_t>(*v);
         }
+    }
+    // A socket bound to this computer's loopback can only reach this
+    // computer: Start of Frame to another machine would never leave.
+    const auto loopback = [](std::uint32_t ip) { return (ip >> 24) == 127U; };
+    if (out.listen_address && loopback(*out.listen_address) && out.host_address &&
+        !loopback(*out.host_address)) {
+        p.error(address->source(),
+                "'host.host_address' is another computer, but 'host.listen_address' is this "
+                "computer only (127.x.x.x): Start of Frame couldn't reach the host");
     }
     if ((address == nullptr) != (port == nullptr)) {
         p.error((address != nullptr ? address : port)->source(),

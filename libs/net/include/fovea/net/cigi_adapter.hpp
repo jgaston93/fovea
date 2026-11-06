@@ -43,7 +43,8 @@
 namespace fovea {
 
 struct CigiAdapterOptions {
-    std::uint16_t port = 0;  // where host messages arrive; 0: any free port
+    std::uint16_t port = 0;     // where host messages arrive; 0: any free port
+    std::uint32_t address = 0;  // the local address to listen on; 0: all interfaces
     // Where Start of Frame goes. Without it, to wherever the last host
     // message came from, so nothing is sent until the host's first message;
     // a host that waits for Start of Frame before sending needs this set.

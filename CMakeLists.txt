@@ -27,6 +27,7 @@ add_subdirectory(libs/platform)
 add_subdirectory(libs/net)
 add_subdirectory(libs/render)
 add_subdirectory(apps/fovea)
+add_subdirectory(tools/cigi-test-host)
 
 if(FOVEA_BUILD_TESTS)
     enable_testing()

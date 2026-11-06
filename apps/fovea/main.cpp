@@ -414,6 +414,7 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
             const fovea::HostConfig& h = *config.host;
             fovea::CigiAdapterOptions host_options;
             host_options.port = h.port;
+            host_options.address = h.listen_address.value_or(0);
             if (h.host_address) {
                 host_options.host = fovea::UdpEndpoint{*h.host_address, h.host_port};
             }
@@ -428,9 +429,9 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
                 return 1;
             }
             std::printf(
-                "CIGI 3.3: listening on UDP port %u (receive buffer %zu KB); Start of "
-                "Frame to %s\n",
-                unsigned{host_adapter->port()}, host_adapter->receive_buffer_bytes() / 1024,
+                "CIGI 3.3: listening on %s (receive buffer %zu KB); Start of Frame to %s\n",
+                fovea::format_endpoint({host_options.address, host_adapter->port()}).c_str(),
+                host_adapter->receive_buffer_bytes() / 1024,
                 host_options.host ? fovea::format_endpoint(*host_options.host).c_str()
                                   : "the host's address, once it sends");
             loop_options.frame_starts = frame_starts.get();
