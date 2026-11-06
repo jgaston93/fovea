@@ -16,6 +16,7 @@
 #include <span>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include "fovea/core/frame_events.hpp"
 #include "fovea/core/log.hpp"
@@ -41,6 +42,10 @@ struct FrameLoopOptions {
     // Each frame's start goes here (for a host adapter's Start of Frame);
     // if the ring is full, the frame start is dropped. Must outlive the loop.
     FrameStartRing* frame_starts = nullptr;
+    // Views riding the scene's entities: when set, the loop's views are
+    // recomputed from each frame's scene (ride_entities), starting from the
+    // ones given. Must outlive the loop, and match the views in number.
+    const ViewRig* rig = nullptr;
 };
 
 // Recent frame intervals for the overlay's graph.
@@ -111,7 +116,8 @@ private:
 
     Renderer& renderer_;
     SceneState& scene_;
-    std::span<const SceneView> views_;
+    std::span<const SceneView> views_;  // what's drawn: the given views, or rigged_
+    std::vector<SceneView> rigged_;     // with a rig: this frame's views
     FrameLoopOptions options_;
     Logger* stats_;
     LocalTime start_;

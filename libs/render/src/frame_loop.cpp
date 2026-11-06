@@ -25,6 +25,11 @@ FrameLoop::FrameLoop(Renderer& renderer, SceneState& scene, std::span<const Scen
       schedule_(start_, options.rate_hz),
       first_renderer_frame_(renderer.frames_drawn()) {
     intervals_.fill(static_cast<float>(1000.0 / options.rate_hz));
+    if (options.rig != nullptr) {
+        // Sized once here: the per-frame update writes in place.
+        rigged_.assign(views.begin(), views.end());
+        views_ = rigged_;
+    }
     if (stats_ != nullptr) {
         stats_->write(
             LogLevel::info,
@@ -60,6 +65,9 @@ const FrameRecord& FrameLoop::step() {
 
     // The latest published scene, taken once for the whole frame.
     const SceneSnapshot& scene = scene_.latest();
+    if (options_.rig != nullptr) {
+        ride_entities(*options_.rig, scene, rigged_);
+    }
 
     // The overlay shows the stats up to the previous frame.
     const OverlayContent* overlay = nullptr;

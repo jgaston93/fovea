@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "fovea/core/attitude.hpp"
+#include "fovea/core/geodesy.hpp"
 #include "fovea/core/math.hpp"
 
 namespace fovea {
@@ -44,9 +45,13 @@ struct ChannelConfig {
 // The milestone 1 reference scene: a flat ground grid below the eye and a
 // sky, for checking each channel's view (the [reference_scene] table).
 struct ReferenceScene {
-    double eye_height_m = 2.0;     // the eye above the ground plane
+    double eye_height_m = 2.0;     // the eye above the ground plane, with no host
     double grid_spacing_m = 10.0;  // between grid lines
     double exposure_ev = 0.0;      // tone-mapping exposure, in stops
+    // The ground grid is the level plane through this point (milestone 2):
+    // latitude and longitude in degrees, altitude in metres above sea level
+    // (like a host's; [host] geoid_height_m applies to both).
+    Geodetic origin;
 };
 
 // [host]: where a host program's messages arrive. Without it, nothing

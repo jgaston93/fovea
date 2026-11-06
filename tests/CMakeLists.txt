@@ -14,6 +14,7 @@ add_executable(fovea_unit_tests
     unit/test_monitors.cpp
     unit/test_platform.cpp
     unit/test_projection.cpp
+    unit/test_ride_entities.cpp
     unit/test_scene.cpp
     unit/test_terrain.cpp
     unit/test_time.cpp

@@ -333,6 +333,14 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
     std::unique_ptr<fovea::Renderer> renderer;
     std::vector<fovea::Rgb8> clears;
     const std::vector<fovea::SceneView> views = fovea::reference_scene_views(config);
+    // With a host, the views ride its entities (each channel's entity, at its
+    // eye offset and rotation), recomputed every frame.
+    std::vector<fovea::ViewDesc> view_descs;
+    for (std::size_t i = 0; i < config.channels.size(); ++i) {
+        view_descs.push_back(fovea::view_from_channel(config.channels[i], config, i));
+    }
+    const fovea::ViewRig rig{view_descs, config.reference_scene,
+                             config.host ? config.host->geoid_height_m : 0.0};
     const auto draw = [&] {
         return options.clear ? renderer->draw_clear_frame(clears)
                              : renderer->draw_scene_frame(views);
@@ -423,6 +431,7 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
                 host_options.host ? fovea::format_endpoint(*host_options.host).c_str()
                                   : "the host's address, once it sends");
             loop_options.frame_starts = frame_starts.get();
+            loop_options.rig = &rig;
             host_thread = std::make_unique<fovea::HostThread>(*host_adapter, *scene_state);
             host_thread->start();
         }
