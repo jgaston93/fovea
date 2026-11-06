@@ -852,7 +852,7 @@ void Renderer::Impl::create_timestamps() {
     ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
     ci.queryCount = count;
     check(vkCreateQueryPool(device.device, &ci, nullptr, &timestamps), "vkCreateQueryPool");
-    query_results.resize(static_cast<std::size_t>(output_total()) * 2);
+    query_results.resize(static_cast<std::size_t>(output_total()) * std::size_t{2});
 }
 
 // The GPU times of the frame last drawn in this slot, now that its fence has
@@ -872,8 +872,9 @@ void Renderer::Impl::read_gpu_times(std::size_t slot) {
     timing.gpu_frame = slot_frame[slot];
     timing.gpu_outputs = std::min<std::uint32_t>(output_total(), kMaxTimedOutputs);
     for (std::uint32_t i = 0; i < timing.gpu_outputs; ++i) {
-        const std::uint64_t begin = query_results[2 * i];
-        const std::uint64_t end = query_results[2 * i + 1];
+        const std::size_t k = std::size_t{2} * i;
+        const std::uint64_t begin = query_results[k];
+        const std::uint64_t end = query_results[k + 1];
         timing.gpu_ms[i] =
             end >= begin
                 ? static_cast<float>(static_cast<double>(end - begin) * timestamp_period_ns * 1e-6)

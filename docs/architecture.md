@@ -140,7 +140,7 @@ Views write to images. Each output gets its view's render-resolution image, whic
 
 ## Frame pacing and display sync
 
-- The frame clock is locked to 60 Hz. Each frame: wait for frame N−2's fence, take the latest SceneState, update modules, record all views, submit once, then present to every output back to back.
+- The frame clock is locked to the display. Each frame: wait until the previous frame is on screen (`VK_KHR_present_wait`, on the first output), take the latest SceneState, update modules, record all views, submit once, then present to every output in one call. Starting right after a vsync gives even frame spacing and the least latency. Without present wait, FIFO blocking paces the loop, but unevenly (measured: frames bunched in pairs). Offscreen and non-FIFO outputs are paced by the clock at `target_hz`.
 - The present mode is set per output in config. The default is FIFO on all outputs. The milestone 1 sync test measures FIFO on every output against FIFO on one output with the others set to MAILBOX/IMMEDIATE, plus the driver's display-spanning mode through `SpannedPresenter`. Results go into `decisions.md`.
 - A missed frame is any frame whose present interval is more than 1.5× the target period. Present timing comes from `VK_KHR_present_wait`/`present_id` when available, and from CPU timestamps otherwise.
 - Stats recorded every frame: CPU frame time, GPU time per view and per module (timestamp queries), present interval, and missed frames. End-to-end latency (host timestamp to present) is added in milestone 2.
