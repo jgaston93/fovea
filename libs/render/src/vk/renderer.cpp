@@ -287,6 +287,13 @@ struct Renderer::Impl {
     std::vector<std::uint64_t> query_results;                 // sized once
     FrameTiming timing;
 
+    // Present pacing (VK_KHR_present_id / present_wait), when supported.
+    bool present_wait = false;
+    std::vector<std::uint64_t> present_ids;          // one per presented swapchain, sized once
+    VkSwapchainKHR last_presented = VK_NULL_HANDLE;  // swapchain 0's last present
+    std::uint64_t last_present_id = 0;
+    double present_wait_ms = 0.0;  // waited before this frame, for its timing
+
     // Per-frame scratch, sized once for the swapchain count: the render path
     // allocates nothing (architecture.md, "Render path rules").
     std::vector<std::uint32_t> image_index;
@@ -429,6 +436,26 @@ void Renderer::Impl::create_device(bool present) {
         return d.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
     });
     physical = discrete != usable.end() ? *discrete : usable.front();
+
+    if (present) {
+        // Optional: present ids and waits, for evenly paced frames.
+        VkPhysicalDevicePresentIdFeaturesKHR id{};
+        id.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
+        id.presentId = VK_TRUE;
+        VkPhysicalDevicePresentWaitFeaturesKHR wait{};
+        wait.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR;
+        wait.presentWait = VK_TRUE;
+        present_wait = physical.is_extension_present(VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
+                       physical.is_extension_present(VK_KHR_PRESENT_WAIT_EXTENSION_NAME) &&
+                       physical.are_extension_features_present(id) &&
+                       physical.are_extension_features_present(wait);
+        if (present_wait) {
+            (void)physical.enable_extension_if_present(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+            (void)physical.enable_extension_if_present(VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
+            (void)physical.enable_extension_features_if_present(id);
+            (void)physical.enable_extension_features_if_present(wait);
+        }
+    }
 
     auto built = vkb::DeviceBuilder(physical).build();
     if (!built) {
@@ -809,6 +836,7 @@ void Renderer::Impl::size_scratch() {
     present_waits.resize(n);
     present_which.resize(n);
     present_results.resize(n);
+    present_ids.resize(n);
 }
 
 void Renderer::Impl::create_timestamps() {
@@ -1107,7 +1135,18 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
         present.pSwapchains = present_chains.data();
         present.pImageIndices = present_indices.data();
         present.pResults = present_results.data();
+        // Every swapchain gets the frame's id; waits use the first one's.
+        VkPresentIdKHR ids{};
+        if (present_wait) {
+            std::fill_n(present_ids.begin(), presenting, frame_number + 1);
+            ids.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR;
+            ids.swapchainCount = presenting;
+            ids.pPresentIds = present_ids.data();
+            present.pNext = &ids;
+        }
         const VkResult r = vkQueuePresentKHR(queue, &present);
+        last_presented = present_which[0] == 0 ? present_chains[0] : VK_NULL_HANDLE;
+        last_present_id = frame_number + 1;
         if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR && r != VK_ERROR_OUT_OF_DATE_KHR) {
             check(r, "vkQueuePresentKHR");
         }
@@ -1120,7 +1159,9 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
     }
     ++frame_number;
     const auto finished = now();
-    timing.wait_ms = std::chrono::duration<double, std::milli>(acquired - started).count();
+    timing.wait_ms =
+        present_wait_ms + std::chrono::duration<double, std::milli>(acquired - started).count();
+    present_wait_ms = 0.0;
     timing.work_ms = std::chrono::duration<double, std::milli>(finished - acquired).count();
     return presenting + static_cast<std::uint32_t>(offscreen.size());
 }
@@ -1280,6 +1321,29 @@ std::vector<std::uint8_t> Renderer::read_back_rgba(std::uint32_t output) {
 
 const FrameTiming& Renderer::last_timing() const {
     return impl_->timing;
+}
+
+double Renderer::wait_for_last_present() {
+    Impl& m = *impl_;
+    if (!m.present_wait || m.last_presented == VK_NULL_HANDLE || m.swapchains.empty() ||
+        m.swapchains[0].chain.swapchain != m.last_presented) {
+        return 0.0;  // unsupported, nothing presented, or that swapchain was rebuilt
+    }
+    const auto started = now();
+    // A bounded wait: a minimized or covered window may never show it.
+    constexpr std::uint64_t kTimeoutNs = 100'000'000;
+    const VkResult r =
+        vkWaitForPresentKHR(m.device.device, m.last_presented, m.last_present_id, kTimeoutNs);
+    if (r != VK_SUCCESS && r != VK_TIMEOUT && r != VK_SUBOPTIMAL_KHR &&
+        r != VK_ERROR_OUT_OF_DATE_KHR) {
+        check(r, "vkWaitForPresentKHR");
+    }
+    m.present_wait_ms = std::chrono::duration<double, std::milli>(now() - started).count();
+    return m.present_wait_ms;
+}
+
+bool Renderer::has_present_wait() const {
+    return impl_->present_wait;
 }
 
 bool Renderer::paced_by_display() const {

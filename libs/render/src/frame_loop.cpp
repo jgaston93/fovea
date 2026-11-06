@@ -34,9 +34,13 @@ FrameLoop::~FrameLoop() {
 }
 
 const FrameRecord& FrameLoop::step() {
-    // Presentation (FIFO) paces the loop by blocking in the draw; otherwise
-    // wait here for the frame's deadline.
-    if (!renderer_.paced_by_display() && frames_ > 0) {
+    // Pacing. With present wait: until the last frame is on screen, so this
+    // one starts right after a vsync (even spacing, least latency).
+    // Presentation (FIFO) without it: by blocking inside the draw. Otherwise
+    // (offscreen, mailbox): by the clock.
+    if (renderer_.paced_by_display()) {
+        (void)renderer_.wait_for_last_present();
+    } else if (frames_ > 0) {
         std::this_thread::sleep_until(schedule_.next_deadline());
     }
     const LocalTime started = now();

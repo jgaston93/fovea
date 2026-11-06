@@ -83,7 +83,7 @@ inline constexpr std::size_t kMaxTimedOutputs = 8;
 // (GPU results are read once that frame's fence has signalled, two frames
 // later, so nothing waits for them).
 struct FrameTiming {
-    double wait_ms = 0.0;           // blocked: the frame fence and image acquires (vsync with FIFO)
+    double wait_ms = 0.0;           // blocked: present wait, the frame fence and image acquires
     double work_ms = 0.0;           // recording, submitting and presenting
     std::uint64_t gpu_frame = 0;    // the frame the GPU times below belong to
     std::uint32_t gpu_outputs = 0;  // how many are valid; 0 without timestamps
@@ -139,6 +139,16 @@ public:
     // True when presentation paces drawing: an on-screen output with FIFO.
     // Otherwise (offscreen, mailbox, immediate) the caller must pace itself.
     bool paced_by_display() const;
+
+    // Blocks until the last frame drawn is on the first output's display
+    // (VK_KHR_present_wait), so the next frame can start right after a
+    // vsync: evenly spaced and with the least latency. Returns the time
+    // waited, in ms; returns at once (0) without present wait support or
+    // when there is nothing on screen to wait for.
+    double wait_for_last_present();
+
+    // Whether wait_for_last_present can wait (the GPU and surface support it).
+    bool has_present_wait() const;
 
     // Validation layer warnings and errors so far (each also printed).
     std::uint64_t validation_messages() const;

@@ -263,6 +263,9 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         }
         renderer = fovea::Renderer::for_windows(platform, outputs);
         print_gpu(*renderer);
+        std::printf("Pacing: %s\n", renderer->has_present_wait()
+                                        ? "present wait (each frame starts after a vsync)"
+                                        : "FIFO blocking (no present wait support)");
         (void)draw();
     }
     const auto paint = [&] {
