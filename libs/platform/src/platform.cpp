@@ -74,6 +74,15 @@ std::uint32_t Window::pixel_height() const {
     return static_cast<std::uint32_t>(std::max(h, 0));
 }
 
+bool Window::fill(std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+    SDL_Surface* surface = SDL_GetWindowSurface(sdl(handle_));
+    if (surface == nullptr) {
+        return false;
+    }
+    return SDL_FillSurfaceRect(surface, nullptr, SDL_MapSurfaceRGB(surface, r, g, b)) &&
+           SDL_UpdateWindowSurface(sdl(handle_));
+}
+
 int Window::current_monitor() const {
     const SDL_DisplayID id = SDL_GetDisplayForWindow(sdl(handle_));
     const auto it = std::find(display_ids_->begin(), display_ids_->end(), id);

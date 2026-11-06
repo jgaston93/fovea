@@ -2,9 +2,12 @@
 // monitors and opens one window per channel, until Esc or a window close.
 // Drawing arrives in milestone 1 steps 5 to 7.
 //
-//   fovea [--seconds N] <display-config.toml>   run (N: exit after N seconds)
-//   fovea --list-monitors                        print the monitors and exit
+//   fovea [--seconds N] [--identify] <display-config.toml>
+//       run; N: exit after N seconds; --identify: fill each channel's window
+//       with a colour (red, green, blue, ... in config order)
+//   fovea --list-monitors     print the monitors and exit
 
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -33,7 +36,7 @@ void print_monitors(const fovea::Platform& platform) {
 
 int usage() {
     (void)std::fprintf(stderr,
-                       "usage: fovea [--seconds N] <display-config.toml>\n"
+                       "usage: fovea [--seconds N] [--identify] <display-config.toml>\n"
                        "       fovea --list-monitors\n");
     return 2;
 }
@@ -46,9 +49,17 @@ int run(int argc, char** argv) {
         return 0;
     }
     double seconds = 0.0;  // 0: until Esc
-    if (args.size() == 3 && args[0] == "--seconds") {
-        seconds = std::strtod(std::string(args[1]).c_str(), nullptr);
-        args.erase(args.begin(), args.begin() + 2);
+    bool identify = false;
+    while (args.size() > 1 && args[0].starts_with("--")) {
+        if (args[0] == "--seconds" && args.size() > 2) {
+            seconds = std::strtod(std::string(args[1]).c_str(), nullptr);
+            args.erase(args.begin(), args.begin() + 2);
+        } else if (args[0] == "--identify") {
+            identify = true;
+            args.erase(args.begin());
+        } else {
+            return usage();
+        }
     }
     if (args.size() != 1 || args[0].starts_with("--")) {
         return usage();
@@ -87,6 +98,26 @@ int run(int argc, char** argv) {
                     view.pose.rotation.yaw_deg);
     }
 
+    // Red, green, blue, then yellow, magenta, cyan for any further channels.
+    constexpr std::array<std::array<std::uint8_t, 3>, 6> kColours{{{200, 30, 30},
+                                                                   {30, 170, 60},
+                                                                   {40, 80, 220},
+                                                                   {220, 200, 40},
+                                                                   {190, 60, 190},
+                                                                   {40, 190, 200}}};
+    const auto paint = [&] {
+        for (std::size_t i = 0; identify && i < windows.size(); ++i) {
+            const auto& c = kColours[i % kColours.size()];
+            if (!windows[i].fill(c[0], c[1], c[2])) {
+                (void)std::fprintf(stderr, "fovea: cannot fill window %zu\n", i);
+            }
+        }
+    };
+    paint();
+    if (identify) {
+        std::printf("Identifying: red, green, blue, yellow, magenta, cyan in config order.\n");
+    }
+
     std::printf("Esc or close a window to quit.\n");
     (void)std::fflush(stdout);
     const auto start = std::chrono::steady_clock::now();
@@ -94,6 +125,7 @@ int run(int argc, char** argv) {
         if (platform.wait_events(50).quit) {
             break;
         }
+        paint();  // again, in case the window system discarded the contents
         const std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - start;
         if (seconds > 0.0 && elapsed.count() >= seconds) {
             break;

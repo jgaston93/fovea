@@ -1,0 +1,34 @@
+# A development desk: one 2560x1440 landscape monitor with two 1080x1920
+# portrait monitors to its right. Monitor numbers are in SDL's order, which
+# need not follow the desk; check with `fovea --list-monitors`.
+#
+# The view angles are placeholders shaped to each screen's aspect ratio
+# (16:9 landscape, 9:16 portrait), with the screens edge to edge from left
+# to right. They are not measured, so lines don't continue exactly across
+# screens of different sizes.
+
+[display]
+presenter = "multi_swapchain"
+target_hz = 60
+near_m = 0.1
+
+[[channel]]
+name = "left"
+monitor = 0                     # Dell P2724DE, 2560x1440 landscape
+render_extent = [2560, 1440]
+view_rotation = { yaw = -40.0, pitch = 0.0, roll = 0.0 }
+frustum = { left = -30.0, right = 30.0, top = 18.0, bottom = -18.0 }    # covers yaw -70..-10
+
+[[channel]]
+name = "middle"
+monitor = 2                     # Samsung LF24T35, 1080x1920 portrait
+render_extent = [1080, 1920]
+view_rotation = { yaw = 5.0, pitch = 0.0, roll = 0.0 }
+frustum = { left = -15.0, right = 15.0, top = 25.5, bottom = -25.5 }    # covers yaw -10..20
+
+[[channel]]
+name = "right"
+monitor = 1                     # Samsung LF24T35, 1080x1920 portrait
+render_extent = [1080, 1920]
+view_rotation = { yaw = 35.0, pitch = 0.0, roll = 0.0 }
+frustum = { left = -15.0, right = 15.0, top = 25.5, bottom = -25.5 }    # covers yaw 20..50

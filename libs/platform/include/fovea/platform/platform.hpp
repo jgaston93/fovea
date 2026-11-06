@@ -47,6 +47,12 @@ public:
     // The monitor the window is on now, as an index into monitors(), or -1.
     int current_monitor() const;
 
+    // Fills the window with one colour, drawn in software: for identifying
+    // which window is on which monitor (fovea --identify). Diagnostic only:
+    // it gives the window to SDL's software surface, so the window can't take
+    // a Vulkan surface afterwards. Returns false if SDL can't draw it.
+    bool fill(std::uint8_t r, std::uint8_t g, std::uint8_t b);
+
     // The SDL_Window, for the Vulkan surface (step 5) inside libs/platform.
     void* native() const { return handle_; }
 
