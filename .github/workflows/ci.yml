@@ -3,7 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE*']  # docs only: nothing to build
   pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE*']
+
+# A newer push to a pull request makes its older run moot: cancel it. Runs
+# on main all finish (each merge is checked).
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
