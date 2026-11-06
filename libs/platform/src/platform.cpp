@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <memory>
 #include <stdexcept>
 #include <utility>
 
@@ -30,6 +31,9 @@ EventSummary handle(const SDL_Event& e, EventSummary summary) {
             break;
         case SDL_EVENT_KEY_DOWN:
             summary.quit = summary.quit || e.key.key == SDLK_ESCAPE;
+            break;
+        case SDL_EVENT_WINDOW_EXPOSED:
+            summary.exposed = true;
             break;
         default:
             break;
@@ -60,21 +64,19 @@ Window& Window::operator=(Window&& other) noexcept {
     return *this;
 }
 
-std::uint32_t Window::pixel_width() const {
+Window::PixelSize Window::pixel_size() const {
     int w = 0;
     int h = 0;
-    SDL_GetWindowSizeInPixels(sdl(handle_), &w, &h);
-    return static_cast<std::uint32_t>(std::max(w, 0));
-}
-
-std::uint32_t Window::pixel_height() const {
-    int w = 0;
-    int h = 0;
-    SDL_GetWindowSizeInPixels(sdl(handle_), &w, &h);
-    return static_cast<std::uint32_t>(std::max(h, 0));
+    if (handle_ != nullptr) {
+        SDL_GetWindowSizeInPixels(sdl(handle_), &w, &h);
+    }
+    return {static_cast<std::uint32_t>(std::max(w, 0)), static_cast<std::uint32_t>(std::max(h, 0))};
 }
 
 bool Window::fill(std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+    if (handle_ == nullptr) {
+        return false;
+    }
     SDL_Surface* surface = SDL_GetWindowSurface(sdl(handle_));
     if (surface == nullptr) {
         return false;
@@ -84,6 +86,9 @@ bool Window::fill(std::uint8_t r, std::uint8_t g, std::uint8_t b) {
 }
 
 int Window::current_monitor() const {
+    if (handle_ == nullptr || display_ids_ == nullptr) {
+        return -1;
+    }
     const SDL_DisplayID id = SDL_GetDisplayForWindow(sdl(handle_));
     const auto it = std::find(display_ids_->begin(), display_ids_->end(), id);
     return it == display_ids_->end() ? -1 : static_cast<int>(it - display_ids_->begin());
@@ -100,9 +105,21 @@ Platform::Platform(const PlatformOptions& options) {
         g_platform_alive = false;
         fail("cannot start SDL video");
     }
+    try {
+        list_monitors();
+    } catch (...) {
+        // The destructor won't run for a constructor that throws.
+        SDL_Quit();
+        g_platform_alive = false;
+        throw;
+    }
+}
 
+void Platform::list_monitors() {
     int count = 0;
-    SDL_DisplayID* ids = SDL_GetDisplays(&count);
+    const std::unique_ptr<SDL_DisplayID, decltype(&SDL_free)> owned(SDL_GetDisplays(&count),
+                                                                    &SDL_free);
+    const SDL_DisplayID* ids = owned.get();
     const SDL_DisplayID primary = SDL_GetPrimaryDisplay();
     for (int i = 0; i < count; ++i) {
         MonitorInfo m;
@@ -123,7 +140,6 @@ Platform::Platform(const PlatformOptions& options) {
         monitors_.push_back(m);
         display_ids_.push_back(ids[i]);
     }
-    SDL_free(ids);
 }
 
 Platform::~Platform() {

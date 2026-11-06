@@ -22,7 +22,8 @@ target_link_libraries(fovea_unit_tests PRIVATE fovea::core fovea::terrain fovea:
 target_compile_definitions(fovea_unit_tests PRIVATE FOVEA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 fovea_target_defaults(fovea_unit_tests)
 
-gtest_discover_tests(fovea_unit_tests DISCOVERY_MODE PRE_TEST)
+# A time limit on every test: some open (dummy) windows, which can hang.
+gtest_discover_tests(fovea_unit_tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT 60)
 
 # Library boundaries (architecture.md): the repository passes, and planted
 # violations (a GPU header, a GDAL header in a .inl, a fovea library outside
@@ -44,12 +45,22 @@ add_test(NAME App.OpensItsWindowsAndExits
     COMMAND fovea --seconds 0.2 ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
 set_tests_properties(App.OpensItsWindowsAndExits PROPERTIES
     ENVIRONMENT ${dummy_display} TIMEOUT 20
-    PASS_REGULAR_EXPRESSION "only +monitor 0 \\(window on 0, [0-9]+x[0-9]+ px\\)")
+    PASS_REGULAR_EXPRESSION "window \"only\": on monitor 0, [0-9]+x[0-9]+ px")
 add_test(NAME App.IdentifyFillsTheWindows
     COMMAND fovea --seconds 0.2 --identify ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
 set_tests_properties(App.IdentifyFillsTheWindows PROPERTIES
     ENVIRONMENT ${dummy_display} TIMEOUT 20
     PASS_REGULAR_EXPRESSION "Identifying: red" FAIL_REGULAR_EXPRESSION "cannot fill")
+add_test(NAME App.OffscreenNeedsNoDisplay
+    COMMAND fovea ${CMAKE_CURRENT_SOURCE_DIR}/data/offscreen.toml)
+set_tests_properties(App.OffscreenNeedsNoDisplay PROPERTIES
+    ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver" TIMEOUT 20
+    PASS_REGULAR_EXPRESSION "offscreen: no windows" FAIL_REGULAR_EXPRESSION "cannot start SDL")
+add_test(NAME App.RejectsABadSecondsValue
+    COMMAND fovea --seconds -1 ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
+set_tests_properties(App.RejectsABadSecondsValue PROPERTIES
+    ENVIRONMENT ${dummy_display} TIMEOUT 20
+    PASS_REGULAR_EXPRESSION "--seconds needs a positive number")
 add_test(NAME App.RejectsAConfigNeedingMoreMonitors
     COMMAND fovea --seconds 0.2 ${PROJECT_SOURCE_DIR}/config/channels.example.toml)
 set_tests_properties(App.RejectsAConfigNeedingMoreMonitors PROPERTIES

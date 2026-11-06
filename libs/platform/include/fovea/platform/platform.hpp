@@ -40,11 +40,15 @@ public:
     Window(Window&& other) noexcept;
     Window& operator=(Window&& other) noexcept;
 
+    struct PixelSize {
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+    };
     // Drawable size in pixels (may differ from the desktop size under
-    // display scaling).
-    std::uint32_t pixel_width() const;
-    std::uint32_t pixel_height() const;
-    // The monitor the window is on now, as an index into monitors(), or -1.
+    // display scaling). Zero for a moved-from Window.
+    PixelSize pixel_size() const;
+    // The monitor the window is on now, as an index into monitors(), or -1
+    // (also for a moved-from Window).
     int current_monitor() const;
 
     // Fills the window with one colour, drawn in software: for identifying
@@ -64,7 +68,8 @@ private:
 };
 
 struct EventSummary {
-    bool quit = false;  // window closed, Esc pressed, or the OS asked to quit
+    bool quit = false;     // window closed, Esc pressed, or the OS asked to quit
+    bool exposed = false;  // a window's contents need drawing again
 };
 
 class Platform {
@@ -77,7 +82,8 @@ public:
     Platform& operator=(const Platform&) = delete;
 
     // The connected monitors, in SDL's order; config monitor indices refer to
-    // this list. The primary one is marked.
+    // this list. The primary one is marked. Taken once at startup: monitors
+    // plugged in or removed while running are not followed (milestone 1).
     const std::vector<MonitorInfo>& monitors() const { return monitors_; }
 
     // Throws std::runtime_error if the monitor doesn't exist or SDL fails.
@@ -85,13 +91,16 @@ public:
 
     // Handles pending events without waiting.
     EventSummary poll_events();
-    // Like poll_events, but waits up to timeout_ms for the first event.
+    // Like poll_events, but waits up to timeout_ms for the first event
+    // (negative: until one arrives).
     EventSummary wait_events(int timeout_ms);
 
     // The name of the video driver in use ("windows", "x11", "dummy").
     std::string video_driver() const;
 
 private:
+    void list_monitors();
+
     std::vector<MonitorInfo> monitors_;
     std::vector<std::uint32_t> display_ids_;  // SDL_DisplayID, same order
 };

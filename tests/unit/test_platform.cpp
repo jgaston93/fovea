@@ -1,4 +1,5 @@
 #include <stdexcept>
+#include <utility>
 
 #include <gtest/gtest.h>
 
@@ -40,16 +41,28 @@ TEST(Platform, FullscreenWindowCoversItsMonitor) {
     Platform platform(dummy());
     const MonitorInfo& m = platform.monitors().at(0);
     const Window w = platform.create_window({"test", 0, true, 0, 0});
-    EXPECT_EQ(w.pixel_width(), static_cast<std::uint32_t>(m.width * m.pixel_density));
-    EXPECT_EQ(w.pixel_height(), static_cast<std::uint32_t>(m.height * m.pixel_density));
+    EXPECT_EQ(w.pixel_size().width, static_cast<std::uint32_t>(m.width * m.pixel_density));
+    EXPECT_EQ(w.pixel_size().height, static_cast<std::uint32_t>(m.height * m.pixel_density));
     EXPECT_EQ(w.current_monitor(), 0);
 }
 
 TEST(Platform, WindowedSizeIsHonoured) {
     Platform platform(dummy());
     const Window w = platform.create_window({"test", 0, false, 640, 360});
-    EXPECT_EQ(w.pixel_width(), 640U);
-    EXPECT_EQ(w.pixel_height(), 360U);
+    EXPECT_EQ(w.pixel_size().width, 640U);
+    EXPECT_EQ(w.pixel_size().height, 360U);
+}
+
+TEST(Platform, MovedFromWindowIsSafeToQuery) {
+    Platform platform(dummy());
+    Window a = platform.create_window({"test", 0, false, 64, 64});
+    const Window b = std::move(a);
+    EXPECT_EQ(b.current_monitor(), 0);
+    // NOLINTBEGIN(bugprone-use-after-move,clang-analyzer-cplusplus.Move): on purpose
+    EXPECT_EQ(a.current_monitor(), -1);
+    EXPECT_EQ(a.pixel_size().width, 0U);
+    EXPECT_FALSE(a.fill(1, 2, 3));
+    // NOLINTEND(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
 }
 
 TEST(Platform, MissingMonitorThrows) {
