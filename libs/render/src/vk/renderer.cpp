@@ -445,15 +445,16 @@ void Renderer::Impl::create_device(bool present) {
         VkPhysicalDevicePresentWaitFeaturesKHR wait{};
         wait.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR;
         wait.presentWait = VK_TRUE;
-        present_wait = physical.is_extension_present(VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
-                       physical.is_extension_present(VK_KHR_PRESENT_WAIT_EXTENSION_NAME) &&
-                       physical.are_extension_features_present(id) &&
-                       physical.are_extension_features_present(wait);
-        if (present_wait) {
+        // enable_extension_features_if_present asks the driver;
+        // are_extension_features_present only knows the features asked for
+        // during selection, so it says no here.
+        if (physical.is_extension_present(VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
+            physical.is_extension_present(VK_KHR_PRESENT_WAIT_EXTENSION_NAME)) {
             (void)physical.enable_extension_if_present(VK_KHR_PRESENT_ID_EXTENSION_NAME);
             (void)physical.enable_extension_if_present(VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
-            (void)physical.enable_extension_features_if_present(id);
-            (void)physical.enable_extension_features_if_present(wait);
+            const bool have_id = physical.enable_extension_features_if_present(id);
+            const bool have_wait = physical.enable_extension_features_if_present(wait);
+            present_wait = have_id && have_wait;
         }
     }
 
