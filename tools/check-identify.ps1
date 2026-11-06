@@ -1,16 +1,18 @@
 # Checks, without anyone watching, that fovea's windows cover the right
-# monitors: runs `fovea --identify` and reads the colour at the centre of each
-# window's monitor from a screenshot. Needs this session's desktop unlocked
+# monitors with the right colour: runs fovea (Vulkan clears, or with
+# -Software the `--identify` software fill) and reads the colour at the
+# centre of each window's monitor from a screenshot. Needs this session's desktop unlocked
 # (a locked one captures the lock screen).
 #
 #   powershell -ExecutionPolicy Bypass -File tools\check-identify.ps1 `
 #       -Exe build\debug\apps\fovea\fovea.exe -Config config\<file>.toml
 #
-# The expected colours come from fovea's own output ("identify rgb(...)").
+# The expected colours come from fovea's own output ("clear rgb(...)" or
+# "identify rgb(...)").
 # Exit codes: 0 every monitor right; 1 a wrong colour, a missing window or a
 # fovea failure; 2 the desktop is locked.
 param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$Config,
-      [int]$StartupTimeoutSeconds = 30)
+      [switch]$Software, [int]$StartupTimeoutSeconds = 30)
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 Add-Type @"
 using System; using System.Runtime.InteropServices;
@@ -30,7 +32,8 @@ if (Get-Process LogonUI -ErrorAction SilentlyContinue | Where-Object { $_.Sessio
 
 $out = New-TemporaryFile
 $err = New-TemporaryFile
-$p = Start-Process -FilePath $Exe -ArgumentList '--seconds', '10', '--identify', $Config `
+$arguments = @('--seconds', '10') + $(if ($Software) { @('--identify') } else { @() }) + @($Config)
+$p = Start-Process -FilePath $Exe -ArgumentList $arguments `
     -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
 $null = $p.Handle  # keeps ExitCode readable after exit (a PowerShell quirk)
 
@@ -62,7 +65,7 @@ foreach ($line in Get-Content $out) {
 $checked = 0
 $failed = $false
 foreach ($line in Get-Content $out) {
-    if ($line -notmatch '^\s+window "(.+)": on monitor (-?\d+), .*identify rgb\((\d+),(\d+),(\d+)\)') { continue }
+    if ($line -notmatch '^\s+window "(.+)": on monitor (-?\d+), .*(?:identify|clear) rgb\((\d+),(\d+),(\d+)\)') { continue }
     $name = $Matches[1]; $index = [int]$Matches[2]; $want = @([int]$Matches[3], [int]$Matches[4], [int]$Matches[5])
     $checked++
     if (-not $monitors.ContainsKey($index)) {

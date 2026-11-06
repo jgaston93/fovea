@@ -38,13 +38,15 @@ GitHub's CI runners have no GPU. From step 5 onward, the Linux CI jobs install M
 - **Done when:** three windows open on three monitors with nothing drawn. CI only builds the code, and a manual check is recorded in the pull request.
 - **Result (2026-11-05):** on the development desk (Dell P2724DE 2560×1440 landscape, two Samsung LF24T35 1080×1920 portrait; `config/channels.landscape-two-portrait.toml`), Windows reported each Fovea window exactly covering its monitor, borderless and visible. `fovea --identify` showed red, green and blue on the left, middle and right monitors as configured. Empty windows look like nothing changed on Windows (the old screen contents stay), hence `--identify`.
 
-## Step 5: Vulkan bring-up
+## Step 5: Vulkan bring-up (done)
 
 - Vulkan 1.3 through volk and vk-bootstrap, with VMA for memory and validation layers in debug builds. The dynamic rendering and synchronization2 features are required. Descriptor indexing is turned on now and used in step 6.
 - `MultiSwapchainPresenter`: one surface and swapchain per channel, with the present mode from config. It handles window resize and minimize, and recreates swapchains when they go out of date.
 - `OffscreenPresenter`: renders to images, used for headless runs and CI.
 - Clear each output to a different color.
 - **Done when:** three windows each show their color with no validation errors. Headless mode runs on lavapipe in CI and checks the cleared pixel values.
+- **Result (2026-11-06):** on the RTX 5070 Ti with validation required, the three windows ran 604 frames in 10 s (FIFO, about 60 Hz) with 0 validation messages, all presented in one `vkQueuePresentKHR`. Offscreen clears read back exactly, on the NVIDIA card and on lavapipe. All three monitors are wired to the NVIDIA card (their PnP parent is it; the AMD iGPU has no active output), so there's no cross-adapter copy. On-screen colours still need checking with `tools/check-identify.ps1` on an unlocked desktop.
+- **Note:** `Renderer` owns its presenters for now (`libs/render/src/vk`). The public `Presenter` interface is the shape to converge on in step 7, when the frame loop separates drawing from presenting.
 
 ## Step 6: Reference scene
 

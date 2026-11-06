@@ -28,10 +28,14 @@ jobs:
       CXX: g++
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
+      # GPU tests run on lavapipe with validation; a missing driver or
+      # layer fails them instead of skipping.
+      FOVEA_REQUIRE_VULKAN: "1"
+      FOVEA_REQUIRE_VALIDATION: "1"
     steps:
       - uses: actions/checkout@v5
-      - name: Install Ninja, ccache and SDL's X11 dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache libx11-dev libxext-dev libxrandr-dev
+      - name: Install Ninja, ccache, SDL's X11 dependencies and lavapipe
+        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache libx11-dev libxext-dev libxrandr-dev mesa-vulkan-drivers libvulkan1 vulkan-validationlayers
       - name: Restore the compiler cache
         uses: actions/cache@v4
         with:
@@ -56,10 +60,14 @@ jobs:
       CXX: g++
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
+      # GPU tests run on lavapipe with validation; a missing driver or
+      # layer fails them instead of skipping.
+      FOVEA_REQUIRE_VULKAN: "1"
+      FOVEA_REQUIRE_VALIDATION: "1"
     steps:
       - uses: actions/checkout@v5
-      - name: Install Ninja, ccache and SDL's X11 dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache libx11-dev libxext-dev libxrandr-dev
+      - name: Install Ninja, ccache, SDL's X11 dependencies and lavapipe
+        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache libx11-dev libxext-dev libxrandr-dev mesa-vulkan-drivers libvulkan1 vulkan-validationlayers
       # Ubuntu 24.04's default mmap randomization (32 bits) puts mappings
       # where TSan's shadow memory goes ("unexpected memory mapping").
       - name: Reduce address-space randomization for TSan
@@ -88,10 +96,14 @@ jobs:
       CXX: clang++
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
+      # GPU tests run on lavapipe with validation; a missing driver or
+      # layer fails them instead of skipping.
+      FOVEA_REQUIRE_VULKAN: "1"
+      FOVEA_REQUIRE_VALIDATION: "1"
     steps:
       - uses: actions/checkout@v5
-      - name: Install Ninja, ccache and SDL's X11 dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache libx11-dev libxext-dev libxrandr-dev
+      - name: Install Ninja, ccache, SDL's X11 dependencies and lavapipe
+        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache libx11-dev libxext-dev libxrandr-dev mesa-vulkan-drivers libvulkan1 vulkan-validationlayers
       - name: Restore the compiler cache
         uses: actions/cache@v4
         with:

@@ -25,6 +25,17 @@ fovea_target_defaults(fovea_unit_tests)
 # A time limit on every test: some open (dummy) windows, which can hang.
 gtest_discover_tests(fovea_unit_tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT 60)
 
+# GPU tests, in their own binary without the allocation counter: Vulkan
+# loads its driver at run time (lavapipe brings LLVM), and replacing the
+# global operator new/delete in a binary that loads libraries pairs their
+# allocations with the wrong deallocator (ASan's alloc-dealloc-mismatch).
+add_executable(fovea_gpu_tests
+    unit/test_renderer.cpp)
+target_include_directories(fovea_gpu_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(fovea_gpu_tests PRIVATE fovea::render GTest::gtest_main)
+fovea_target_defaults(fovea_gpu_tests)
+gtest_discover_tests(fovea_gpu_tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT 120)
+
 # Library boundaries (architecture.md): the repository passes, and planted
 # violations (a GPU header, a GDAL header in a .inl, a fovea library outside
 # the graph, in .hpp/.inl/.h/.cpp files) are all caught.
@@ -42,7 +53,7 @@ set_tests_properties(IncludeRules.CatchesPlantedViolations PROPERTIES
 # monitors than there are, and reports an unreadable config.
 set(dummy_display "SDL_VIDEO_DRIVER=dummy")
 add_test(NAME App.OpensItsWindowsAndExits
-    COMMAND fovea --seconds 0.2 ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
+    COMMAND fovea --seconds 0.2 --identify ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
 set_tests_properties(App.OpensItsWindowsAndExits PROPERTIES
     ENVIRONMENT ${dummy_display} TIMEOUT 20
     PASS_REGULAR_EXPRESSION "window \"only\": on monitor 0, [0-9]+x[0-9]+ px")
@@ -51,11 +62,20 @@ add_test(NAME App.IdentifyFillsTheWindows
 set_tests_properties(App.IdentifyFillsTheWindows PROPERTIES
     ENVIRONMENT ${dummy_display} TIMEOUT 20
     PASS_REGULAR_EXPRESSION "Identifying: red" FAIL_REGULAR_EXPRESSION "cannot fill")
-add_test(NAME App.OffscreenNeedsNoDisplay
+# Offscreen rendering on Vulkan with no display at all: the clear colour
+# comes back from the GPU. Skipped where there is no Vulkan driver, unless
+# FOVEA_REQUIRE_VULKAN is set when CMake configures (CI sets it for every
+# step); ctest can't read the variable at run time for this decision.
+add_test(NAME App.OffscreenRendersWithoutADisplay
     COMMAND fovea ${CMAKE_CURRENT_SOURCE_DIR}/data/offscreen.toml)
-set_tests_properties(App.OffscreenNeedsNoDisplay PROPERTIES
-    ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver" TIMEOUT 20
-    PASS_REGULAR_EXPRESSION "offscreen: no windows" FAIL_REGULAR_EXPRESSION "cannot start SDL")
+set_tests_properties(App.OffscreenRendersWithoutADisplay PROPERTIES
+    ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver" TIMEOUT 60
+    PASS_REGULAR_EXPRESSION "offscreen \"only\": 1024x768, middle rgb\\(200,30,30\\).*0 validation messages"
+    FAIL_REGULAR_EXPRESSION "cannot start SDL")
+if(NOT DEFINED ENV{FOVEA_REQUIRE_VULKAN})
+    set_tests_properties(App.OffscreenRendersWithoutADisplay PROPERTIES
+        SKIP_REGULAR_EXPRESSION "no Vulkan loader found|no GPU with Vulkan 1.3")
+endif()
 add_test(NAME App.RejectsABadSecondsValue
     COMMAND fovea --seconds -1 ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
 set_tests_properties(App.RejectsABadSecondsValue PROPERTIES
