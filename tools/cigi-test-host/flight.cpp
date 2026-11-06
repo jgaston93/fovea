@@ -54,11 +54,7 @@ void Flight::advance_segment() {
     }
 }
 
-void Flight::step(double dt) {
-    if (finished_ || dt <= 0.0) {
-        return;
-    }
-    const Segment& s = segments_[index_];
+void Flight::integrate(const Segment& s, double dt) {
     const double speed = s.kind == Segment::Kind::hold ? 0.0 : s.speed_mps;
     state_.speed_mps = approach(state_.speed_mps, speed, 10.0 * dt);  // 10 m/s^2 at most
     const double v = state_.speed_mps;
@@ -71,7 +67,7 @@ void Flight::step(double dt) {
         case Segment::Kind::hold:
             break;
         case Segment::Kind::straight:
-            climb = s.climb_mps;
+            climb = std::clamp(s.climb_mps, -v, v);  // never faster than the speed itself
             target_pitch = v > 0.1 ? glm::degrees(std::atan2(climb, v)) : 0.0;
             break;
         case Segment::Kind::turn:
@@ -111,10 +107,20 @@ void Flight::step(double dt) {
     state_.position.lat_deg += glm::degrees(ground_speed * std::cos(yaw) * dt / north_radius);
     state_.position.lon_deg += glm::degrees(ground_speed * std::sin(yaw) * dt / east_radius);
     state_.position.alt_m += climb * dt;
+}
 
-    in_segment_s += dt;
-    if (in_segment_s >= s.duration_s) {
-        advance_segment();
+void Flight::step(double dt) {
+    // Split at segment ends, so each segment flies exactly its duration and
+    // the rest of the step goes to the next.
+    while (!finished_ && dt > 0.0) {
+        const Segment& s = segments_[index_];
+        const double part = std::min(dt, s.duration_s - in_segment_s);
+        integrate(s, part);
+        in_segment_s += part;
+        dt -= part;
+        if (in_segment_s >= s.duration_s) {
+            advance_segment();
+        }
     }
 }
 

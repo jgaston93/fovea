@@ -5,7 +5,7 @@
 // IG Control and an Entity Control for entity 0 (the host's main entity)
 // each frame. Start of Frame replies are counted, and each one's Last Host
 // Frame Number dates the round trip: from sending that host frame to the IG
-// starting a frame that had it.
+// starting a frame that had it, timed when the Start of Frame arrives.
 
 #include <array>
 #include <cstdint>
@@ -40,6 +40,11 @@ public:
     // Waits up to `timeout_ms` for a Start of Frame and reads it (and any
     // others waiting). True if one arrived. For synchronous mode.
     bool wait_start_of_frame(int timeout_ms);
+
+    // Reads Start of Frames as they arrive until `deadline` (each timed on
+    // arrival, so the round trip isn't stretched by the wait for the next
+    // send). For asynchronous mode, between sends.
+    void wait_until(LocalTime deadline);
 
     bool operating() const { return operating_; }
     std::uint16_t local_port() const { return socket_.local_port(); }

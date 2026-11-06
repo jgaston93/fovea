@@ -46,6 +46,7 @@ public:
 
 private:
     void advance_segment();
+    void integrate(const Segment& s, double dt);
 
     FlightState state_;
     std::vector<Segment> segments_;

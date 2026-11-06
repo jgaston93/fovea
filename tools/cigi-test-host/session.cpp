@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <thread>
 
 namespace fovea::test_host {
 
@@ -46,6 +47,24 @@ bool Session::wait_start_of_frame(int timeout_ms) {
         read_start_of_frames(now());
     }
     return stats_.start_of_frames > before;
+}
+
+void Session::wait_until(LocalTime deadline) {
+    for (;;) {
+        const auto left = deadline - now();
+        if (left <= LocalTime::duration::zero()) {
+            return;
+        }
+        // Whole milliseconds for the socket wait, the rest slept exactly.
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(left).count();
+        if (ms == 0) {
+            std::this_thread::sleep_until(deadline);
+            return;
+        }
+        if (socket_.wait_readable(static_cast<int>(ms))) {
+            read_start_of_frames(now());
+        }
+    }
 }
 
 void Session::send_frame(const FlightState& state, LocalTime t) {

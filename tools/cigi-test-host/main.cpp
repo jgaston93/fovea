@@ -15,7 +15,6 @@
 #include <exception>
 #include <string>
 #include <string_view>
-#include <thread>
 
 #include "fovea/core/time.hpp"
 #include "fovea/net/udp.hpp"
@@ -55,7 +54,8 @@ int main(int argc, char** argv) {
             const auto [end, ec] = std::from_chars(v.data(), v.data() + v.size(), seconds);
             if (ec != std::errc{} || end != v.data() + v.size() || !(seconds > 0.0) ||
                 seconds > 86400.0) {
-                (void)std::fprintf(stderr, "cigi-test-host: --seconds needs 0 to 86400\n");
+                (void)std::fprintf(stderr,
+                                   "cigi-test-host: --seconds needs more than 0, up to 86400\n");
                 return 2;
             }
         } else if (!a.empty() && a[0] != '-' && path.empty()) {
@@ -85,8 +85,9 @@ int main(int argc, char** argv) {
                     script.loop ? " (looping)" : "", seconds);
 
         const auto start = std::chrono::steady_clock::now();
-        const auto period = std::chrono::duration<double>(1.0 / script.rate_hz);
-        auto next = start;
+        // Deadlines from the tick count: no drift, and after a stall (or
+        // leaving --sync) the missed ones are skipped, not sent in a burst.
+        fovea::PeriodicSchedule schedule(start, script.rate_hz);
         auto last = start;
         auto next_report = start + std::chrono::seconds(5);
         bool told_operating = false;
@@ -100,8 +101,8 @@ int main(int argc, char** argv) {
                 // asking while the IG is quiet.
                 (void)session.wait_start_of_frame(100);
             } else {
-                std::this_thread::sleep_until(next);
-                next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
+                session.wait_until(schedule.next_deadline());
+                (void)schedule.tick(std::chrono::steady_clock::now());
             }
             const auto now = std::chrono::steady_clock::now();
             if (session.operating()) {
@@ -121,6 +122,10 @@ int main(int argc, char** argv) {
         print_stats(
             session.stats(),
             std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+        if (schedule.skipped() > 0) {
+            std::printf("%llu send deadlines missed (the host was held up)\n",
+                        static_cast<unsigned long long>(schedule.skipped()));
+        }
         if (!told_operating) {
             (void)std::fprintf(stderr,
                                "cigi-test-host: the IG never reported Operate (is Fovea running "

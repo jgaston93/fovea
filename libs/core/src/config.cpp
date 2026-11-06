@@ -256,6 +256,15 @@ void parse_host(Parser& p, const toml::table& t, HostConfig& out) {
             out.host_port = static_cast<std::uint16_t>(*v);
         }
     }
+    // A socket bound to this computer's loopback can only reach this
+    // computer: Start of Frame to another machine would never leave.
+    const auto loopback = [](std::uint32_t ip) { return (ip >> 24) == 127U; };
+    if (out.listen_address && loopback(*out.listen_address) && out.host_address &&
+        !loopback(*out.host_address)) {
+        p.error(address->source(),
+                "'host.host_address' is another computer, but 'host.listen_address' is this "
+                "computer only (127.x.x.x): Start of Frame couldn't reach the host");
+    }
     if ((address == nullptr) != (port == nullptr)) {
         p.error((address != nullptr ? address : port)->source(),
                 "'host.host_address' and 'host.host_port' go together: set both, or neither");

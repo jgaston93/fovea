@@ -124,6 +124,42 @@ TEST(TestHostFlight, RollsGoAllTheWayRoundThenLevel) {
     EXPECT_DOUBLE_EQ(f.state().attitude.roll_deg, 0.0);
 }
 
+TEST(TestHostFlight, ClimbNeverOutrunsSpeed) {
+    // From a standstill, a climb of 20 m/s at a target of 50 m/s: while the
+    // speed eases up, the climb is held to it.
+    Segment s;
+    s.kind = Segment::Kind::straight;
+    s.duration_s = 100.0;
+    s.speed_mps = 50.0;
+    s.climb_mps = 20.0;
+    Flight f(start_at(0.0, 0.0), {s}, false);
+    double before = f.state().position.alt_m;
+    for (int i = 0; i < 60; ++i) {  // the first second: speed up to 10 m/s
+        f.step(1.0 / 60.0);
+        const double climbed = f.state().position.alt_m - before;
+        EXPECT_LE(climbed, f.state().speed_mps / 60.0 + 1e-12);
+        before = f.state().position.alt_m;
+    }
+}
+
+TEST(TestHostFlight, AStepAcrossSegmentsIsSplit) {
+    // One 2 s step over a 1 s straight then a 12 deg/s turn: 1 s of each
+    // (the turn's 12 degrees), not 2 s of straight.
+    Segment straight;
+    straight.kind = Segment::Kind::straight;
+    straight.duration_s = 1.0;
+    straight.speed_mps = 50.0;
+    Segment turn;
+    turn.kind = Segment::Kind::turn;
+    turn.duration_s = 30.0;
+    turn.speed_mps = 50.0;
+    turn.turn_rate_dps = 12.0;
+    Flight f(start_at(0.0, 50.0), {straight, turn}, false);
+    f.step(2.0);
+    EXPECT_EQ(f.segment_index(), 1U);
+    EXPECT_NEAR(f.state().attitude.yaw_deg, 12.0, 1e-9);
+}
+
 TEST(TestHostFlight, LoopsOrHolds) {
     Segment s;
     s.kind = Segment::Kind::hold;
@@ -167,7 +203,7 @@ climb = 20.0
 )";
     const auto r = parse_script(text, "s.toml");
     ASSERT_FALSE(r.script.has_value());
-    ASSERT_EQ(r.errors.size(), 4U);
+    ASSERT_EQ(r.errors.size(), 4U);  // in file order
     EXPECT_NE(r.errors[0].find("s.toml:2: 'address' in [ig] must be an IPv4 address"),
               std::string::npos)
         << r.errors[0];
@@ -195,25 +231,28 @@ TEST(TestHostSession, FliesFoveasAdapterOverLoopback) {
     s.duration_s = 100.0;
     s.speed_mps = 60.0;
     Flight flight(start_at(0.0, 60.0), {s}, false);
-    const auto begin = std::chrono::steady_clock::now();
-    auto last = begin;
-    std::uint64_t ig_frame = 0;
-    // About 0.8 s at 60 Hz: host frames, and IG frame starts as a render
-    // loop would push them.
-    while (std::chrono::steady_clock::now() - begin < std::chrono::milliseconds(800)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    auto last = std::chrono::steady_clock::now();
+    // 60 frames: host frames, and IG frame starts as a render loop would
+    // push them; between them the host reads Start of Frames as they come.
+    // A count, not a time, so a coarse timer can't starve it.
+    for (std::uint64_t ig_frame = 0; ig_frame < 60; ++ig_frame) {
+        session.wait_until(now() + std::chrono::milliseconds(10));
         const auto t = std::chrono::steady_clock::now();
-        (void)frames.try_push({ig_frame++, t});
+        (void)frames.try_push({ig_frame, t});
         if (session.operating()) {
             flight.step(std::chrono::duration<double>(t - last).count());
         }
         last = t;
         session.send_frame(flight.state(), t);
     }
+    session.wait_until(now() + std::chrono::milliseconds(50));  // the last replies
     network.stop();
 
     EXPECT_TRUE(session.operating());
-    EXPECT_GT(session.stats().start_of_frames, 20U);
+    EXPECT_GT(session.stats().start_of_frames, 40U);
+    // Timed on arrival: well under a frame on loopback (the adapter waits
+    // at most 1 ms, the host reads as they come).
+    EXPECT_LT(session.stats().round_trip_mean_ms, 8.0);
     EXPECT_GT(session.stats().round_trips, 10U);
     const EntityState* e = find_entity(scene->latest(), 0);
     ASSERT_NE(e, nullptr);

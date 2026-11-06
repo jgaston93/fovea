@@ -1,10 +1,13 @@
 #include "script.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <fstream>
 #include <initializer_list>
 #include <sstream>
 #include <string_view>
+#include <utility>
 
 #include <toml++/toml.hpp>
 
@@ -19,7 +22,29 @@ public:
     explicit Reader(std::string source) : source_(std::move(source)) {}
 
     void error(const toml::source_region& at, const std::string& message) {
-        errors_.push_back(source_ + ":" + std::to_string(at.begin.line) + ": " + message);
+        errors_.emplace_back(at.begin.line,
+                             source_ + ":" + std::to_string(at.begin.line) + ": " + message);
+    }
+
+    // A whole number in [min, max] (a port); `fallback` when absent.
+    std::optional<std::uint16_t> port(const toml::table& t, std::string_view key,
+                                      const std::string& where, std::int64_t min,
+                                      std::optional<std::uint16_t> fallback) {
+        const toml::node* n = t.get(key);
+        if (n == nullptr) {
+            if (!fallback) {
+                error(t.source(), "missing '" + std::string(key) + "' in " + where);
+            }
+            return fallback;
+        }
+        const auto* i = n->as_integer();
+        if (i == nullptr || i->get() < min || i->get() > 65535) {
+            error(n->source(), "'" + std::string(key) + "' in " + where +
+                                   " must be a whole number from " + std::to_string(min) +
+                                   " to 65535");
+            return std::nullopt;
+        }
+        return static_cast<std::uint16_t>(i->get());
     }
 
     const toml::table* table(const toml::table& root, std::string_view key, bool required) {
@@ -91,11 +116,20 @@ public:
         return std::nullopt;
     }
 
-    std::vector<std::string> take_errors() { return std::move(errors_); }
+    // In file order (they're found in check order).
+    std::vector<std::string> take_errors() {
+        std::stable_sort(errors_.begin(), errors_.end(),
+                         [](const auto& a, const auto& b) { return a.first < b.first; });
+        std::vector<std::string> out;
+        for (auto& e : errors_) {
+            out.push_back(std::move(e.second));
+        }
+        return out;
+    }
 
 private:
     std::string source_;
-    std::vector<std::string> errors_;
+    std::vector<std::pair<std::uint32_t, std::string>> errors_;
 };
 
 void read_segment(Reader& r, const toml::table& t, const std::string& where, Segment& out) {
@@ -169,13 +203,11 @@ ScriptResult parse_script(const std::string& text, const std::string& source) {
                         "'address' in [ig] must be an IPv4 address (got \"" + *a + "\")");
             }
         }
-        s.ig_port = static_cast<std::uint16_t>(
-            r.number(*ig, "port", "[ig]", 1.0, 65535.0, std::nullopt).value_or(1.0));
+        s.ig_port = r.port(*ig, "port", "[ig]", 1, std::nullopt).value_or(1);
     }
     if (const auto* host = r.table(root, "host", false)) {
         r.check_keys(*host, {"port", "rate_hz"}, "[host]");
-        s.host_port = static_cast<std::uint16_t>(
-            r.number(*host, "port", "[host]", 0.0, 65535.0, 0.0).value_or(0.0));
+        s.host_port = r.port(*host, "port", "[host]", 0, 0).value_or(0);
         s.rate_hz = r.number(*host, "rate_hz", "[host]", 1.0, 1000.0, 60.0).value_or(60.0);
     }
     if (const auto* start = r.table(root, "start", true)) {
