@@ -125,7 +125,6 @@ jobs:
       - name: Test (all, slow ones included)
         run: ctest --preset debug --parallel "$(nproc)"
 
-
   fuzz:
     name: Fuzz the CIGI codec (libFuzzer, 5 minutes)
     runs-on: ubuntu-24.04
@@ -144,6 +143,13 @@ jobs:
         run: cmake --build --preset fuzz --target fovea_fuzz_cigi
       # Any crash, sanitizer report or failed round trip fails the job and
       # leaves the input in fuzz-artifacts/.
+      # The corpus grows night to night instead of restarting from the seeds.
+      - name: Restore the fuzz corpus
+        uses: actions/cache@v4
+        with:
+          path: fuzz-corpus
+          key: fuzz-corpus-cigi-${{ github.run_id }}
+          restore-keys: fuzz-corpus-cigi-
       - name: Fuzz
         run: |
           mkdir -p fuzz-corpus fuzz-artifacts
@@ -154,6 +160,7 @@ jobs:
         with:
           name: fuzz-artifacts
           path: fuzz-artifacts/
+
   tidy:
     name: clang-tidy, every file
     runs-on: ubuntu-24.04

@@ -53,7 +53,7 @@ enum class IgMode : std::uint8_t {
 
 // ICD 4.1.1 IG Control (p. 41-44): host to IG, first packet of each message.
 struct IgControl {
-    std::uint8_t minor_version = kMinorVersionSent;  // decoded as received
+    std::uint8_t minor_version = kMinorVersionSent;  // 4 bits; decoded as received
     std::int8_t database_number = 0;                 // 0: no load requested
     IgMode ig_mode = IgMode::reset_standby;
     bool timestamp_valid = false;  // required (true) in asynchronous mode
@@ -63,8 +63,12 @@ struct IgControl {
     std::uint32_t last_ig_frame_number = 0;
 };
 
-// Entity State (p. 49).
+// Entity State (p. 49), Ground/Ocean Clamp (p. 51) and Animation State
+// (p. 52). The 2-bit value 3 is undefined for the first two: a packet holding
+// it is rejected.
 enum class EntityState : std::uint8_t { inactive_standby = 0, active = 1, destroyed = 2 };
+enum class GroundClamp : std::uint8_t { none = 0, non_conformal = 1, conformal = 2 };
+enum class AnimationState : std::uint8_t { stop = 0, pause = 1, play = 2, continue_ = 3 };
 
 // ICD 4.1.2 Entity Control (p. 45-55): an entity's state. Entity 0 is the
 // host's main entity (CIGI's ownship). Top-level entities give geodetic
@@ -77,10 +81,10 @@ struct EntityControl {
     bool attach = false;  // false: top level, position is geodetic
     bool collision_detection = false;
     bool inherit_alpha = false;
-    std::uint8_t ground_ocean_clamp = 0;  // 0 none, 1 non-conformal, 2 conformal
-    bool animation_backward = false;      // Animation Direction
-    bool animation_loop = false;          // Animation Loop Mode: continuous
-    std::uint8_t animation_state = 0;     // 0 stop, 1 pause, 2 play, 3 continue
+    GroundClamp ground_ocean_clamp = GroundClamp::none;
+    bool animation_backward = false;  // Animation Direction
+    bool animation_loop = false;      // Animation Loop Mode: continuous
+    AnimationState animation_state = AnimationState::stop;
     bool extrapolation_enable = false;
     std::uint8_t alpha = 0;
     std::uint16_t entity_type = 0;  // 0: no geometry (a viewpoint, a camera)
@@ -96,7 +100,7 @@ struct EntityControl {
 // ICD 4.2.1 Start of Frame (p. 212-216): IG to host, first packet of each
 // message.
 struct StartOfFrame {
-    std::uint8_t minor_version = kMinorVersionSent;  // decoded as received
+    std::uint8_t minor_version = kMinorVersionSent;  // 4 bits; decoded as received
     std::int8_t database_number = 0;                 // 0: the IG controls loading
     std::uint8_t ig_status = 0;                      // 0: normal operation
     IgMode ig_mode = IgMode::reset_standby;
@@ -120,10 +124,11 @@ enum class MessageError : std::uint8_t {
     wrong_first_packet,  // not IG Control (host to IG) or Start of Frame (IG to host)
     wrong_major_version,
     bad_magic,        // neither 8000h nor 80h
-    bad_packet_size,  // a packet's size is under 2, or runs past the message
+    bad_packet_size,  // a packet's size is too small for it, or runs past the message
 };
 
-// Walks the packets of one message. The constructor checks the first packet
+// Walks the packets of one CIGI 3 message (one-byte packet ID and size; CIGI
+// 4 frames packets differently and gets its own reader). The constructor checks the first packet
 // (its opcode, major version and byte swap magic number); next() then yields
 // every packet, the first included, until the end or a malformed size.
 class MessageReader {
@@ -150,8 +155,10 @@ private:
     MessageError error_ = MessageError::none;
 };
 
-// Decoding one packet from MessageReader: nothing if the ID is wrong or the
-// packet is shorter than the ICD's size. Longer packets are accepted (ICD
+// Decoding one packet from MessageReader: nothing if the ID is wrong, the
+// packet is shorter than the ICD's size, or a field holds a value the ICD
+// leaves undefined (Entity State or Ground/Ocean Clamp 3; IG Mode 3 in IG
+// Control, which only the IG may report). Longer packets are accepted (ICD
 // 2.11, rule 4). `swap`: MessageReader::swapped().
 std::optional<IgControl> decode_ig_control(std::span<const std::uint8_t> in, bool swap);
 std::optional<EntityControl> decode_entity_control(std::span<const std::uint8_t> in, bool swap);

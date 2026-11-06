@@ -41,6 +41,12 @@ unsigned flag(bool b) {
     return b ? 1U : 0U;
 }
 
+// The packet header check every decoder starts with: the right ID, and at
+// least the ICD's size both in the size byte and in the bytes given.
+bool has_packet(std::span<const std::uint8_t> in, std::uint8_t id, std::uint8_t size) {
+    return in.size() >= size && in[0] == id && in[1] >= size;
+}
+
 // Reserved bits and bytes are sent as zero (ICD 2.11, rule 2).
 void clear(std::span<std::uint8_t> out, std::size_t size) {
     std::fill_n(out.begin(), size, std::uint8_t{0});
@@ -74,8 +80,8 @@ std::size_t encode(const IgControl& p, std::span<std::uint8_t> out) {
 }
 
 std::optional<IgControl> decode_ig_control(std::span<const std::uint8_t> in, bool swap) {
-    if (in.size() < kIgControlSize || in[0] != kIgControlId || in[1] < kIgControlSize) {
-        return std::nullopt;
+    if (!has_packet(in, kIgControlId, kIgControlSize) || bits(in[4], 0, 2) == 3) {
+        return std::nullopt;  // IG Mode 3 (Offline Maintenance) is the IG's alone
     }
     IgControl p;
     p.database_number = get<std::int8_t>(in, 3, swap);
@@ -107,12 +113,13 @@ std::size_t encode(const EntityControl& p, std::span<std::uint8_t> out) {
     out[1] = kEntityControlSize;
     put(out, 2, p.entity_id);
     out[4] = static_cast<std::uint8_t>(
-        field(p.ground_ocean_clamp, 5, 2) | field(flag(p.inherit_alpha), 4, 1) |
-        field(flag(p.collision_detection), 3, 1) | field(flag(p.attach), 2, 1) |
-        field(static_cast<unsigned>(p.entity_state), 0, 2));
-    out[5] = static_cast<std::uint8_t>(
-        field(flag(p.extrapolation_enable), 4, 1) | field(p.animation_state, 2, 2) |
-        field(flag(p.animation_loop), 1, 1) | field(flag(p.animation_backward), 0, 1));
+        field(static_cast<unsigned>(p.ground_ocean_clamp), 5, 2) |
+        field(flag(p.inherit_alpha), 4, 1) | field(flag(p.collision_detection), 3, 1) |
+        field(flag(p.attach), 2, 1) | field(static_cast<unsigned>(p.entity_state), 0, 2));
+    out[5] = static_cast<std::uint8_t>(field(flag(p.extrapolation_enable), 4, 1) |
+                                       field(static_cast<unsigned>(p.animation_state), 2, 2) |
+                                       field(flag(p.animation_loop), 1, 1) |
+                                       field(flag(p.animation_backward), 0, 1));
     out[6] = p.alpha;
     put(out, 8, p.entity_type);
     put(out, 10, p.parent_id);
@@ -126,18 +133,19 @@ std::size_t encode(const EntityControl& p, std::span<std::uint8_t> out) {
 }
 
 std::optional<EntityControl> decode_entity_control(std::span<const std::uint8_t> in, bool swap) {
-    if (in.size() < kEntityControlSize || in[0] != kEntityControlId || in[1] < kEntityControlSize) {
-        return std::nullopt;
+    if (!has_packet(in, kEntityControlId, kEntityControlSize) || bits(in[4], 0, 2) == 3 ||
+        bits(in[4], 5, 2) == 3) {
+        return std::nullopt;  // Entity State or Ground/Ocean Clamp 3: undefined
     }
     EntityControl p;
     p.entity_id = get<std::uint16_t>(in, 2, swap);
-    p.ground_ocean_clamp = bits(in[4], 5, 2);
+    p.ground_ocean_clamp = static_cast<GroundClamp>(bits(in[4], 5, 2));
     p.inherit_alpha = bits(in[4], 4, 1) != 0;
     p.collision_detection = bits(in[4], 3, 1) != 0;
     p.attach = bits(in[4], 2, 1) != 0;
     p.entity_state = static_cast<EntityState>(bits(in[4], 0, 2));
     p.extrapolation_enable = bits(in[5], 4, 1) != 0;
-    p.animation_state = bits(in[5], 2, 2);
+    p.animation_state = static_cast<AnimationState>(bits(in[5], 2, 2));
     p.animation_loop = bits(in[5], 1, 1) != 0;
     p.animation_backward = bits(in[5], 0, 1) != 0;
     p.alpha = in[6];
@@ -179,7 +187,7 @@ std::size_t encode(const StartOfFrame& p, std::span<std::uint8_t> out) {
 }
 
 std::optional<StartOfFrame> decode_start_of_frame(std::span<const std::uint8_t> in, bool swap) {
-    if (in.size() < kStartOfFrameSize || in[0] != kStartOfFrameId || in[1] < kStartOfFrameSize) {
+    if (!has_packet(in, kStartOfFrameId, kStartOfFrameSize)) {
         return std::nullopt;
     }
     StartOfFrame p;
@@ -205,6 +213,11 @@ MessageReader::MessageReader(std::span<const std::uint8_t> message, std::uint8_t
         error_ = MessageError::wrong_first_packet;
     } else if (message[2] != kMajorVersion) {
         error_ = MessageError::wrong_major_version;
+    } else if (message[1] < kIgControlSize) {
+        // Both first packets are 24 bytes: the checks above and below must
+        // not read past it.
+        static_assert(kIgControlSize == kStartOfFrameSize);
+        error_ = MessageError::bad_packet_size;
     } else {
         const auto magic = get<std::uint16_t>(message, 6, false);
         if (magic == kMagicNoSwap) {

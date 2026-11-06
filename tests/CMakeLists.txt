@@ -140,6 +140,9 @@ set_tests_properties(App.ListsMonitors PROPERTIES
 # libFuzzer targets (the `fuzz` preset, Clang only); run nightly.
 option(FOVEA_FUZZ "Build the libFuzzer targets" OFF)
 if(FOVEA_FUZZ)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "FOVEA_FUZZ needs Clang (libFuzzer); the fuzz preset sets it")
+    endif()
     add_executable(fovea_fuzz_cigi fuzz/fuzz_cigi.cpp)
     target_link_libraries(fovea_fuzz_cigi PRIVATE fovea::net)
     target_link_options(fovea_fuzz_cigi PRIVATE -fsanitize=fuzzer)

@@ -29,7 +29,7 @@ ctest --preset debug -R 'Toolchain\.FloatingPointIsIeeeWithoutFastMath'   # one 
 FOVEA_UPDATE_GOLDEN=1 ctest --preset debug -R Golden                       # rewrite tests/data/golden (on lavapipe)
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json FOVEA_REQUIRE_VULKAN=1 ctest --preset debug  # GPU tests on lavapipe
 CC=clang CXX=clang++ cmake --preset debug -B build/clang-debug --fresh     # Clang build
-CC=clang CXX=clang++ cmake --preset fuzz && cmake --build --preset fuzz --target fovea_fuzz_cigi
+cmake --preset fuzz && cmake --build --preset fuzz --target fovea_fuzz_cigi
 ./build/fuzz/tests/fovea_fuzz_cigi -max_total_time=60 tests/fuzz/corpus/cigi   # fuzz the CIGI codec
 ```
 

@@ -100,13 +100,13 @@ Bytes entity_control(Order order) {
 
 void expect_entity_control(const EntityControl& p) {
     EXPECT_EQ(p.entity_id, 0x0102);
-    EXPECT_EQ(p.ground_ocean_clamp, 2);
+    EXPECT_EQ(p.ground_ocean_clamp, GroundClamp::conformal);
     EXPECT_TRUE(p.inherit_alpha);
     EXPECT_FALSE(p.collision_detection);
     EXPECT_TRUE(p.attach);
     EXPECT_EQ(p.entity_state, EntityState::active);
     EXPECT_TRUE(p.extrapolation_enable);
-    EXPECT_EQ(p.animation_state, 3);
+    EXPECT_EQ(p.animation_state, AnimationState::continue_);
     EXPECT_FALSE(p.animation_loop);
     EXPECT_TRUE(p.animation_backward);
     EXPECT_EQ(p.alpha, 0x80);
@@ -203,12 +203,12 @@ TEST(Cigi, EntityControlInBothByteOrders) {
 TEST(Cigi, EntityControlEncodesTheIcdBytes) {
     EntityControl e;
     e.entity_id = 0x0102;
-    e.ground_ocean_clamp = 2;
+    e.ground_ocean_clamp = GroundClamp::conformal;
     e.inherit_alpha = true;
     e.attach = true;
     e.entity_state = EntityState::active;
     e.extrapolation_enable = true;
-    e.animation_state = 3;
+    e.animation_state = AnimationState::continue_;
     e.animation_backward = true;
     e.alpha = 0x80;
     e.entity_type = 0x0304;
@@ -283,8 +283,8 @@ TEST(Cigi, ReservedBitsAreSentAsZero) {
         EXPECT_EQ(a[i], 0) << i;
     }
     EntityControl e;
-    e.ground_ocean_clamp = 3;
-    e.animation_state = 3;
+    e.ground_ocean_clamp = static_cast<GroundClamp>(3);
+    e.animation_state = AnimationState::continue_;
     e.inherit_alpha = e.collision_detection = e.attach = e.extrapolation_enable = e.animation_loop =
         e.animation_backward = true;
     e.entity_state = static_cast<EntityState>(3);
@@ -294,6 +294,26 @@ TEST(Cigi, ReservedBitsAreSentAsZero) {
     EXPECT_EQ(b[4] & 0x80, 0);  // byte 4 bit 7
     EXPECT_EQ(b[5] & 0xE0, 0);  // byte 5 bits 7-5
     EXPECT_EQ(b[7], 0);
+}
+
+TEST(Cigi, UndefinedValuesRejectThePacket) {
+    // Entity State 3 and Ground/Ocean Clamp 3 are undefined (p. 49, 51).
+    Bytes state = entity_control([](auto v) { return be(v); });
+    state[4] = static_cast<std::uint8_t>(state[4] | 0x03);
+    EXPECT_FALSE(decode_entity_control(state, needs_swap_from_big_endian()).has_value());
+    Bytes clamp = entity_control([](auto v) { return be(v); });
+    clamp[4] = static_cast<std::uint8_t>(clamp[4] | 0x60);
+    EXPECT_FALSE(decode_entity_control(clamp, needs_swap_from_big_endian()).has_value());
+    // IG Mode 3 is only reported by the IG (p. 214): refused from a host...
+    Bytes host = kIgControlBigEndian;
+    host[4] = static_cast<std::uint8_t>(host[4] | 0x03);
+    EXPECT_FALSE(decode_ig_control(host, needs_swap_from_big_endian()).has_value());
+    // ...and accepted from an IG.
+    Bytes ig = kStartOfFrameBigEndian;
+    ig[5] = static_cast<std::uint8_t>(ig[5] | 0x03);
+    const auto sof = decode_start_of_frame(ig, needs_swap_from_big_endian());
+    ASSERT_TRUE(sof.has_value());
+    EXPECT_EQ(sof->ig_mode, IgMode::offline_maintenance);
 }
 
 TEST(Cigi, EncodeNeedsRoomForThePacket) {
@@ -322,7 +342,13 @@ TEST(Cigi, MessageChecks) {
     Bytes minor = kIgControlBigEndian;
     minor[4] = static_cast<std::uint8_t>((minor[4] & 0x0F) | 0x30);
     EXPECT_EQ(MessageReader(minor, kIgControlId).error(), MessageError::none);
-    EXPECT_EQ(decode_ig_control(minor, needs_swap_from_big_endian())->minor_version, 3);
+    const auto decoded = decode_ig_control(minor, needs_swap_from_big_endian());
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->minor_version, 3);
+    // The first packet's own size byte must cover it.
+    Bytes small = kIgControlBigEndian;
+    small[1] = 8;
+    EXPECT_EQ(MessageReader(small, kIgControlId).error(), MessageError::bad_packet_size);
 }
 
 TEST(Cigi, UnknownPacketsAreSkippedBySize) {
