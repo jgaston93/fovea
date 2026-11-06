@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.24)
 project(fovea
     VERSION 0.1.0
     DESCRIPTION "Real-time Vulkan image generator for geographic scenes"
-    LANGUAGES CXX)
+    LANGUAGES C CXX)  # C for SDL
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

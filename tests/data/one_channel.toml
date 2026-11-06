@@ -1,0 +1,6 @@
+# One channel on monitor 0: the app tests run it on SDL's dummy display.
+[[channel]]
+name = "only"
+monitor = 0
+render_extent = [1024, 768]
+frustum = { left = -30.0, right = 30.0, top = 22.0, bottom = -22.0 }

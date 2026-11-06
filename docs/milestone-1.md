@@ -31,11 +31,12 @@ GitHub's CI runners have no GPU. From step 5 onward, the Linux CI jobs install M
 - Stub interfaces: `SceneSnapshot` and its writer and reader, `TerrainQuery` (with a flat-earth implementation for tests), `View`/`ViewDesc`, `Presenter`, `Module`.
 - **Done when:** everything builds on all three compilers. A ctest check (`cmake/CheckIncludeRules.cmake`) fails if `core` or `terrain` includes Vulkan or SDL headers, or if `render` and `net` include each other's headers.
 
-## Step 4: Windows on every monitor (Windows hardware)
+## Step 4: Windows on every monitor (Windows hardware, done)
 
 - `libs/platform` with SDL3: list monitors with their bounds, create one borderless window per channel on its configured monitor, pump events on the main thread, and handle Esc to quit.
 - Fail at startup with a clear message when a channel's monitor index doesn't exist.
 - **Done when:** three windows open on three monitors with nothing drawn. CI only builds the code, and a manual check is recorded in the pull request.
+- **Result (2026-11-05):** on the development desk (Dell P2724DE 2560×1440 landscape, two Samsung LF24T35 1080×1920 portrait; `config/channels.landscape-two-portrait.toml`), Windows reported each Fovea window exactly covering its monitor, borderless and visible. `fovea --identify` showed red, green and blue on the left, middle and right monitors as configured. Empty windows look like nothing changed on Windows (the old screen contents stay), hence `--identify`.
 
 ## Step 5: Vulkan bring-up
 

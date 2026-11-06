@@ -1,0 +1,9 @@
+# The one-channel config with the offscreen presenter: needs no display.
+[display]
+presenter = "offscreen"
+
+[[channel]]
+name = "only"
+monitor = 0
+render_extent = [1024, 768]
+frustum = { left = -30.0, right = 30.0, top = 22.0, bottom = -22.0 }

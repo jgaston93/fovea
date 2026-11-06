@@ -1,19 +1,211 @@
-// The runtime IG. For now it loads and checks the display config, prints
-// the views it would draw, and exits; windows and rendering arrive in
-// milestone 1 steps 4 to 7.
+// The runtime IG. Loads the display config, checks it against the connected
+// monitors and opens one window per channel, until Esc or a window close.
+// Drawing arrives in milestone 1 steps 5 to 7.
+//
+//   fovea [--seconds N] [--identify] <display-config.toml>
+//       run; N > 0: exit after N seconds; --identify: fill each channel's
+//       window with a colour (red, green, blue, ... in config order)
+//   fovea --list-monitors     print the monitors and exit
 
+#include <array>
+#include <charconv>
+#include <chrono>
 #include <cstdio>
+#include <exception>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "fovea/core/config.hpp"
+#include "fovea/platform/monitors.hpp"
+#include "fovea/platform/platform.hpp"
 #include "fovea/render/view.hpp"
 
-int main(int argc, char** argv) {
-    if (argc != 2) {
-        (void)std::fprintf(stderr, "usage: fovea <display-config.toml>\n");
-        return 2;
+namespace {
+
+struct Options {
+    std::string config;
+    double seconds = 0.0;  // 0: until Esc
+    bool identify = false;
+    bool list_monitors = false;
+};
+
+void print_monitors(const fovea::Platform& platform) {
+    std::printf("%zu monitors (%s):\n", platform.monitors().size(),
+                platform.video_driver().c_str());
+    for (std::size_t i = 0; i < platform.monitors().size(); ++i) {
+        const fovea::MonitorInfo& m = platform.monitors()[i];
+        std::printf("  %zu: %ux%u at (%d, %d), %.2f Hz, scale %.2f%s  %s\n", i, m.width, m.height,
+                    m.x, m.y, m.refresh_hz, m.pixel_density, m.primary ? ", primary" : "",
+                    m.name.c_str());
     }
-    const auto result = fovea::load_display_config(argv[1]);
+}
+
+void print_views(const fovea::DisplayConfig& config) {
+    std::printf("%zu views at %g Hz:\n", config.channels.size(), config.target_hz);
+    for (std::size_t i = 0; i < config.channels.size(); ++i) {
+        const auto view = fovea::view_from_channel(config.channels[i], config, i);
+        const auto& f = view.projection.frustum;
+        std::printf("  %-8s monitor %d, render %ux%u, yaw %g, frustum [%g, %g] x [%g, %g]\n",
+                    view.name.c_str(), config.channels[i].monitor, view.render_width,
+                    view.render_height, view.pose.rotation.yaw_deg, f.left_deg, f.right_deg,
+                    f.bottom_deg, f.top_deg);
+    }
+}
+
+// Longest --seconds accepted: a week, well inside every duration and timeout
+// conversion below (an int of milliseconds overflows after 24.8 days).
+constexpr double kMaxSeconds = 7.0 * 24.0 * 3600.0;
+
+// A positive number of seconds up to kMaxSeconds; the whole text must be the
+// number.
+std::optional<double> parse_seconds(std::string_view text) {
+    double v = 0.0;
+    const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), v);
+    // Written as !(in range) so NaN (from "nan") fails: every comparison with
+    // it is false. The De Morgan form would accept it.
+    // NOLINTNEXTLINE(readability-simplify-boolean-expr)
+    if (ec != std::errc{} || end != text.data() + text.size() || !(v > 0.0 && v <= kMaxSeconds)) {
+        return std::nullopt;
+    }
+    return v;
+}
+
+std::optional<Options> parse_args(int argc, char** argv) {
+    const std::vector<std::string_view> args(argv + 1, argv + argc);
+    Options o;
+    if (args.size() == 1 && args[0] == "--list-monitors") {
+        o.list_monitors = true;
+        return o;
+    }
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--seconds" && i + 1 < args.size()) {
+            const auto s = parse_seconds(args[++i]);
+            if (!s) {
+                (void)std::fprintf(stderr,
+                                   "fovea: --seconds needs a positive number up to %g (a week), "
+                                   "got \"%s\"\n",
+                                   kMaxSeconds, std::string(args[i]).c_str());
+                return std::nullopt;
+            }
+            o.seconds = *s;
+        } else if (args[i] == "--identify") {
+            o.identify = true;
+        } else if (!args[i].starts_with("--") && o.config.empty()) {
+            o.config = std::string(args[i]);
+        } else {
+            return std::nullopt;
+        }
+    }
+    if (o.config.empty()) {
+        return std::nullopt;
+    }
+    return o;
+}
+
+int usage() {
+    (void)std::fprintf(stderr,
+                       "usage: fovea [--seconds N] [--identify] <display-config.toml>\n"
+                       "       fovea --list-monitors\n");
+    return 2;
+}
+
+// One window per channel on its own monitor (the multi_swapchain presenter).
+int run_windows(const Options& options, const fovea::DisplayConfig& config) {
+    fovea::Platform platform;
+    print_monitors(platform);
+    const auto problems = fovea::check_monitors(config, platform.monitors());
+    if (!problems.empty()) {
+        for (const auto& p : problems) {
+            (void)std::fprintf(stderr, "%s: %s\n", options.config.c_str(), p.c_str());
+        }
+        return 1;
+    }
+
+    // Red, green, blue, then yellow, magenta, cyan for any further channels.
+    // tools/check-identify.ps1 reads each window's colour from the output.
+    constexpr std::array<std::array<std::uint8_t, 3>, 6> kColours{{{200, 30, 30},
+                                                                   {30, 170, 60},
+                                                                   {40, 80, 220},
+                                                                   {220, 200, 40},
+                                                                   {190, 60, 190},
+                                                                   {40, 190, 200}}};
+
+    print_views(config);
+    std::vector<fovea::Window> windows;
+    for (const fovea::ChannelConfig& ch : config.channels) {
+        windows.push_back(platform.create_window(
+            {"Fovea - " + ch.name, static_cast<std::uint32_t>(ch.monitor), true, 0, 0}));
+        const fovea::Window& w = windows.back();
+        const auto size = w.pixel_size();
+        const int on = w.current_monitor();
+        const auto& c = kColours[(windows.size() - 1) % kColours.size()];
+        std::printf("  window \"%s\": on monitor %d, %ux%u px", ch.name.c_str(), on, size.width,
+                    size.height);
+        if (options.identify) {
+            std::printf(", identify rgb(%u,%u,%u)", c[0], c[1], c[2]);
+        }
+        std::printf("\n");
+        // The window manager has the last word on placement; a channel shown
+        // on the wrong screen must not go unnoticed.
+        if (on != ch.monitor) {
+            (void)std::fprintf(stderr,
+                               "fovea: channel \"%s\" should be on monitor %d, but its window "
+                               "is on monitor %d\n",
+                               ch.name.c_str(), ch.monitor, on);
+            return 1;
+        }
+    }
+
+    const auto paint = [&] {
+        for (std::size_t i = 0; options.identify && i < windows.size(); ++i) {
+            const auto& c = kColours[i % kColours.size()];
+            if (!windows[i].fill(c[0], c[1], c[2])) {
+                (void)std::fprintf(stderr, "fovea: cannot fill window %zu\n", i);
+            }
+        }
+    };
+    paint();
+    if (options.identify) {
+        std::printf("Identifying: red, green, blue, yellow, magenta, cyan in config order.\n");
+    }
+    std::printf("Esc or close a window to quit.\n");
+    (void)std::fflush(stdout);
+
+    // Sleep until an event arrives or the time limit is up; repaint only when
+    // the window system asks.
+    using Clock = std::chrono::steady_clock;
+    const auto deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(
+                                             std::chrono::duration<double>(options.seconds));
+    for (;;) {
+        int timeout_ms = -1;
+        if (options.seconds > 0.0) {
+            const auto left =
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now());
+            if (left.count() <= 0) {
+                break;
+            }
+            timeout_ms = static_cast<int>(left.count());
+        }
+        const auto events = platform.wait_events(timeout_ms);
+        if (events.quit) {
+            break;
+        }
+        if (events.exposed) {
+            paint();
+        }
+    }
+    return 0;
+}
+
+int run(const Options& options) {
+    if (options.list_monitors) {
+        const fovea::Platform platform;
+        print_monitors(platform);
+        return 0;
+    }
+    const auto result = fovea::load_display_config(options.config);
     if (!result.config) {
         for (const auto& e : result.errors) {
             (void)std::fprintf(stderr, "%s\n", e.to_string().c_str());
@@ -21,14 +213,33 @@ int main(int argc, char** argv) {
         return 1;
     }
     const fovea::DisplayConfig& config = *result.config;
-    std::printf("%zu views at %g Hz:\n", config.channels.size(), config.target_hz);
-    for (std::size_t i = 0; i < config.channels.size(); ++i) {
-        const auto view = fovea::view_from_channel(config.channels[i], config, i);
-        const auto& f = view.projection.frustum;
-        std::printf("  %-8s monitor %d, %ux%u, yaw %g, frustum [%g, %g] x [%g, %g]\n",
-                    view.name.c_str(), config.channels[i].monitor, view.render_width,
-                    view.render_height, view.pose.rotation.yaw_deg, f.left_deg, f.right_deg,
-                    f.bottom_deg, f.top_deg);
+    switch (config.presenter) {
+        case fovea::PresenterKind::multi_swapchain:
+            return run_windows(options, config);
+        case fovea::PresenterKind::offscreen:
+            // No windows and no display needed; rendering arrives in step 5.
+            print_views(config);
+            std::printf("offscreen: no windows; offscreen rendering arrives in step 5\n");
+            return 0;
+        case fovea::PresenterKind::spanned:
+            (void)std::fprintf(stderr, "%s: the spanned presenter is not implemented yet\n",
+                               options.config.c_str());
+            return 1;
     }
-    return 0;
+    return 1;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    const auto options = parse_args(argc, argv);
+    if (!options) {
+        return usage();
+    }
+    try {
+        return run(*options);
+    } catch (const std::exception& e) {
+        (void)std::fprintf(stderr, "fovea: %s\n", e.what());
+        return 1;
+    }
 }
