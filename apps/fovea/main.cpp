@@ -123,6 +123,15 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         return 1;
     }
 
+    // Red, green, blue, then yellow, magenta, cyan for any further channels.
+    // tools/check-identify.ps1 reads each window's colour from the output.
+    constexpr std::array<std::array<std::uint8_t, 3>, 6> kColours{{{200, 30, 30},
+                                                                   {30, 170, 60},
+                                                                   {40, 80, 220},
+                                                                   {220, 200, 40},
+                                                                   {190, 60, 190},
+                                                                   {40, 190, 200}}};
+
     print_views(config);
     std::vector<fovea::Window> windows;
     for (const fovea::ChannelConfig& ch : config.channels) {
@@ -131,8 +140,13 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         const fovea::Window& w = windows.back();
         const auto size = w.pixel_size();
         const int on = w.current_monitor();
-        std::printf("  window \"%s\": on monitor %d, %ux%u px\n", ch.name.c_str(), on, size.width,
+        const auto& c = kColours[(windows.size() - 1) % kColours.size()];
+        std::printf("  window \"%s\": on monitor %d, %ux%u px", ch.name.c_str(), on, size.width,
                     size.height);
+        if (options.identify) {
+            std::printf(", identify rgb(%u,%u,%u)", c[0], c[1], c[2]);
+        }
+        std::printf("\n");
         // The window manager has the last word on placement; a channel shown
         // on the wrong screen must not go unnoticed.
         if (on != ch.monitor) {
@@ -144,13 +158,6 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         }
     }
 
-    // Red, green, blue, then yellow, magenta, cyan for any further channels.
-    constexpr std::array<std::array<std::uint8_t, 3>, 6> kColours{{{200, 30, 30},
-                                                                   {30, 170, 60},
-                                                                   {40, 80, 220},
-                                                                   {220, 200, 40},
-                                                                   {190, 60, 190},
-                                                                   {40, 190, 200}}};
     const auto paint = [&] {
         for (std::size_t i = 0; options.identify && i < windows.size(); ++i) {
             const auto& c = kColours[i % kColours.size()];

@@ -186,7 +186,11 @@ Window Platform::create_window(const WindowDesc& desc) {
 // Members, not static, so they can only be called while SDL is running.
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 EventSummary Platform::poll_events() {
-    EventSummary summary;
+    return poll_into({});
+}
+
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+EventSummary Platform::poll_into(EventSummary summary) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         summary = handle(e, summary);
@@ -200,10 +204,9 @@ EventSummary Platform::wait_events(int timeout_ms) {
     if (SDL_WaitEventTimeout(&e, timeout_ms)) {
         summary = handle(e, summary);
     }
-    const EventSummary rest = poll_events();
-    summary.quit = summary.quit || rest.quit;
-    summary.exposed = summary.exposed || rest.exposed;
-    return summary;
+    // The rest of the batch folds into the same summary, so no event's
+    // flags are lost whichever comes first.
+    return poll_into(summary);
 }
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)

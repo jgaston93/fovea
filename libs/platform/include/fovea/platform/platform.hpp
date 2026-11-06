@@ -102,6 +102,7 @@ public:
 
 private:
     void list_monitors();
+    EventSummary poll_into(EventSummary summary);
 
     std::vector<MonitorInfo> monitors_;
     std::vector<std::uint32_t> display_ids_;  // SDL_DisplayID, same order
