@@ -112,17 +112,19 @@ Terrain tiles split latitude and longitude in half at each level, from two root 
 
 Each frame a tile splits into its children where its geometric error (recorded by the compiler) would show as more than about a pixel. Skirts hide cracks between levels. Popping is measured on the desk; morphing between levels (CDLOD-style) follows if it shows. Clipmaps are smoother but harder to combine with paging mixed-resolution sources.
 
-## D-017 Terrain imagery: BC7 with mips
+## D-017 Terrain imagery: compressed, the format chosen per database
 
 **Status:** Proposed
 
-Imagery is stored as BC7 (sRGB) with full mip chains, encoded by the compiler with a pinned encoder library (chosen and licence-checked in milestone 3 step 4): about 1 byte per texel, so 0.6 m imagery is 3-4 MB per km² with mips. BC1 halves that but blocks visibly on aerial photography.
+Imagery is stored as GPU-compressed textures with full mip chains, in a format chosen per database: BC7 (sRGB) by default, about 1 byte per texel, so 0.6 m imagery is 3-4 MB per km² with mips; BC1 at half that, blockier up close; uncompressed RGBA8 for exact colour at four times BC7's size. The compiler takes the format as a build setting and the manifest and each tile's imagery layer record it, so the runtime reads whichever it finds and one database can mix formats by region (detail where a deployment needs it, size elsewhere). Close-range and wide-area uses are both first-class (D-011), so neither format is assumed. Encoders come from a pinned library, chosen and licence-checked in milestone 3 step 4.
 
 ## D-018 Terrain database: a manifest and one file per tile
 
 **Status:** Proposed
 
 `manifest.toml` holds the schema version, area, layers and sources. Each tile is one binary file: a header (magic, schema version, tile key) and a table of named layers (elevation and imagery first; materials, placements and lights later), so a new layer needs no rebuild of the others (foundational decision 2). Binary, little-endian, with a checksum per layer.
+
+Alternatives considered: one pack file per database (fewer files, but rebuilds and new layers rewrite it, and one damaged file loses everything); existing formats (Cesium 3D Tiles and quantized-mesh, KTX2, MBTiles), which don't cover material maps and placements cleanly; and **OGC CDB**, the simulation industry's open standard for synthetic environment databases (terrain, imagery, models, features, at many levels). CDB covers far more than milestone 3 needs and assumes a large toolchain, so Fovea starts with its own simpler format; a CDB importer or exporter can be added later (#33).
 
 ## D-019 The terrain compiler runs on Linux
 

@@ -11,7 +11,7 @@ Fovea is an independent, open-source, cross-platform Vulkan image generator (IG)
 - Host interface: CIGI first; DIS later.
 - First database: local area around Huntsville International Airport (KHSV).
 - Public data and generic models only.
-- Low-altitude and hover visual cues matter more than distant terrain fidelity.
+- Close-range detail (low flight and hover, drones, ground vehicles, people on the ground) and wide coverage (high-altitude flight, large areas) are both first-class: the database and renderer let each deployment choose where to spend detail. (Originally: "low-altitude and hover visual cues matter more than distant terrain fidelity"; generalized under D-011.)
 
 ## Non-goals for now
 
