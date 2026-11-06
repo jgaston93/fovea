@@ -61,6 +61,14 @@ add_test(NAME App.RejectsABadSecondsValue
 set_tests_properties(App.RejectsABadSecondsValue PROPERTIES
     ENVIRONMENT ${dummy_display} TIMEOUT 20
     PASS_REGULAR_EXPRESSION "--seconds needs a positive number")
+add_test(NAME App.RejectsNanSeconds
+    COMMAND fovea --seconds nan ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
+set_tests_properties(App.RejectsNanSeconds PROPERTIES
+    ENVIRONMENT ${dummy_display} TIMEOUT 20 PASS_REGULAR_EXPRESSION "--seconds needs a positive number")
+add_test(NAME App.RejectsAnOverlongSecondsValue
+    COMMAND fovea --seconds 3e6 ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
+set_tests_properties(App.RejectsAnOverlongSecondsValue PROPERTIES
+    ENVIRONMENT ${dummy_display} TIMEOUT 20 PASS_REGULAR_EXPRESSION "up to 604800")
 add_test(NAME App.RejectsAConfigNeedingMoreMonitors
     COMMAND fovea --seconds 0.2 ${PROJECT_SOURCE_DIR}/config/channels.example.toml)
 set_tests_properties(App.RejectsAConfigNeedingMoreMonitors PROPERTIES

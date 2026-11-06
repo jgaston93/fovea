@@ -6,7 +6,7 @@ This file records design choices. Each entry is **Accepted**, **Proposed** (awai
 
 **Status:** Accepted
 
-SDL3 creates the windows, enumerates monitors and handles input in `libs/platform`. It gives finer control over displays and display modes than GLFW (per-display bounds, borderless fullscreen placed on a specific monitor), and it also covers gamepad and joystick input for later test tools. SDL is used only inside `libs/platform`. Other libraries see the platform layer's own types. It is SDL 3.4.18, built static. On Linux it uses only XRandR beyond libX11/libXext, so it needs `libx11-dev libxext-dev libxrandr-dev`. Windows are "fullscreen desktop": borderless, covering the monitor at its desktop resolution, with no display-mode switch.
+SDL3 creates the windows, enumerates monitors and handles input in `libs/platform`. It gives finer control over displays and display modes than GLFW (per-display bounds, borderless fullscreen placed on a specific monitor), and it also covers gamepad and joystick input for later test tools. SDL is used only inside `libs/platform`. Other libraries see the platform layer's own types. It is SDL 3.4.18, built static. On Linux it uses only XRandR beyond libX11/libXext, so it needs `libx11-dev libxext-dev libxrandr-dev`. Wayland is built out: compositors ignore client window positions, so a window can't be put on a chosen monitor. Wayland desktops run Fovea through XWayland. Windows are "fullscreen desktop": borderless, covering the monitor at its desktop resolution, with no display-mode switch.
 
 ## D-002 Configuration format: TOML (toml++)
 

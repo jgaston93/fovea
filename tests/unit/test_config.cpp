@@ -1,3 +1,4 @@
+#include <filesystem>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -59,6 +60,20 @@ TEST(Config, ExampleFileLoads) {
         EXPECT_EQ(ch.frustum.top_deg, 17.0);
         EXPECT_EQ(ch.frustum.bottom_deg, -17.0);
     }
+}
+
+// Every config shipped in config/ must load, not only the example.
+TEST(Config, EveryShippedConfigLoads) {
+    int loaded = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(FOVEA_SOURCE_DIR "/config")) {
+        if (entry.path().extension() != ".toml") {
+            continue;
+        }
+        const auto r = load_display_config(entry.path());
+        EXPECT_TRUE(r.ok()) << (r.errors.empty() ? entry.path().string() : r.errors[0].to_string());
+        ++loaded;
+    }
+    EXPECT_GE(loaded, 2);  // channels.example.toml and the desk config, at least
 }
 
 TEST(Config, OptionalFieldsTakeDefaults) {

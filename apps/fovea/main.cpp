@@ -10,7 +10,6 @@
 #include <array>
 #include <charconv>
 #include <chrono>
-#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <optional>
@@ -47,17 +46,27 @@ void print_views(const fovea::DisplayConfig& config) {
     std::printf("%zu views at %g Hz:\n", config.channels.size(), config.target_hz);
     for (std::size_t i = 0; i < config.channels.size(); ++i) {
         const auto view = fovea::view_from_channel(config.channels[i], config, i);
-        std::printf("  %-8s monitor %d, render %ux%u, yaw %g\n", view.name.c_str(),
-                    config.channels[i].monitor, view.render_width, view.render_height,
-                    view.pose.rotation.yaw_deg);
+        const auto& f = view.projection.frustum;
+        std::printf("  %-8s monitor %d, render %ux%u, yaw %g, frustum [%g, %g] x [%g, %g]\n",
+                    view.name.c_str(), config.channels[i].monitor, view.render_width,
+                    view.render_height, view.pose.rotation.yaw_deg, f.left_deg, f.right_deg,
+                    f.bottom_deg, f.top_deg);
     }
 }
 
-// A positive, finite number of seconds; the whole text must be the number.
+// Longest --seconds accepted: a week, well inside every duration and timeout
+// conversion below (an int of milliseconds overflows after 24.8 days).
+constexpr double kMaxSeconds = 7.0 * 24.0 * 3600.0;
+
+// A positive number of seconds up to kMaxSeconds; the whole text must be the
+// number.
 std::optional<double> parse_seconds(std::string_view text) {
     double v = 0.0;
     const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), v);
-    if (ec != std::errc{} || end != text.data() + text.size() || !std::isfinite(v) || v <= 0.0) {
+    // Written as !(in range) so NaN (from "nan") fails: every comparison with
+    // it is false. The De Morgan form would accept it.
+    // NOLINTNEXTLINE(readability-simplify-boolean-expr)
+    if (ec != std::errc{} || end != text.data() + text.size() || !(v > 0.0 && v <= kMaxSeconds)) {
         return std::nullopt;
     }
     return v;
@@ -74,8 +83,10 @@ std::optional<Options> parse_args(int argc, char** argv) {
         if (args[i] == "--seconds" && i + 1 < args.size()) {
             const auto s = parse_seconds(args[++i]);
             if (!s) {
-                (void)std::fprintf(stderr, "fovea: --seconds needs a positive number, got \"%s\"\n",
-                                   std::string(args[i]).c_str());
+                (void)std::fprintf(stderr,
+                                   "fovea: --seconds needs a positive number up to %g (a week), "
+                                   "got \"%s\"\n",
+                                   kMaxSeconds, std::string(args[i]).c_str());
                 return std::nullopt;
             }
             o.seconds = *s;
@@ -119,15 +130,16 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
             {"Fovea - " + ch.name, static_cast<std::uint32_t>(ch.monitor), true, 0, 0}));
         const fovea::Window& w = windows.back();
         const auto size = w.pixel_size();
-        std::printf("  window \"%s\": on monitor %d, %ux%u px\n", ch.name.c_str(),
-                    w.current_monitor(), size.width, size.height);
+        const int on = w.current_monitor();
+        std::printf("  window \"%s\": on monitor %d, %ux%u px\n", ch.name.c_str(), on, size.width,
+                    size.height);
         // The window manager has the last word on placement; a channel shown
         // on the wrong screen must not go unnoticed.
-        if (w.current_monitor() != ch.monitor) {
+        if (on != ch.monitor) {
             (void)std::fprintf(stderr,
                                "fovea: channel \"%s\" should be on monitor %d, but its window "
                                "is on monitor %d\n",
-                               ch.name.c_str(), ch.monitor, w.current_monitor());
+                               ch.name.c_str(), ch.monitor, on);
             return 1;
         }
     }

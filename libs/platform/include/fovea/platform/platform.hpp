@@ -64,7 +64,9 @@ private:
     friend class Platform;
     explicit Window(void* handle) : handle_(handle) {}
     void* handle_ = nullptr;
-    const std::vector<std::uint32_t>* display_ids_ = nullptr;  // the Platform's
+    // The Platform's display ids at creation, mapping SDL's display id to a
+    // monitor index (a copy: a few integers, no pointer into the Platform).
+    std::vector<std::uint32_t> display_ids_;
 };
 
 struct EventSummary {

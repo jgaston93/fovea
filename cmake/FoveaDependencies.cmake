@@ -41,9 +41,10 @@ add_library(fovea_tomlplusplus INTERFACE)
 target_include_directories(fovea_tomlplusplus SYSTEM INTERFACE "${tomlplusplus_SOURCE_DIR}/include")
 
 # --- SDL 3.4.18 (windows, monitors, input; libs/platform only, D-001) --------------
-# A static build with only what Fovea uses. On Linux, video backends are
-# found from the system (Wayland is used when its packages are present);
-# headless tests use SDL's dummy video driver.
+# A static build with only what Fovea uses. On Linux, only X11 (with XWayland
+# on Wayland desktops): Wayland compositors ignore window positions, so
+# windows can't be placed on chosen monitors. Headless tests use SDL's dummy
+# video driver.
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
 set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
@@ -58,6 +59,7 @@ foreach(ext IN ITEMS XCURSOR XDBE XINPUT XFIXES XSCRNSAVER XSHAPE XSYNC XTEST)
     set(SDL_X11_${ext} OFF CACHE BOOL "" FORCE)
 endforeach()
 set(SDL_X11_XRANDR ON CACHE BOOL "" FORCE)
+set(SDL_WAYLAND OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(SDL3
     URL https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.4.18.tar.gz
     URL_HASH SHA256=c4b08b950bd29d83caae0ab8d884298d27046a9d30700fb42841c50992665c90)

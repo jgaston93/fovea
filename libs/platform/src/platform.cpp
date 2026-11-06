@@ -50,8 +50,7 @@ Window::~Window() {
 }
 
 Window::Window(Window&& other) noexcept
-    : handle_(std::exchange(other.handle_, nullptr)),
-      display_ids_(std::exchange(other.display_ids_, nullptr)) {}
+    : handle_(std::exchange(other.handle_, nullptr)), display_ids_(std::move(other.display_ids_)) {}
 
 Window& Window::operator=(Window&& other) noexcept {
     if (this != &other) {
@@ -59,7 +58,7 @@ Window& Window::operator=(Window&& other) noexcept {
             SDL_DestroyWindow(sdl(handle_));
         }
         handle_ = std::exchange(other.handle_, nullptr);
-        display_ids_ = std::exchange(other.display_ids_, nullptr);
+        display_ids_ = std::move(other.display_ids_);
     }
     return *this;
 }
@@ -86,12 +85,12 @@ bool Window::fill(std::uint8_t r, std::uint8_t g, std::uint8_t b) {
 }
 
 int Window::current_monitor() const {
-    if (handle_ == nullptr || display_ids_ == nullptr) {
+    if (handle_ == nullptr) {
         return -1;
     }
     const SDL_DisplayID id = SDL_GetDisplayForWindow(sdl(handle_));
-    const auto it = std::find(display_ids_->begin(), display_ids_->end(), id);
-    return it == display_ids_->end() ? -1 : static_cast<int>(it - display_ids_->begin());
+    const auto it = std::find(display_ids_.begin(), display_ids_.end(), id);
+    return it == display_ids_.end() ? -1 : static_cast<int>(it - display_ids_.begin());
 }
 
 Platform::Platform(const PlatformOptions& options) {
@@ -120,6 +119,9 @@ void Platform::list_monitors() {
     const std::unique_ptr<SDL_DisplayID, decltype(&SDL_free)> owned(SDL_GetDisplays(&count),
                                                                     &SDL_free);
     const SDL_DisplayID* ids = owned.get();
+    if (ids == nullptr) {
+        fail("cannot list the monitors");
+    }
     const SDL_DisplayID primary = SDL_GetPrimaryDisplay();
     for (int i = 0; i < count; ++i) {
         MonitorInfo m;
@@ -164,7 +166,7 @@ Window Platform::create_window(const WindowDesc& desc) {
         fail("cannot create window \"" + desc.title + "\"");
     }
     Window result(window);
-    result.display_ids_ = &display_ids_;
+    result.display_ids_ = display_ids_;
 
     SDL_SetWindowPosition(window, m.x + (static_cast<int>(m.width) - w) / 2,
                           m.y + (static_cast<int>(m.height) - h) / 2);
@@ -200,6 +202,7 @@ EventSummary Platform::wait_events(int timeout_ms) {
     }
     const EventSummary rest = poll_events();
     summary.quit = summary.quit || rest.quit;
+    summary.exposed = summary.exposed || rest.exposed;
     return summary;
 }
 
