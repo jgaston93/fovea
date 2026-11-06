@@ -60,8 +60,13 @@ const FrameRecord& FrameLoop::step() {
     // The overlay shows the stats up to the previous frame.
     const OverlayContent* overlay = nullptr;
     if (options_.overlay) {
-        overlay_.intervals_ms = intervals_;
-        overlay_.intervals_oldest = next_interval_;
+        // Only the intervals recorded so far: until the ring fills, the
+        // oldest is at 0 and the rest is unwritten.
+        const std::size_t recorded = frames_ > 0 ? frames_ - 1 : 0;
+        const bool full = recorded >= intervals_.size();
+        overlay_.intervals_ms =
+            std::span<const float>(intervals_).first(full ? intervals_.size() : recorded);
+        overlay_.intervals_oldest = full ? next_interval_ : 0;
         overlay_.target_ms = static_cast<float>(1000.0 / options_.rate_hz);
         overlay_.frames = summary_.frames;
         overlay_.missed = summary_.missed;

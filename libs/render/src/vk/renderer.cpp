@@ -203,6 +203,19 @@ void imgui_free(void* p, void* /*user*/) {
     ::operator delete(p);
 }
 
+// Builds this frame's overlay and draws it over the target.
+void overlay_frame(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
+                   const OverlayContent& content) {
+    ImGui_ImplVulkan_NewFrame();
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(static_cast<float>(extent.width), static_cast<float>(extent.height));
+    io.DeltaTime = std::max(content.target_ms, 1.0F) / 1000.0F;
+    ImGui::NewFrame();
+    build_overlay_ui(content);
+    ImGui::Render();
+    draw_overlay(cmd, target, extent, ImGui::GetDrawData());
+}
+
 // Draws the fullscreen triangle into one colour target with dynamic rendering.
 void draw_fullscreen(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent) {
     VkRenderingAttachmentInfo colour{};
@@ -333,8 +346,6 @@ struct Renderer::Impl {
     std::uint32_t overlay_output = 0;
     VkFormat overlay_format = VK_FORMAT_UNDEFINED;  // ImGui's pipeline reads it by pointer
     ImGuiContext* imgui = nullptr;
-    void overlay_frame(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
-                       const OverlayContent& content);
 
     // Present pacing (VK_KHR_present_id / present_wait), when supported.
     bool present_wait = false;
@@ -1226,18 +1237,6 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
     present_wait_ms = 0.0;
     timing.work_ms = std::chrono::duration<double, std::milli>(finished - acquired).count();
     return presenting + static_cast<std::uint32_t>(offscreen.size());
-}
-
-void Renderer::Impl::overlay_frame(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
-                                   const OverlayContent& content) {
-    ImGui_ImplVulkan_NewFrame();
-    ImGuiIO& io = ImGui::GetIO();
-    io.DisplaySize = ImVec2(static_cast<float>(extent.width), static_cast<float>(extent.height));
-    io.DeltaTime = std::max(content.target_ms, 1.0F) / 1000.0F;
-    ImGui::NewFrame();
-    build_overlay_ui(content);
-    ImGui::Render();
-    draw_overlay(cmd, target, extent, ImGui::GetDrawData());
 }
 
 Renderer::Impl::~Impl() {

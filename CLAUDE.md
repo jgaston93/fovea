@@ -18,6 +18,7 @@ ctest --preset debug -R 'Toolchain\.FloatingPointIsIeeeWithoutFastMath'   # one 
 ./build/debug/apps/fovea/fovea --list-monitors                            # monitors, in config index order
 ./build/debug/apps/fovea/fovea --seconds 10 config/<file>.toml             # the reference scene on each channel
 ./build/debug/apps/fovea/fovea --seconds 15 --stats out.csv config/<file>.toml  # per-frame timing CSV + summary
+./build/debug/apps/fovea/fovea --overlay config/<file>.toml                 # ImGui timing overlay, first channel
 ./build/debug/apps/fovea/fovea --clear --seconds 10 config/<file>.toml     # GPU-clear each channel's window
 ./build/debug/apps/fovea/fovea --identify --seconds 10 config/<file>.toml  # same, filled in software
 ./build/debug/apps/fovea/fovea tests/data/offscreen.toml                   # headless Vulkan, no display

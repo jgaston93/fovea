@@ -35,7 +35,7 @@ Apache-2.0 is permissive like MIT and also includes an explicit patent grant, wh
 
 ## D-006 Debug overlay: Dear ImGui
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-06). Dear ImGui 1.93.0 is pinned, with the core and the Vulkan backend (on volk, with dynamic rendering) built as `fovea_imgui`. It has no platform backend: the overlay takes no input and runs on the render thread. It uses no files (no `.ini`, built-in font) and allocates through `operator new`, so the zero-allocation test covers it. `fovea --overlay` shows it on the first channel.
 
 The frame-timing overlay and future debug panels use Dear ImGui with its Vulkan backend. ImGui renders only in a final overlay pass on the debug channel and never in sensor or offscreen views. It's a development tool, not the operator control UI, which lives outside the process (see `architecture.md`, "Control plane").
 
