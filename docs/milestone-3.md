@@ -78,6 +78,16 @@ For a first area of about 20 x 20 km around KHSV (34.55-34.72 N, 86.90-86.65 W):
 ## Step 7: Hardware check
 
 - Fly the scripted routes over KHSV on the desk: frame timing, paging stats, popping between levels, and the look from low altitude. Results recorded; anything unexpected becomes an issue.
+- **Result** (2026-11-07, RTX 5070 Ti, `config/khsv.toml` on three monitors, release build, validation on; each route once, flown by the test host):
+
+  | Route | Frames | Missed | GPU per output, max | Tiles resident, max | Uploaded | Frames drawing tiles coarser than wanted |
+  |---|---|---|---|---|---|---|
+  | `khsv-approach.toml`: 36L, then climb-out | 10,791 | 1 | 1.9 ms | 2,238 | 2,208 | 67, all in the first 10 s |
+  | `khsv-survey.toml`: 500 m, 150 m/s, 7 min | 27,276 | 1 | 1.8 ms | 3,498 | 6,240 | 78: 65 in the first 10 s, the rest in two turns |
+  | `khsv-low.toml` (new): 110 m, 60 m/s, a 180 degree turn | 15,887 | 1 | 2.0 ms | 2,350 | 2,320 | 84: 60 in the first 10 s, 23 in the turn |
+
+  No validation messages in any run. Each run's one missed frame is its third or fourth: the first frame with 16 tiles to upload (an interval of 30 to 34 ms); none after start-up (step 6's second, the screenshot's, didn't recur with no screenshot taken). In turns, tiles coming into view are drawn a level or two coarse for under a second while their children load: the request prediction follows the velocity, not the turn. The owner watched the low pass a second time (15,886 frames, 1 missed, 165 frames coarse, again at the start and in the turn) and saw no popping, and the terrain at 110 m looked right; screenshots at 60 s and 140 s show the runway markings, fields and tree cover sharp near the eye, with no holes or cracks.
+- **Issues:** #41 (the start-up missed frame: uploads are limited by count, not bytes) and #42 (coarse tiles in turns).
 
 ## Inputs needed from you
 
