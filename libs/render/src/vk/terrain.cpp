@@ -372,24 +372,31 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu, const Terrai
                 continue;
             }
             const TileLayer* il = read.tile->find(kImageryLayer);
-            auto imagery = il != nullptr ? decode_imagery(*il) : std::nullopt;
-            if (imagery && ((imagery->format == ImageryFormat::bc7_srgb && !bc7) ||
-                            (imagery->format == ImageryFormat::bc1_srgb && !bc1))) {
+            // A plain image and a flag, not an optional reset on the way:
+            // GCC -O3 then warns of uninitialized mips (falsely).
+            ImageryImage image;
+            bool have_imagery = false;
+            if (auto decoded = il != nullptr ? decode_imagery(*il) : std::nullopt) {
+                image = std::move(*decoded);
+                have_imagery = true;
+            }
+            if (have_imagery && ((image.format == ImageryFormat::bc7_srgb && !bc7) ||
+                                 (image.format == ImageryFormat::bc1_srgb && !bc1))) {
                 report.problems.push_back(to_string(key) + ": this GPU can't sample " +
-                                          std::string(imagery_format_name(imagery->format)));
-                imagery.reset();
+                                          std::string(imagery_format_name(image.format)));
+                have_imagery = false;
             }
-            if (imagery && imagery->mips.size() > 16) {
+            if (have_imagery && image.mips.size() > 16) {
                 report.problems.push_back(to_string(key) + ": more mips than 16");
-                imagery.reset();
+                have_imagery = false;
             }
-            if (!imagery) {
+            if (!have_imagery) {
                 ++no_imagery;
             }
 
             std::size_t bytes = std::size_t{n} * n * 4;
-            if (imagery) {
-                for (const auto& mip : imagery->mips) {
+            if (have_imagery) {
+                for (const auto& mip : image.mips) {
                     bytes += (mip.size() + 15) & ~std::size_t{15};
                 }
             }
@@ -400,14 +407,14 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu, const Terrai
             upload_image(up, h.image, hat, n);
             t->heights_.push_back(h);
             Image im;
-            if (imagery) {
-                const auto mips = static_cast<std::uint32_t>(imagery->mips.size());
-                im = make_image(vk_format(imagery->format), imagery->size, mips);
+            if (have_imagery) {
+                const auto mips = static_cast<std::uint32_t>(image.mips.size());
+                im = make_image(vk_format(image.format), image.size, mips);
                 std::array<VkDeviceSize, 16> at{};
                 for (std::uint32_t k = 0; k < mips; ++k) {
-                    at[k] = up.put(imagery->mips[k].data(), imagery->mips[k].size());
+                    at[k] = up.put(image.mips[k].data(), image.mips[k].size());
                 }
-                upload_image(up, im.image, std::span(at.data(), mips), imagery->size);
+                upload_image(up, im.image, std::span(at.data(), mips), image.size);
             }
             t->imagery_.push_back(im);
             report.bytes += bytes;
