@@ -20,10 +20,10 @@
 //   cache = "../cache/khsv"
 //   sources = ["imagery/m_*.tif"]   # RGB(+), 8 bits; highest priority first
 //   [runways]                       # optional: smoothed in the elevation (D-022)
-//   airport = "../airports/khsv.toml"  # its [[runway]]s (format below)
+//   airport = "../airports/khsv.toml"  # its [[runway]]s (format below); or a list
 //   blend_m = 20.0                  # the blend into the ground beyond them
 //   [placements]                    # optional: models placed (D-026)
-//   file = "../placements/khsv.toml"  # their [[placement]]s (placements.hpp)
+//   file = "../placements/khsv.toml"  # their [[placement]]s (placements.hpp); or a list
 //   models = "../models"            # where their .glb files are
 //   level = 12                      # whose tiles hold them: the root level, for now (#48)
 //   [[credit]]                      # the manifest's [[source]] entries

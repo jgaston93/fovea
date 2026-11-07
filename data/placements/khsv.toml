@@ -1,5 +1,5 @@
 # The KHSV landmarks (milestone 4 step 4, D-026): each a model in
-# data/models (built by khsv_landmarks.py) at a point and true heading
+# data/models (built by airport_landmarks.py) at a point and true heading
 # (degrees clockwise from north; the model's front, its depth, along it).
 # Points are the footprints' centres, read off the NAIP 2023 imagery (to a
 # few metres); the buildings stand square to the runways (0.9 degrees, from

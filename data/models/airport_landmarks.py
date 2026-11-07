@@ -1,4 +1,5 @@
-# Generic models of the KHSV landmarks (milestone 4 steps 4 and 5, D-025):
+# Generic models of the KHSV and KHUA landmarks (milestone 4 steps 4 to 6,
+# D-025):
 # the right footprint, height and colour, and generic detail (window bands,
 # doors, corrugated and ribbed metal, roof membranes, rooftop plant, arched
 # hangar roofs, a faceted tower cab), not any building's own. Footprints
@@ -8,7 +9,7 @@
 # the repository's licence. Builds each model and exports it as a .glb, run
 # by Blender (5.2):
 #
-#   blender --background --factory-startup --python data/models/khsv_landmarks.py -- <out dir>
+#   blender --background --factory-startup --python data/models/airport_landmarks.py -- <out dir>
 #
 # Each model's ground line is at height 0 (glTF's y = 0), its front (glTF's
 # +Z, Blender's -Y) along its depth; width is across it. Every wall reaches
@@ -365,8 +366,18 @@ def roof_colour(linear):
     return tuple(255 * (12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055) for c in linear)
 
 
-# tools/measure-roof-colours.py data/compile/khsv.toml, 2026-11-07.
+# tools/measure-roof-colours.py data/compile/khsv.toml, 2026-11-07 (both airports).
 ROOF = {
+    "khua_hangar_45x168": (0.832, 0.814, 0.787),
+    "khua_hangar_52x262": (0.806, 0.800, 0.785),
+    "khua_hangar_57x222": (0.735, 0.728, 0.701),
+    "khua_hangar_50x32": (0.744, 0.738, 0.722),
+    "khua_hangar_55x32": (0.823, 0.814, 0.794),
+    "khua_ops_52x18": (0.813, 0.817, 0.807),
+    "khua_hangar_40x36": (0.715, 0.710, 0.687),
+    "khua_hangar_45x40": (0.581, 0.603, 0.603),
+    "khua_hangar_55x50": (0.633, 0.652, 0.650),
+    "khua_hangar_60x55": (0.574, 0.606, 0.595),
     "khsv_terminal": (0.623, 0.661, 0.675),
     "khsv_terminal_hall": (0.292, 0.404, 0.474),
     "khsv_concourse": (0.259, 0.471, 0.619),
@@ -461,6 +472,18 @@ MODELS = {
     "khsv_cargo_53x115": lambda n: flat_roofed(n, 53.0, 115.0, 10.0, "cargo"),
     "khsv_cargo_70x261": lambda n: flat_roofed(n, 70.0, 261.0, 13.0, "cargo"),
     "khsv_warehouse": lambda n: flat_roofed(n, 215.0, 261.0, 13.0, "cargo"),
+    # Redstone Army Airfield: the big hangars round the west apron, the
+    # smaller ones east of the runway.
+    "khua_hangar_45x168": lambda n: hangar(n, 45.0, 168.0, 15.0),
+    "khua_hangar_52x262": lambda n: hangar(n, 52.0, 262.0, 15.0),
+    "khua_hangar_57x222": lambda n: hangar(n, 57.0, 222.0, 15.0),
+    "khua_hangar_50x32": lambda n: hangar(n, 50.0, 32.0, 10.0),
+    "khua_hangar_55x32": lambda n: hangar(n, 55.0, 32.0, 9.0),
+    "khua_ops_52x18": lambda n: flat_roofed(n, 52.0, 18.0, 6.0),
+    "khua_hangar_40x36": lambda n: hangar(n, 40.0, 36.0, 9.0),
+    "khua_hangar_45x40": lambda n: hangar(n, 45.0, 40.0, 10.0),
+    "khua_hangar_55x50": lambda n: hangar(n, 55.0, 50.0, 11.0),
+    "khua_hangar_60x55": lambda n: hangar(n, 60.0, 55.0, 11.0),
 }
 
 

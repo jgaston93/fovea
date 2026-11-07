@@ -1302,7 +1302,23 @@ TEST(CompilerRunways, AirportFileMistakesAreRefused) {
     EXPECT_FALSE(with(airport, "").errors.empty());  // no runways
     EXPECT_FALSE(with("[[runway.end]]\nid = \"36L\"", "[[runway.x]]\nid = \"36L\"").errors.empty());
     EXPECT_EQ(with("width_ft = 150.0", "width_ft = = 150.0").errors.size(), 1U);  // not twice
+    // Several airports: a list of files.
     std::ofstream(dir / "airport.toml") << airport;
+    {
+        std::string second = airport;
+        second.replace(second.find("18R/36L"), 7, "17/35");
+        std::ofstream(dir / "airport2.toml") << second;
+    }
+    std::string two = good;
+    two.replace(two.find("airport = \"airport.toml\""), 24,
+                "airport = [\"airport.toml\", \"airport2.toml\"]");
+    const auto both = parse_settings(two, "s.toml", dir);
+    ASSERT_TRUE(both.settings.has_value()) << (both.errors.empty() ? "" : both.errors[0]);
+    ASSERT_EQ(both.settings->runways.size(), 2U);
+    EXPECT_EQ(both.settings->runways[1].name, "17/35");
+    std::string none = good;
+    none.replace(none.find("airport = \"airport.toml\""), 24, "airport = []");
+    EXPECT_FALSE(parse_settings(none, "s.toml", dir).errors.empty());
     std::string bad_blend = good + "blend_m = -1.0\n";
     EXPECT_FALSE(parse_settings(bad_blend, "s.toml", dir).errors.empty());
     fs::remove(dir / "airport.toml");

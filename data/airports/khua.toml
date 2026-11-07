@@ -1,0 +1,27 @@
+# Redstone Army Airfield (KHUA): its runway, from the FAA's airport data as
+# AirNav publishes it (www.airnav.com/airport/KHUA, checked 2026-11-07).
+# Ends are the pavement's ends, as published (degrees-minutes, NAD83);
+# elevations are surveyed, in feet, NAVD88 (the field elevation is
+# published as estimated). US Government work, public domain. The compiler
+# smooths the elevation on the runway (D-022), and tools/check-elevation.py
+# checks the database against these.
+
+name = "KHUA"
+field_elevation_ft = 685.4  # the highest point of the runway
+
+[[runway]]
+name = "17/35"
+width_ft = 150.0
+length_ft = 7300.0
+
+[[runway.end]]
+id = "17"
+lat = "34-41.311267N"
+lon = "086-41.220367W"
+elevation_ft = 685.4
+
+[[runway.end]]
+id = "35"
+lat = "34-40.128017N"
+lon = "086-40.954533W"
+elevation_ft = 654.9

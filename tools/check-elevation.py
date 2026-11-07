@@ -287,12 +287,18 @@ class Sources:
         area_file = base / s["area"]
         with open(area_file, "rb") as f:
             self.area = tomllib.load(f)["area"]
-        self.runways, self.field_ft, self.blend = [], None, 0.0
+        # Each airport: its runways, and its field elevation if published.
+        self.runways, self.fields, self.blend = [], [], 0.0
         if "runways" in s:
-            with open(base / s["runways"]["airport"], "rb") as f:
-                airport = tomllib.load(f)
-            self.runways = [Runway(t) for t in airport["runway"]]
-            self.field_ft = airport.get("field_elevation_ft")
+            files = s["runways"]["airport"]
+            for name in [files] if isinstance(files, str) else files:
+                with open(base / name, "rb") as f:
+                    airport = tomllib.load(f)
+                runways = [Runway(t) for t in airport["runway"]]
+                self.runways += runways
+                if "field_elevation_ft" in airport:
+                    self.fields.append((airport.get("name", name), airport["field_elevation_ft"],
+                                        runways))
             self.blend = s["runways"].get("blend_m", 20.0)
 
     def near_runway(self, lat, lon, margin):
@@ -500,14 +506,14 @@ def main():
             ok &= good
             print(f"  runway {name} end: published {ft * FT:.2f} m ({ft} ft), database "
                   f"{got:.2f} m, difference {got - ft * FT:+.2f} m: {'ok' if good else 'FAIL'}")
-    if src.field_ft is not None:
-        highest = max(navd88(float(a), float(b)) for r in src.runways
+    for name, field_ft, runways in src.fields:
+        highest = max(navd88(float(a), float(b)) for r in runways
                       for a, b in zip(*r.latlon(np.linspace(0.0, r.length, 2001), np.zeros(2001))))
-        good = abs(highest - src.field_ft * FT) <= TOL_SURVEY
+        good = abs(highest - field_ft * FT) <= TOL_SURVEY
         ok &= good
-        print(f"  field elevation (highest point on the runway centrelines): published "
-              f"{src.field_ft * FT:.2f} m ({src.field_ft} ft), database {highest:.2f} m, "
-              f"difference {highest - src.field_ft * FT:+.2f} m: {'ok' if good else 'FAIL'}")
+        print(f"  {name} field elevation (highest point on the runway centrelines): published "
+              f"{field_ft * FT:.2f} m ({field_ft} ft), database {highest:.2f} m, "
+              f"difference {highest - field_ft * FT:+.2f} m: {'ok' if good else 'FAIL'}")
 
     print("all checks pass" if ok else "SOME CHECKS FAIL")
     return 0 if ok else 1
