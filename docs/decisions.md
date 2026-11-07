@@ -96,7 +96,7 @@ The first host protocol is CIGI 3.3. It is the version most hosts and IGs implem
 
 **Status:** Accepted (2026-11-06)
 
-The codec is Fovea's own: fixed-size encode and decode of the packets in use, with no allocation, tested byte for byte against the ICD's layouts and fuzzed nightly. The Boeing CIGI Class Library is LGPL, older C++, and allocates per packet; only a handful of packets are needed for milestones 2 and 6. UDP sockets are a thin non-blocking wrapper in one file of `libs/net`, with no networking library.
+The codec is Fovea's own: fixed-size encode and decode of the packets in use, with no allocation, tested byte for byte against the ICD's layouts and fuzzed nightly. The Boeing CIGI Class Library is LGPL, older C++, and allocates per packet; only a handful of packets are needed for milestones 2 and 7 (and 5, for the environment). UDP sockets are a thin non-blocking wrapper in one file of `libs/net`, with no networking library.
 
 Packet layouts come from the ICD itself, never from memory: `tools/fetch-cigi-icd.sh` downloads the CIGI 3.3 ICD (Boeing document TST08I016, 3 Nov 2008) and its errata (Appendix C, 4 May 2009) into the git-ignored `docs/reference/`, checked against pinned SHA-256 hashes. The ICD calls itself "intended to be a public domain document" but asks not to be reproduced for modifying the interface, so it isn't committed. Codec code cites the ICD section and page for each packet. One ICD quirk: the 3.3 document gives Minor Version = 2 in IG Control and Start of Frame, and the errata don't change it. Fovea sends 2, as written, and accepts any minor version on receive, checking only Major Version = 3.
 
