@@ -70,6 +70,7 @@ public:
     double length_m() const { return length_; }
     // Whether the rectangle or its blend reaches into `b`.
     bool touches(const GeoBounds& b) const;
+    const GeoBounds& reach() const { return reach_; }
     RunwayPoint to_runway(double lat_deg, double lon_deg) const;
     // The fitted surface (ellipsoidal) at a point of the rectangle; points
     // outside take its nearest point's.

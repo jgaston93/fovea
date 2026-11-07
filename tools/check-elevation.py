@@ -127,13 +127,17 @@ class RunwayFit:
 
     def __init__(self, runway, heights):
         self.r = runway
-        u = np.arange(0.0, runway.length + 1e-9, 2.0)
+        u = np.linspace(0.0, runway.length, int(math.ceil(runway.length / 2.0)) + 1)
         v = np.linspace(-runway.width / 2, runway.width / 2, int(math.ceil(runway.width)) + 1)
         uu, vv = np.meshgrid(u, v, indexing="ij")
         lat, lon = runway.latlon(uu, vv)
-        h = np.array([heights(a, b) for a, b in zip(lat.ravel(), lon.ravel())]).reshape(uu.shape)
+        h = [heights(a, b) for a, b in zip(lat.ravel(), lon.ravel())]
+        self.missing = sum(x is None for x in h)
+        h = np.array([np.nan if x is None else x for x in h]).reshape(uu.shape)
+        if self.missing:
+            return
         y = vv / (runway.width / 2)
-        self.stations = np.arange(0.0, runway.length + 1e-9, 5.0)
+        self.stations = np.linspace(0.0, runway.length, int(math.ceil(runway.length / 5.0)) + 1)
         keep = np.ones(uu.shape, bool)
         for _ in range(4):
             coef = []
@@ -344,7 +348,8 @@ def main():
     print(f"finest level ({db.finest}) vs the sources, bilinear, plus GEOID18:")
     diffs, edge_diffs, by_source, skipped, on_runways = [], [], {}, 0, 0
     size = Tiles.size(db.finest)
-    margin = math.sqrt(2) * size / 256 * 111_000  # a sample's diagonal, at most
+    samples = db.manifest["layers"]["elevation"]["samples"]
+    margin = math.sqrt(2) * size / (samples - 1) * 111_000  # a sample's diagonal, at most
     for i in range(args.points):
         lat = rng.uniform(a["south"], a["north"] - 1e-9)
         lon = rng.uniform(a["west"], a["east"] - 1e-9)
@@ -427,6 +432,10 @@ def main():
     for r in src.runways:
         print(f"runway {r.name} ({r.length:.0f} m x {r.width:.1f} m), smoothed:")
         fit = RunwayFit(r, src.ellipsoidal)
+        if fit.missing:
+            ok = False
+            print(f"  {fit.missing} points on it have no source: FAIL")
+            continue
         print(f"  the sources on it: {np.sqrt((fit.residual ** 2).mean()):.4f} m RMS from this "
               f"script's fit, at most {np.abs(fit.residual).max():.3f} m")
         d = []

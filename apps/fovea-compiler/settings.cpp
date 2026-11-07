@@ -231,9 +231,11 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
             error(runways.node()->source(), "cannot read " + f.string());
         }
         toml::table airport;
+        bool parsed = false;
         if (t) {
             try {
                 airport = toml::parse(*t, f.string());
+                parsed = true;
             } catch (const toml::parse_error& e) {
                 r.errors.push_back(f.string() + ":" + std::to_string(e.source().begin.line) + ": " +
                                    std::string(e.description()));
@@ -244,7 +246,7 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
                                msg);
         };
         const auto* list = airport["runway"].as_array();
-        if (t && (list == nullptr || list->empty())) {
+        if (parsed && (list == nullptr || list->empty())) {
             r.errors.push_back(f.string() + ": no [[runway]]");
         }
         if (list != nullptr) {
