@@ -148,7 +148,7 @@ The plan has the paging thread upload tiles "through a transfer queue". Mileston
 
 **Status:** Proposed (2026-11-07)
 
-The plan asks for flattened runways. The compiler takes each runway's rectangle from a committed airport file (the FAA's surveyed ends and the runway's width) and, inside it, replaces the heights with a smooth profile fitted along the centreline to the 1 m lidar, level across the runway, blended into the surrounding ground over the shoulders, at every level. That removes the lidar's noise and anything that stood on the runway when it was flown, without moving the surface off the survey. A straight line between the surveyed ends would not: runways have grade changes, so mid-runway it could sit off the real surface. Taxiways and aprons follow later.
+The plan asks for flattened runways. The compiler takes each runway's rectangle from a committed airport file (the FAA's surveyed ends and the runway's width) and, inside it, replaces the finest level's heights with a smooth surface fitted to the 1 m lidar: smooth along the runway, keeping its grade changes, and across it, keeping its crown (a 1 to 1.5% cross slope puts a 150 ft runway's edges 0.2 to 0.35 m below its centreline), blended into the surrounding ground over the shoulders. Coarser levels are filtered from it as before, so each tile's recorded error stays true. That removes the lidar's noise and anything that stood on the runway when it was flown, without moving the surface off the survey. A straight line between the surveyed ends would not (runways have grade changes, so mid-runway it could sit off the real surface), nor would a level cross-section. Taxiways and aprons follow later.
 
 ## D-023 Models are glTF binary, read by a CPU-only library with cgltf
 
@@ -160,7 +160,7 @@ Models are glTF 2.0 binary files (`.glb`), as Blender exports them. `libs/models
 
 **Status:** Accepted (2026-11-07)
 
-The paging thread decodes a model's PNG or JPEG textures with stb_image and builds their mips, and the GPU holds them as RGBA8. Model files stay plain glTF, straight from Blender, with no conversion step, and a few dozen landmarks take little of the memory budget. The cost is four times BC7's memory and upload, and the decode on the paging thread. Compressed textures (BC7 made offline, as terrain imagery is, or the standard `KHR_texture_basisu`) are revisited in milestone 5, when vegetation and many models make memory and uploads matter.
+The paging thread decodes a model's PNG or JPEG textures with stb_image (built until now for PNG only, D-012, which left texture formats to this choice; JPEG is added) and builds their mips, and the GPU holds them as RGBA8. Model files stay plain glTF, straight from Blender, with no conversion step, and a few dozen landmarks take little of the memory budget. The cost is four times BC7's memory and upload, and the decode on the paging thread. Compressed textures (BC7 made offline, as terrain imagery is, or the standard `KHR_texture_basisu`) are revisited in milestone 5, when vegetation and many models make memory and uploads matter.
 
 ## D-025 Models are Fovea's own and generic, built by committed scripts
 
@@ -172,5 +172,5 @@ Each model is a Blender Python script in `data/models/` that builds it and expor
 
 **Status:** Proposed (2026-11-07)
 
-The plan bakes hand-placed landmarks into tiles. A committed placement file per database lists each one (model, latitude, longitude, heading). The compiler writes them into a `placements` layer (D-018) of the tile containing each, at a level the compiler settings choose and the manifest records, with the terrain's height at the spot. For KHSV that level is 12, the pinned roots, so placements are always resident; databases with more can place them finer, where they page with their tiles.
+The plan bakes hand-placed landmarks into tiles. A committed placement file per database lists each one (model, latitude, longitude, true heading). The compiler checks each model file exists and writes them into a `placements` layer (D-018) of the tile containing each, at a level the compiler settings choose and the manifest records, with the lowest terrain height under the model's footprint; models carry a plinth below their ground line, so on sloping ground nothing is buried or floats. Placements are drawn while their tile is resident, not only while it is selected, since a tile stops being drawn once it splits. For KHSV that level is 12, the pinned roots, so placements are always there; databases with more can place them finer, where they page with their tiles.
 
