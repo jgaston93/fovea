@@ -68,6 +68,12 @@ struct FrameRecord {
     double sample_age_ms = 0.0;
     double recv_age_ms = 0.0;
     double heading_deg = 0.0;
+    // Terrain (step 6): this frame's numbers (TerrainStats), 0 without it.
+    std::uint32_t tiles_drawn = 0;
+    std::uint32_t tiles_resident = 0;
+    std::uint32_t tile_uploads = 0;
+    std::uint32_t tile_requests = 0;
+    std::uint32_t tile_misses = 0;
     // GPU time per output of an earlier frame (FrameTiming); NaN-free, 0 when
     // there are none yet.
     std::uint64_t gpu_frame = 0;
@@ -96,6 +102,12 @@ struct FrameSummary {
     std::uint64_t entity_frames = 0;
     double sample_age_mean_ms = 0.0;
     double recv_age_mean_ms = 0.0;
+    // Terrain: the most tiles resident, tiles uploaded, and frames with a
+    // tile drawn coarser than wanted (and how many such tiles in all).
+    std::uint32_t tiles_resident_max = 0;
+    std::uint64_t tile_uploads = 0;
+    std::uint64_t frames_with_misses = 0;
+    std::uint64_t tile_misses = 0;
 };
 
 class FrameLoop {
@@ -137,6 +149,7 @@ private:
     std::vector<SceneView> rigged_;     // with a rig: this frame's views
     FrameLoopOptions options_;
     Logger* stats_;
+    TerrainStats last_terrain_;  // the last frame's, for the next frame's overlay
     LocalTime start_;
     PeriodicSchedule schedule_;
     LocalTime last_start_;

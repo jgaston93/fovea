@@ -330,7 +330,17 @@ void parse_reference_scene(Parser& p, const toml::table& t, ReferenceScene& out)
 }
 
 void parse_terrain(Parser& p, const toml::table& t, TerrainConfig& out) {
-    p.check_keys(t, {"database", "max_level", "pixel_error"}, "terrain");
+    p.check_keys(t, {"database", "max_level", "pixel_error", "max_tiles", "budget_mb"}, "terrain");
+    if (const auto* n = t.get("max_tiles")) {
+        if (auto v = p.integer(*n, "terrain.max_tiles", 16, 1 << 20)) {
+            out.max_tiles = static_cast<std::uint32_t>(*v);
+        }
+    }
+    if (const auto* n = t.get("budget_mb")) {
+        if (auto v = p.integer(*n, "terrain.budget_mb", 16, 1 << 20)) {
+            out.budget_mb = static_cast<std::uint32_t>(*v);
+        }
+    }
     if (const auto* n = p.required(t, "database", "terrain")) {
         if (auto v = p.string(*n, "terrain.database")) {
             if (v->empty()) {

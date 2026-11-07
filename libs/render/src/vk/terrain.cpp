@@ -2,12 +2,18 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <deque>
+#include <mutex>
+#include <numeric>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
+#include <thread>
+
+#include "fovea/core/containers.hpp"
 
 #include "fovea/core/geodesy.hpp"
 #include "fovea/terrain/tile_file.hpp"
@@ -158,6 +164,10 @@ public:
     }
     VkCommandBuffer cmd() const { return cmd_; }
     VkBuffer staging() const { return staging_; }
+    std::uint8_t* mapped() const { return mapped_; }
+    // Where the next put goes; skip moves past `bytes` written directly.
+    VkDeviceSize offset() const { return used_; }
+    void skip(std::size_t bytes) { used_ = (used_ + bytes + 15U) & ~VkDeviceSize{15}; }
 
     void flush() {
         if (!recording_) {
@@ -269,243 +279,581 @@ void TerrainGpu::destroy(Image& i) const {
     i = {};
 }
 
-std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu, const TerrainDatabase& db,
+namespace {
+
+// A tile read and decoded, ready to stage (paging thread, or load).
+struct PreparedTile {
+    bool ok = false;
+    std::string problem;  // why not ok, or why its imagery was dropped
+    TileInfo info;
+    std::vector<float> heights;
+    bool has_imagery = false;
+    ImageryImage imagery;
+    std::array<Control, std::size_t{kControls} * kControls> controls{};
+};
+
+struct PrepareContext {
+    std::uint32_t samples = 0;
+    bool bc7 = false;
+    bool bc1 = false;
+    float max_root_error = 0.0F;  // skirts hang a tile's error and this, and a metre
+};
+
+std::size_t align16(std::size_t n) {
+    return (n + 15U) & ~std::size_t{15};
+}
+
+// What a prepared tile stages: heights, each mip, the control points.
+std::size_t staged_bytes(const PreparedTile& p) {
+    std::size_t bytes = align16(p.heights.size() * sizeof(float));
+    if (p.has_imagery) {
+        for (const auto& mip : p.imagery.mips) {
+            bytes += align16(mip.size());
+        }
+    }
+    return bytes + align16(sizeof(p.controls));
+}
+
+// The skirt and the sphere around the tile, once the roots' largest error
+// is known: a crack between this tile and any drawn neighbour is at most
+// both their errors, and the neighbour may be as coarse as a root.
+void finish_info(PreparedTile& p, float max_root_error, float min_m, float max_m) {
+    p.info.skirt_m = static_cast<float>(p.info.lod.error_m) + max_root_error + 1.0F;
+    DVec3 lo(1e300);
+    DVec3 hi(-1e300);
+    for (const Control& c : p.controls) {
+        const DVec3 pos(c.position[0], c.position[1], c.position[2]);
+        const DVec3 normal(c.up[0], c.up[1], c.up[2]);
+        for (const double h : {static_cast<double>(min_m) - static_cast<double>(p.info.skirt_m),
+                               static_cast<double>(max_m)}) {
+            const DVec3 q = pos + normal * h;
+            lo = glm::min(lo, q);
+            hi = glm::max(hi, q);
+        }
+    }
+    const DVec3 mid = (lo + hi) * 0.5;
+    p.info.lod.centre_ecef = p.info.origin_ecef + mid;
+    p.info.lod.radius_m = glm::length(hi - mid) + 1.0;  // and float rounding
+}
+
+PreparedTile prepare_tile(const TerrainDatabase& db, const TileKey& key, const PrepareContext& c) {
+    PreparedTile p;
+    p.info.key = key;
+    const TileResult read = db.read(key);
+    const TileLayer* hl = read.tile ? read.tile->find(kElevationLayer) : nullptr;
+    auto grid = hl != nullptr ? decode_elevation(*hl) : std::nullopt;
+    if (!read.tile || !grid || grid->size != c.samples) {
+        p.problem = to_string(key) + ": " +
+                    (read.tile ? "no usable elevation layer" : "cannot read: " + read.detail);
+        return p;
+    }
+    if (const TileLayer* il = read.tile->find(kImageryLayer)) {
+        if (auto decoded = decode_imagery(*il)) {
+            p.imagery = std::move(*decoded);
+            p.has_imagery = true;
+        }
+    }
+    if (p.has_imagery && ((p.imagery.format == ImageryFormat::bc7_srgb && !c.bc7) ||
+                          (p.imagery.format == ImageryFormat::bc1_srgb && !c.bc1))) {
+        p.problem = to_string(key) + ": this GPU can't sample " +
+                    std::string(imagery_format_name(p.imagery.format));
+        p.has_imagery = false;
+    }
+    if (p.has_imagery && p.imagery.mips.size() > 16) {
+        p.problem = to_string(key) + ": more mips than 16";
+        p.has_imagery = false;
+    }
+    // The control points, in double, relative to the tile's origin on the
+    // ellipsoid under its centre.
+    const GeoBounds b = tile_bounds(key);
+    p.info.origin_ecef =
+        geodetic_to_ecef({(b.south_deg + b.north_deg) / 2, (b.west_deg + b.east_deg) / 2, 0.0});
+    for (std::uint32_t r = 0; r < kControls; ++r) {
+        for (std::uint32_t col = 0; col < kControls; ++col) {
+            const double lat = b.south_deg + (b.north_deg - b.south_deg) * r / (kControls - 1);
+            const double lon = b.west_deg + (b.east_deg - b.west_deg) * col / (kControls - 1);
+            const DVec3 q = geodetic_to_ecef({lat, lon, 0.0}) - p.info.origin_ecef;
+            const DVec3 u = ellipsoid_up(lat, lon);
+            p.controls[std::size_t{r} * kControls + col] = {
+                {static_cast<float>(q.x), static_cast<float>(q.y), static_cast<float>(q.z), 0.0F},
+                {static_cast<float>(u.x), static_cast<float>(u.y), static_cast<float>(u.z), 0.0F}};
+        }
+    }
+    p.info.lod.error_m = static_cast<double>(grid->error_m);
+    p.heights = std::move(grid->heights);
+    p.info.bytes = p.heights.size() * sizeof(float);
+    if (p.has_imagery) {
+        for (const auto& mip : p.imagery.mips) {
+            p.info.bytes += mip.size();
+        }
+    }
+    finish_info(p, c.max_root_error, grid->min_m, grid->max_m);
+    p.ok = true;
+    return p;
+}
+
+TerrainGpu::Image make_image(const GpuContext& gpu, VkFormat format, std::uint32_t size,
+                             std::uint32_t mips) {
+    // (A plain struct with the same members as TerrainGpu::Image.)
+    VkImageCreateInfo ici{};
+    ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format = format;
+    ici.extent = {size, size, 1};
+    ici.mipLevels = mips;
+    ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    VmaAllocationCreateInfo aci{};
+    aci.usage = VMA_MEMORY_USAGE_AUTO;
+    TerrainGpu::Image img;
+    check(vmaCreateImage(gpu.allocator, &ici, &aci, &img.image, &img.memory, nullptr),
+          "vmaCreateImage (terrain)");
+    VkImageViewCreateInfo vci{};
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image = img.image;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = format;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, 1};
+    check(vkCreateImageView(gpu.device, &vci, nullptr, &img.view), "vkCreateImageView");
+    return img;
+}
+
+// Copies a prepared tile into staging memory at `at` (staged_bytes of
+// room), and records its uploads into `cmd`: the heights and imagery into
+// their new images, the control points into the slot's place.
+void stage_and_record(VkCommandBuffer cmd, VkBuffer staging, std::uint8_t* mapped, VkDeviceSize at,
+                      const PreparedTile& p, VkImage heights, VkImage imagery, VkBuffer controls,
+                      std::uint32_t slot, std::uint32_t samples) {
+    const auto put = [&](const void* data, std::size_t bytes) {
+        const VkDeviceSize here = at;
+        std::memcpy(mapped + here, data, bytes);
+        at += align16(bytes);
+        return here;
+    };
+    const auto upload = [&](VkImage image, std::span<const VkDeviceSize> offsets,
+                            std::uint32_t size) {
+        const auto mips = static_cast<std::uint32_t>(offsets.size());
+        image_barrier(cmd, image, mips, VK_IMAGE_LAYOUT_UNDEFINED,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
+                      VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        for (std::uint32_t m = 0; m < mips; ++m) {
+            const std::uint32_t s = std::max(1U, size >> m);
+            VkBufferImageCopy copy{};
+            copy.bufferOffset = offsets[m];
+            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, m, 0, 1};
+            copy.imageExtent = {s, s, 1};
+            vkCmdCopyBufferToImage(cmd, staging, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                   &copy);
+        }
+        image_barrier(
+            cmd, image, mips, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    };
+    const std::array<VkDeviceSize, 1> h = {put(p.heights.data(), p.heights.size() * sizeof(float))};
+    upload(heights, h, samples);
+    if (p.has_imagery) {
+        std::array<VkDeviceSize, 16> mips{};
+        for (std::size_t m = 0; m < p.imagery.mips.size(); ++m) {
+            mips[m] = put(p.imagery.mips[m].data(), p.imagery.mips[m].size());
+        }
+        upload(imagery, std::span(mips.data(), p.imagery.mips.size()), p.imagery.size);
+    }
+    VkBufferCopy copy{};
+    copy.srcOffset = put(p.controls.data(), sizeof(p.controls));
+    copy.dstOffset = VkDeviceSize{slot} * sizeof(p.controls);
+    copy.size = sizeof(p.controls);
+    // After any earlier frame's vertex shaders read this slot's old points.
+    VkMemoryBarrier2 before{};
+    before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    before.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+    before.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    before.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    VkDependencyInfo d{};
+    d.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    d.memoryBarrierCount = 1;
+    d.pMemoryBarriers = &before;
+    vkCmdPipelineBarrier2(cmd, &d);
+    vkCmdCopyBuffer(cmd, staging, controls, 1, &copy);
+    VkMemoryBarrier2 after{};
+    after.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    after.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    after.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    after.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+    after.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+    d.pMemoryBarriers = &after;
+    vkCmdPipelineBarrier2(cmd, &d);
+}
+
+VkFormat imagery_vk_format(const PreparedTile& p) {
+    return vk_format(p.imagery.format);
+}
+
+}  // namespace
+
+// A tile asked for, and one delivered.
+struct TileRequest {
+    std::uint32_t slot = 0;
+    TileKey key;
+    double priority = 0.0;
+};
+
+struct TileArrival {
+    std::uint32_t slot = 0;
+    bool ok = false;
+    TileInfo info;
+    VkImageView heights = VK_NULL_HANDLE;
+    VkImageView imagery = VK_NULL_HANDLE;  // null: the grey fallback
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    std::uint32_t batch = 0;
+};
+
+// The paging thread: takes requests, reads and decodes tiles (most wanted
+// first), makes their images and records their uploads into staging memory
+// it reuses once the frames that submitted them have finished (the
+// timeline).
+class Pager {
+public:
+    Pager(TerrainGpu& t, const PrepareContext& ctx) : t_(t), ctx_(ctx) {
+        const GpuContext& gpu = t.gpu_;
+        VkBufferCreateInfo bci{};
+        bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bci.size = kStagingBytes;
+        bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        VmaAllocationCreateInfo aci{};
+        aci.usage = VMA_MEMORY_USAGE_AUTO;
+        aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                    VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        VmaAllocationInfo info{};
+        check(vmaCreateBuffer(gpu.allocator, &bci, &aci, &staging_, &staging_memory_, &info),
+              "vmaCreateBuffer (paging staging)");
+        mapped_ = static_cast<std::uint8_t*>(info.pMappedData);
+        VkCommandPoolCreateInfo pci{};
+        pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        pci.queueFamilyIndex = gpu.queue_family;
+        check(vkCreateCommandPool(gpu.device, &pci, nullptr, &pool_), "vkCreateCommandPool");
+        std::array<VkCommandBuffer, kBatches> cmds{};
+        VkCommandBufferAllocateInfo ai{};
+        ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        ai.commandPool = pool_;
+        ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        ai.commandBufferCount = kBatches;
+        check(vkAllocateCommandBuffers(gpu.device, &ai, cmds.data()), "vkAllocateCommandBuffers");
+        for (std::size_t i = 0; i < kBatches; ++i) {
+            batches_[i].cmd = cmds[i];
+        }
+        thread_ = std::jthread([this](const std::stop_token& stop) { run(stop); });
+    }
+    ~Pager() {
+        thread_.request_stop();
+        thread_.join();
+        // The GPU is idle (the renderer waited): everything can go.
+        vkDestroyCommandPool(t_.gpu_.device, pool_, nullptr);
+        vmaDestroyBuffer(t_.gpu_.allocator, staging_, staging_memory_);
+    }
+    Pager(const Pager&) = delete;
+    Pager& operator=(const Pager&) = delete;
+
+    // Render thread.
+    bool request(const TileRequest& r) { return requests_.try_push(r); }
+    std::optional<TileArrival> take() { return arrivals_.try_pop(); }
+    void submitted(std::uint32_t batch, std::uint64_t value) {
+        batches_[batch].value.store(value, std::memory_order_release);
+    }
+
+    // Any thread: problems met so far (tiles that couldn't be used).
+    std::vector<std::string> problems() {
+        const std::lock_guard lock(mutex_);
+        return problems_;
+    }
+
+private:
+    static constexpr std::uint32_t kBatches = 64;
+    struct Batch {
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        VkDeviceSize begin = 0;
+        std::atomic<std::uint64_t> value{
+            0};  // the timeline value its submission signals; 0: not yet
+        bool busy = false;
+    };
+
+    void note(std::string problem) {
+        const std::lock_guard lock(mutex_);
+        if (problems_.size() < 1000) {
+            problems_.push_back(std::move(problem));
+        }
+    }
+
+    // Frees batches (in staging order) whose frames have finished.
+    void reclaim() {
+        std::uint64_t done = 0;
+        if (vkGetSemaphoreCounterValue(t_.gpu_.device, t_.gpu_.timeline, &done) != VK_SUCCESS) {
+            return;
+        }
+        while (!in_flight_.empty()) {
+            Batch& b = batches_[in_flight_.front()];
+            const std::uint64_t v = b.value.load(std::memory_order_acquire);
+            if (v == 0 || v > done) {
+                break;
+            }
+            b.busy = false;
+            b.value.store(0, std::memory_order_relaxed);
+            in_flight_.pop_front();
+        }
+        if (in_flight_.empty()) {
+            head_ = 0;
+        }
+    }
+
+    // Room in the staging ring, or nothing yet.
+    std::optional<VkDeviceSize> staging_room(VkDeviceSize size) const {
+        if (in_flight_.empty()) {
+            return size <= kStagingBytes ? std::optional(VkDeviceSize{0}) : std::nullopt;
+        }
+        const VkDeviceSize tail = batches_[in_flight_.front()].begin;
+        if (head_ >= tail) {
+            if (head_ + size <= kStagingBytes) {
+                return head_;
+            }
+            if (size < tail) {
+                return VkDeviceSize{0};
+            }
+        } else if (head_ + size < tail) {
+            return head_;
+        }
+        return std::nullopt;
+    }
+
+    void run(const std::stop_token& stop) {
+        std::vector<TileRequest> pending;
+        const auto idle = [] { std::this_thread::sleep_for(std::chrono::milliseconds(2)); };
+        while (!stop.stop_requested()) {
+            while (auto r = requests_.try_pop()) {
+                pending.push_back(*r);
+            }
+            reclaim();
+            if (pending.empty()) {
+                idle();
+                continue;
+            }
+            const auto best = std::max_element(
+                pending.begin(), pending.end(),
+                [](const TileRequest& a, const TileRequest& b) { return a.priority < b.priority; });
+            const TileRequest req = *best;
+            pending.erase(best);
+            TileArrival out;
+            out.slot = req.slot;
+            try {
+                PreparedTile p = prepare_tile(*t_.db_, req.key, ctx_);
+                if (!p.problem.empty()) {
+                    note(p.problem);
+                }
+                if (p.ok) {
+                    deliver(p, req.slot, out, stop);
+                }
+            } catch (const std::exception& e) {
+                note(to_string(req.key) + ": " + e.what());
+                out.ok = false;
+            }
+            while (!arrivals_.try_push(out)) {
+                if (stop.stop_requested()) {
+                    return;
+                }
+                idle();
+            }
+        }
+    }
+
+    // Stages a prepared tile into a free batch and records its uploads.
+    void deliver(const PreparedTile& p, std::uint32_t slot, TileArrival& out,
+                 const std::stop_token& stop) {
+        const GpuContext& gpu = t_.gpu_;
+        const VkDeviceSize size = staged_bytes(p);
+        std::uint32_t batch = kBatches;
+        std::optional<VkDeviceSize> at;
+        while (!stop.stop_requested()) {
+            for (std::uint32_t i = 0; i < kBatches && batch == kBatches; ++i) {
+                batch = batches_[i].busy ? kBatches : i;
+            }
+            at = staging_room(size);
+            if (batch != kBatches && at) {
+                break;
+            }
+            batch = kBatches;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            reclaim();
+        }
+        if (batch == kBatches || !at) {
+            return;  // stopping
+        }
+        // The slot is free: nothing on the GPU uses its old images.
+        t_.destroy(t_.heights_[slot]);
+        t_.destroy(t_.imagery_[slot]);
+        t_.heights_[slot] = make_image(gpu, VK_FORMAT_R32_SFLOAT, ctx_.samples, 1);
+        if (p.has_imagery) {
+            t_.imagery_[slot] = make_image(gpu, imagery_vk_format(p), p.imagery.size,
+                                           static_cast<std::uint32_t>(p.imagery.mips.size()));
+        }
+        Batch& b = batches_[batch];
+        check(vkResetCommandBuffer(b.cmd, 0), "vkResetCommandBuffer");
+        VkCommandBufferBeginInfo begin{};
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check(vkBeginCommandBuffer(b.cmd, &begin), "vkBeginCommandBuffer");
+        stage_and_record(b.cmd, staging_, mapped_, *at, p, t_.heights_[slot].image,
+                         t_.imagery_[slot].image, t_.controls_.buffer, slot, ctx_.samples);
+        check(vkEndCommandBuffer(b.cmd), "vkEndCommandBuffer");
+        check(vmaFlushAllocation(gpu.allocator, staging_memory_, *at, size), "vmaFlushAllocation");
+        b.busy = true;
+        b.begin = *at;
+        b.value.store(0, std::memory_order_relaxed);
+        in_flight_.push_back(batch);
+        head_ = *at + size;
+        out.ok = true;
+        out.info = p.info;
+        out.heights = t_.heights_[slot].view;
+        out.imagery = t_.imagery_[slot].view;
+        out.cmd = b.cmd;
+        out.batch = batch;
+    }
+
+    TerrainGpu& t_;
+    PrepareContext ctx_;
+    SpscRing<TileRequest, 1024> requests_;
+    SpscRing<TileArrival, 64> arrivals_;
+    std::array<Batch, kBatches> batches_{};
+    std::deque<std::uint32_t> in_flight_;  // batches, in staging order
+    VkDeviceSize head_ = 0;                // where the next staging goes
+    VkBuffer staging_ = VK_NULL_HANDLE;
+    VmaAllocation staging_memory_ = nullptr;
+    std::uint8_t* mapped_ = nullptr;
+    VkCommandPool pool_ = VK_NULL_HANDLE;
+    std::mutex mutex_;
+    std::vector<std::string> problems_;
+    std::jthread thread_;  // last: stopped first
+};
+
+std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
+                                             std::unique_ptr<TerrainDatabase> db,
                                              const TerrainOptions& options, std::uint32_t slots,
                                              std::uint32_t outputs, VkShaderModule vertex,
                                              VkShaderModule fragment, VkFormat colour,
                                              VkFormat depth, TerrainLoad& report) {
     const auto start = std::chrono::steady_clock::now();
     std::unique_ptr<TerrainGpu> t(new TerrainGpu(gpu));
-    const DatabaseManifest& m = db.manifest();
+    t->db_ = std::move(db);
+    const DatabaseManifest& m = t->db_->manifest();
     t->samples_ = m.elevation_samples;
     t->pixel_error_ = options.pixel_error;
+    t->max_level_ = options.max_level;
     t->outputs_ = std::max(outputs, 1U);
     const std::uint32_t n = t->samples_;
-
-    const auto make_image = [&](VkFormat format, std::uint32_t size, std::uint32_t mips) {
-        Image img;
-        VkImageCreateInfo ici{};
-        ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        ici.imageType = VK_IMAGE_TYPE_2D;
-        ici.format = format;
-        ici.extent = {size, size, 1};
-        ici.mipLevels = mips;
-        ici.arrayLayers = 1;
-        ici.samples = VK_SAMPLE_COUNT_1_BIT;
-        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-        ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        VmaAllocationCreateInfo aci{};
-        aci.usage = VMA_MEMORY_USAGE_AUTO;
-        check(vmaCreateImage(gpu.allocator, &ici, &aci, &img.image, &img.memory, nullptr),
-              "vmaCreateImage (terrain)");
-        VkImageViewCreateInfo vci{};
-        vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        vci.image = img.image;
-        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        vci.format = format;
-        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, 1};
-        check(vkCreateImageView(gpu.device, &vci, nullptr, &img.view), "vkCreateImageView");
-        return img;
-    };
-    const auto supported = [&](VkFormat f) {
-        VkFormatProperties p{};
-        vkGetPhysicalDeviceFormatProperties(gpu.physical, f, &p);
-        return (p.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
-    };
-    const bool bc7 = gpu.bc_textures && supported(VK_FORMAT_BC7_SRGB_BLOCK);
-    const bool bc1 = gpu.bc_textures && supported(VK_FORMAT_BC1_RGB_SRGB_BLOCK);
-
-    Uploader up(gpu);
+    const std::uint32_t capacity = std::max(options.max_tiles, 1U);
+    // A tile's GPU memory before it's read: heights, and imagery as the
+    // manifest says (BC7 if it doesn't say), with mips.
     {
-        // Grey where a tile has no imagery the GPU can use.
-        t->fallback_ = make_image(VK_FORMAT_R8G8B8A8_SRGB, 1, 1);
-        const std::array<std::uint8_t, 4> grey = {128, 128, 128, 255};
-        up.reserve(grey.size());
-        const std::array<VkDeviceSize, 1> at = {up.put(grey.data(), grey.size())};
-        upload_image(up, t->fallback_.image, at, 1);
+        const std::uint32_t texels = m.imagery ? m.imagery->texels : 0;
+        const ImageryFormat f = m.imagery ? m.imagery->format : ImageryFormat::bc7_srgb;
+        std::size_t imagery = 0;
+        for (std::uint32_t s = texels; s >= 1; s /= 2) {
+            imagery += imagery_mip_bytes(f, s);
+        }
+        t->estimate_bytes_ = std::size_t{n} * n * 4 + imagery;
     }
 
-    // How many tiles there can be, against what the GPU binds, before
-    // reading any: the arrays are update-after-bind (paging will add to
-    // them), so those limits apply.
-    std::size_t planned = 0;
-    for (const LevelTiles& level : m.levels) {
-        planned += level.level <= options.max_level ? level.count() : 0;
-    }
+    // The GPU must bind capacity images per array (update-after-bind
+    // limits: paging fills entries while frames are in flight).
     VkPhysicalDeviceVulkan12Properties p12{};
     p12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES;
     VkPhysicalDeviceProperties2 props{};
     props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
     props.pNext = &p12;
     vkGetPhysicalDeviceProperties2(gpu.physical, &props);
-    if (planned > p12.maxPerStageDescriptorUpdateAfterBindSampledImages ||
-        planned * 2 > p12.maxDescriptorSetUpdateAfterBindSampledImages) {
-        fail("terrain: " + std::to_string(planned) + " tiles is more than this GPU binds (" +
+    if (capacity > p12.maxPerStageDescriptorUpdateAfterBindSampledImages ||
+        std::uint64_t{capacity} * 2 > p12.maxDescriptorSetUpdateAfterBindSampledImages) {
+        fail("terrain: " + std::to_string(capacity) + " tiles is more than this GPU binds (" +
              std::to_string(p12.maxPerStageDescriptorUpdateAfterBindSampledImages) +
-             " images a stage); lower [terrain] max_level");
+             " images a stage); lower [terrain] max_tiles");
     }
-
-    // Every tile down to max_level, coarsest first.
-    struct Loaded {
-        TileKey key;
-        float min_m = 0.0F;
-        float max_m = 0.0F;
-        float error_m = 0.0F;
+    const auto supported = [&](VkFormat f) {
+        VkFormatProperties fp{};
+        vkGetPhysicalDeviceFormatProperties(gpu.physical, f, &fp);
+        return (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
     };
-    std::vector<Loaded> loaded;
-    std::vector<Control> controls;
-    std::unordered_map<TileKey, std::uint32_t> index;
-    std::size_t no_imagery = 0;
-    for (const LevelTiles& level : m.levels) {
-        if (level.level > options.max_level) {
-            continue;
+    PrepareContext ctx;
+    ctx.samples = n;
+    ctx.bc7 = gpu.bc_textures && supported(VK_FORMAT_BC7_SRGB_BLOCK);
+    ctx.bc1 = gpu.bc_textures && supported(VK_FORMAT_BC1_RGB_SRGB_BLOCK);
+
+    t->cache_ = std::make_unique<TileCache>(capacity, options.budget_bytes);
+    t->heights_.resize(capacity);
+    t->imagery_.resize(capacity);
+    t->controls_ = t->make_buffer(
+        VkDeviceSize{capacity} * kControls * kControls * sizeof(Control),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false);
+
+    // The roots: the coarsest level's tiles, read now. Skirts need the
+    // largest root error, so they're all read first.
+    std::vector<PreparedTile> roots;
+    std::vector<std::pair<float, float>> root_heights;  // min, max
+    const LevelTiles& top = m.levels.front();
+    if (top.level > options.max_level) {
+        fail("terrain: [terrain] max_level " + std::to_string(options.max_level) +
+             " is above the database's coarsest level, " + std::to_string(top.level));
+    }
+    for (std::size_t i = 0; i < top.count(); ++i) {
+        PreparedTile p = prepare_tile(*t->db_, top.at(i), ctx);
+        if (!p.problem.empty()) {
+            report.problems.push_back(p.problem);
         }
-        for (std::size_t i = 0; i < level.count(); ++i) {
-            const TileKey key = level.at(i);
-            const TileResult read = db.read(key);
-            const TileLayer* hl = read.tile ? read.tile->find(kElevationLayer) : nullptr;
-            const auto grid = hl != nullptr ? decode_elevation(*hl) : std::nullopt;
-            if (!grid || grid->size != n) {
-                report.problems.push_back(
-                    to_string(key) + ": " +
-                    (read.tile ? "no usable elevation layer" : "cannot read: " + read.detail));
-                continue;
-            }
-            const TileLayer* il = read.tile->find(kImageryLayer);
-            // A plain image and a flag, not an optional reset on the way:
-            // GCC -O3 then warns of uninitialized mips (falsely).
-            ImageryImage image;
-            bool have_imagery = false;
-            if (auto decoded = il != nullptr ? decode_imagery(*il) : std::nullopt) {
-                image = std::move(*decoded);
-                have_imagery = true;
-            }
-            if (have_imagery && ((image.format == ImageryFormat::bc7_srgb && !bc7) ||
-                                 (image.format == ImageryFormat::bc1_srgb && !bc1))) {
-                report.problems.push_back(to_string(key) + ": this GPU can't sample " +
-                                          std::string(imagery_format_name(image.format)));
-                have_imagery = false;
-            }
-            if (have_imagery && image.mips.size() > 16) {
-                report.problems.push_back(to_string(key) + ": more mips than 16");
-                have_imagery = false;
-            }
-            if (!have_imagery) {
-                ++no_imagery;
-            }
-
-            std::size_t bytes = std::size_t{n} * n * 4;
-            if (have_imagery) {
-                for (const auto& mip : image.mips) {
-                    bytes += (mip.size() + 15) & ~std::size_t{15};
-                }
-            }
-            up.reserve(bytes + 16);
-            Image h = make_image(VK_FORMAT_R32_SFLOAT, n, 1);
-            const std::array<VkDeviceSize, 1> hat = {
-                up.put(grid->heights.data(), grid->heights.size() * sizeof(float))};
-            upload_image(up, h.image, hat, n);
-            t->heights_.push_back(h);
-            Image im;
-            if (have_imagery) {
-                const auto mips = static_cast<std::uint32_t>(image.mips.size());
-                im = make_image(vk_format(image.format), image.size, mips);
-                std::array<VkDeviceSize, 16> at{};
-                for (std::uint32_t k = 0; k < mips; ++k) {
-                    at[k] = up.put(image.mips[k].data(), image.mips[k].size());
-                }
-                upload_image(up, im.image, std::span(at.data(), mips), image.size);
-            }
-            t->imagery_.push_back(im);
-            report.bytes += bytes;
-
-            // The control points, in double, relative to the tile's origin
-            // on the ellipsoid under its centre.
-            const GeoBounds b = tile_bounds(key);
-            const DVec3 origin = geodetic_to_ecef(
-                {(b.south_deg + b.north_deg) / 2, (b.west_deg + b.east_deg) / 2, 0.0});
-            for (std::uint32_t r = 0; r < kControls; ++r) {
-                for (std::uint32_t c = 0; c < kControls; ++c) {
-                    const double lat =
-                        b.south_deg + (b.north_deg - b.south_deg) * r / (kControls - 1);
-                    const double lon = b.west_deg + (b.east_deg - b.west_deg) * c / (kControls - 1);
-                    const DVec3 p = geodetic_to_ecef({lat, lon, 0.0}) - origin;
-                    const DVec3 u = ellipsoid_up(lat, lon);
-                    controls.push_back({{static_cast<float>(p.x), static_cast<float>(p.y),
-                                         static_cast<float>(p.z), 0.0F},
-                                        {static_cast<float>(u.x), static_cast<float>(u.y),
-                                         static_cast<float>(u.z), 0.0F}});
-                }
-            }
-            index.emplace(key, static_cast<std::uint32_t>(loaded.size()));
-            if (options.progress) {
-                options.progress(loaded.size() + 1, planned);
-            }
-            t->origin_ecef_.push_back(origin);
-            loaded.push_back({key, grid->min_m, grid->max_m, grid->error_m});
+        if (p.ok) {
+            ctx.max_root_error =
+                std::max(ctx.max_root_error, static_cast<float>(p.info.lod.error_m));
+            roots.push_back(std::move(p));
         }
     }
-    if (loaded.empty()) {
-        fail("terrain: no tile could be loaded" +
+    if (roots.empty()) {
+        fail("terrain: no root tile could be loaded" +
              (report.problems.empty() ? std::string() : " (" + report.problems.front() + ")"));
     }
-    if (no_imagery > 0) {
-        report.problems.push_back(std::to_string(no_imagery) +
-                                  " tiles without usable imagery are drawn grey");
+    if (roots.size() > capacity / 2) {
+        fail("terrain: " + std::to_string(roots.size()) + " root tiles leave too little of " +
+             std::to_string(capacity) + " tiles for paging; raise [terrain] max_tiles");
     }
 
-    // The tree: children where loaded.
-    const auto count = static_cast<std::uint32_t>(loaded.size());
-    float max_root_error = 0.0F;
-    for (const Loaded& l : loaded) {
-        if (l.key.level == loaded.front().key.level) {
-            max_root_error = std::max(max_root_error, l.error_m);
-        }
+    Uploader up(gpu);
+    t->fallback_ = make_image(gpu, VK_FORMAT_R8G8B8A8_SRGB, 1, 1);
+    {
+        const std::array<std::uint8_t, 4> grey = {128, 128, 128, 255};
+        up.reserve(grey.size());
+        const std::array<VkDeviceSize, 1> at = {up.put(grey.data(), grey.size())};
+        upload_image(up, t->fallback_.image, at, 1);
     }
-    t->lod_.resize(count);
-    t->skirt_m_.resize(count);
-    for (std::uint32_t i = 0; i < count; ++i) {
-        const Loaded& l = loaded[i];
-        LodTile& tile = t->lod_[i];
-        tile.error_m = static_cast<double>(l.error_m);
-        const auto kids = children(l.key);
-        for (std::size_t k = 0; k < kids.size(); ++k) {
-            const auto it = index.find(kids[k]);
-            tile.children[k] = it != index.end() ? it->second : kNoTile;
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> root_slots;  // slot, index in roots
+    for (std::size_t i = 0; i < roots.size(); ++i) {
+        PreparedTile& p = roots[i];
+        // With the final max_root_error: the skirts and spheres again.
+        const auto [lo, hi] = std::minmax_element(p.heights.begin(), p.heights.end());
+        finish_info(p, ctx.max_root_error, *lo, *hi);
+        const auto slot = t->cache_->add_root(p.info);
+        const VkDeviceSize size = staged_bytes(p);
+        up.reserve(size);
+        const VkDeviceSize at = up.offset();  // where this tile's data starts
+        t->heights_[*slot] = make_image(gpu, VK_FORMAT_R32_SFLOAT, n, 1);
+        if (p.has_imagery) {
+            t->imagery_[*slot] = make_image(gpu, imagery_vk_format(p), p.imagery.size,
+                                            static_cast<std::uint32_t>(p.imagery.mips.size()));
         }
-        // A root where no ancestor is loaded. Below a missing tile, its
-        // loaded descendants are unreachable: the nearest loaded ancestor
-        // can't split, and covers them.
-        bool covered = false;
-        for (auto a = parent(l.key); a && !covered; a = parent(*a)) {
-            covered = index.contains(*a);
-        }
-        if (!covered) {
-            t->roots_.push_back(i);
-        }
-        // A crack between this tile and any drawn neighbour is at most both
-        // their errors; the neighbour may be as coarse as a root, so each
-        // skirt hangs its own error and the largest root's, and a metre more.
-        t->skirt_m_[i] = l.error_m + max_root_error + 1.0F;
-        // A sphere around the tile, skirt included: around the control
-        // points at its lowest and highest.
-        DVec3 lo(1e300);
-        DVec3 hi(-1e300);
-        for (std::uint32_t k = 0; k < kControls * kControls; ++k) {
-            const Control& c = controls[std::size_t{i} * kControls * kControls + k];
-            const DVec3 pos(c.position[0], c.position[1], c.position[2]);
-            const DVec3 normal(c.up[0], c.up[1], c.up[2]);
-            for (const double h :
-                 {static_cast<double>(l.min_m) - static_cast<double>(t->skirt_m_[i]),
-                  static_cast<double>(l.max_m)}) {
-                const DVec3 q = pos + normal * h;
-                lo = glm::min(lo, q);
-                hi = glm::max(hi, q);
-            }
-        }
-        const DVec3 mid = (lo + hi) * 0.5;
-        tile.centre_ecef = t->origin_ecef_[i] + mid;
-        tile.radius_m = glm::length(hi - mid) + 1.0;  // and float rounding
+        stage_and_record(up.cmd(), up.staging(), up.mapped(), at, p, t->heights_[*slot].image,
+                         t->imagery_[*slot].image, t->controls_.buffer, *slot, n);
+        up.skip(size);
+        root_slots.emplace_back(*slot, static_cast<std::uint32_t>(i));
+        report.bytes += p.info.bytes;
     }
 
     // The shared grid: (n + 2)^2 vertices, the outer ring the skirt.
@@ -519,48 +867,42 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu, const Terrai
         }
     }
     t->index_count_ = static_cast<std::uint32_t>(indices.size());
-    const auto upload_buffer = [&](Buffer& dst, const void* data, std::size_t bytes,
-                                   VkBufferUsageFlags usage, VkPipelineStageFlags2 stage,
-                                   VkAccessFlags2 access) {
-        dst = t->make_buffer(bytes, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false);
-        // In pieces the staging buffer holds.
-        const auto* src = static_cast<const std::uint8_t*>(data);
-        for (std::size_t done = 0; done < bytes;) {
-            const std::size_t part = std::min<std::size_t>(bytes - done, kStagingBytes - 16);
-            up.reserve(part);
-            VkBufferCopy copy{};
-            copy.srcOffset = up.put(src + done, part);
-            copy.dstOffset = done;
-            copy.size = part;
-            vkCmdCopyBuffer(up.cmd(), up.staging(), dst.buffer, 1, &copy);
-            done += part;
-        }
+    t->indices_ =
+        t->make_buffer(indices.size() * sizeof(std::uint32_t),
+                       VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false);
+    {
+        const auto bytes = indices.size() * sizeof(std::uint32_t);
+        up.reserve(bytes);
+        VkBufferCopy copy{};
+        copy.srcOffset = up.put(indices.data(), bytes);
+        copy.size = bytes;
+        vkCmdCopyBuffer(up.cmd(), up.staging(), t->indices_.buffer, 1, &copy);
         VkMemoryBarrier2 mb{};
         mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
         mb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
         mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        mb.dstStageMask = stage;
-        mb.dstAccessMask = access;
+        mb.dstStageMask = VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT;
+        mb.dstAccessMask = VK_ACCESS_2_INDEX_READ_BIT;
         VkDependencyInfo d{};
         d.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
         d.memoryBarrierCount = 1;
         d.pMemoryBarriers = &mb;
         vkCmdPipelineBarrier2(up.cmd(), &d);
-    };
-    upload_buffer(t->indices_, indices.data(), indices.size() * sizeof(std::uint32_t),
-                  VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
-                  VK_ACCESS_2_INDEX_READ_BIT);
-    upload_buffer(t->controls_, controls.data(), controls.size() * sizeof(Control),
-                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
-                  VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+    }
     up.flush();
-    t->draws_ = t->make_buffer(VkDeviceSize{slots} * t->outputs_ * count * sizeof(TileDraw),
-                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
-    t->stack_.resize(count);
-    t->selected_.resize(count);
 
-    // Descriptors: one set, the heights and imagery as arrays indexed by
-    // tile (descriptor indexing).
+    t->draws_ = t->make_buffer(VkDeviceSize{slots} * t->outputs_ * capacity * sizeof(TileDraw),
+                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+    t->stack_.resize(capacity);
+    t->selected_.resize(capacity);
+    t->wants_.resize(capacity);
+    t->split_.resize(capacity);
+    t->want_priority_.resize(capacity);
+    t->want_order_.resize(capacity);
+    t->last_eye_.resize(t->outputs_);
+    t->last_eye_at_.resize(t->outputs_);
+    t->has_last_eye_.assign(t->outputs_, false);
+
     VkSamplerCreateInfo sci{};
     sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     sci.magFilter = VK_FILTER_LINEAR;
@@ -580,12 +922,12 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu, const Terrai
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
-    bindings[3] = {3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
-    bindings[4] = {4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count, VK_SHADER_STAGE_FRAGMENT_BIT,
+    bindings[3] = {3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, capacity, VK_SHADER_STAGE_VERTEX_BIT,
                    nullptr};
-    // The image arrays update after bind (paging, step 6, will fill
-    // entries while frames using the set are in flight) and may be
-    // partly bound.
+    bindings[4] = {4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, capacity, VK_SHADER_STAGE_FRAGMENT_BIT,
+                   nullptr};
+    // The image arrays update after bind (filled as tiles arrive, while
+    // frames using the set are in flight) and are partly bound.
     constexpr VkDescriptorBindingFlags kArray =
         VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
     const std::array<VkDescriptorBindingFlags, 5> flags = {0, 0, 0, kArray, kArray};
@@ -604,7 +946,7 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu, const Terrai
     const std::array<VkDescriptorPoolSize, 3> sizes = {
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 1},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 2}};
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, capacity * 2}};
     VkDescriptorPoolCreateInfo pci{};
     pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pci.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
@@ -618,35 +960,26 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu, const Terrai
     ai.descriptorSetCount = 1;
     ai.pSetLayouts = &t->set_layout_;
     check(vkAllocateDescriptorSets(gpu.device, &ai, &t->set_), "vkAllocateDescriptorSets");
-
     const VkDescriptorBufferInfo controls_info{t->controls_.buffer, 0, VK_WHOLE_SIZE};
     const VkDescriptorBufferInfo draws_info{t->draws_.buffer, 0, VK_WHOLE_SIZE};
     const VkDescriptorImageInfo sampler_info{t->sampler_, VK_NULL_HANDLE,
                                              VK_IMAGE_LAYOUT_UNDEFINED};
-    std::vector<VkDescriptorImageInfo> height_infos(count);
-    std::vector<VkDescriptorImageInfo> imagery_infos(count);
-    for (std::uint32_t i = 0; i < count; ++i) {
-        height_infos[i] = {VK_NULL_HANDLE, t->heights_[i].view,
-                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        VkImageView iv =
-            t->imagery_[i].view != VK_NULL_HANDLE ? t->imagery_[i].view : t->fallback_.view;
-        imagery_infos[i] = {VK_NULL_HANDLE, iv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    }
-    std::array<VkWriteDescriptorSet, 5> writes{};
+    std::array<VkWriteDescriptorSet, 3> writes{};
     for (std::uint32_t w = 0; w < writes.size(); ++w) {
         writes[w].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[w].dstSet = t->set_;
         writes[w].dstBinding = w;
-        writes[w].descriptorCount = bindings[w].descriptorCount;
+        writes[w].descriptorCount = 1;
         writes[w].descriptorType = bindings[w].descriptorType;
     }
     writes[0].pBufferInfo = &controls_info;
     writes[1].pBufferInfo = &draws_info;
     writes[2].pImageInfo = &sampler_info;
-    writes[3].pImageInfo = height_infos.data();
-    writes[4].pImageInfo = imagery_infos.data();
     vkUpdateDescriptorSets(gpu.device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0,
                            nullptr);
+    for (const auto& [slot, i] : root_slots) {
+        t->write_descriptors(slot, t->heights_[slot].view, t->imagery_[slot].view);
+    }
 
     // The pipeline: the HDR target and a reverse-Z depth buffer (cleared to
     // 0, nearer is greater).
@@ -726,14 +1059,17 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu, const Terrai
     check(vkCreateGraphicsPipelines(gpu.device, VK_NULL_HANDLE, 1, &ci, nullptr, &t->pipeline_),
           "vkCreateGraphicsPipelines (terrain)");
 
-    report.tiles = count;
+    report.tiles = roots.size();
     report.seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    t->pager_ = std::make_unique<Pager>(*t, ctx);
     return t;
 }
 
+TerrainGpu::TerrainGpu(const GpuContext& gpu) : gpu_(gpu) {}
+
 TerrainGpu::~TerrainGpu() {
-    // The caller has waited for the GPU.
+    pager_.reset();  // stops the paging thread first
     vkDestroyPipeline(gpu_.device, pipeline_, nullptr);
     vkDestroyPipelineLayout(gpu_.device, layout_, nullptr);
     vkDestroyDescriptorPool(gpu_.device, pool_, nullptr);
@@ -751,29 +1087,174 @@ TerrainGpu::~TerrainGpu() {
     destroy(draws_);
 }
 
+void TerrainGpu::write_descriptors(std::uint32_t slot, VkImageView heights, VkImageView imagery) {
+    const VkDescriptorImageInfo h{VK_NULL_HANDLE, heights,
+                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo i{VK_NULL_HANDLE,
+                                  imagery != VK_NULL_HANDLE ? imagery : fallback_.view,
+                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    std::array<VkWriteDescriptorSet, 2> writes{};
+    for (std::uint32_t w = 0; w < writes.size(); ++w) {
+        writes[w].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[w].dstSet = set_;
+        writes[w].dstBinding = 3 + w;
+        writes[w].dstArrayElement = slot;
+        writes[w].descriptorCount = 1;
+        writes[w].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    }
+    writes[0].pImageInfo = &h;
+    writes[1].pImageInfo = &i;
+    vkUpdateDescriptorSets(gpu_.device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0,
+                           nullptr);
+}
+
+void TerrainGpu::begin_frame(std::uint64_t frame, std::uint64_t completed) {
+    frame_ = frame;
+    cache_->frames_completed(completed);
+    stats_ = {};
+    upload_count_ = 0;
+    while (upload_count_ < kMaxUploadsPerFrame) {
+        const auto a = pager_->take();
+        if (!a) {
+            break;
+        }
+        if (!a->ok) {
+            cache_->failed_to_load(a->slot);
+            continue;
+        }
+        write_descriptors(a->slot, a->heights, a->imagery);
+        cache_->arrived(a->slot, a->info, frame);
+        upload_infos_[upload_count_] = {};
+        upload_infos_[upload_count_].sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+        upload_infos_[upload_count_].commandBuffer = a->cmd;
+        upload_batches_[upload_count_] = a->batch;
+        ++upload_count_;
+    }
+    stats_.uploads = upload_count_;
+}
+
+void TerrainGpu::submitted(std::uint64_t timeline_value) {
+    for (std::uint32_t i = 0; i < upload_count_; ++i) {
+        pager_->submitted(upload_batches_[i], timeline_value);
+    }
+}
+
+void TerrainGpu::request_children(const SceneView& view, const TileSelection& sel,
+                                  double pixels_per_tangent) {
+    // Most wanted first: by the error each would show now.
+    const auto wanted = sel.wanted;
+    for (std::size_t i = 0; i < wanted; ++i) {
+        const LodTile& tile = cache_->lod()[wants_[i]];
+        const double d = glm::length(tile.centre_ecef - view.eye_ecef) - tile.radius_m;
+        want_priority_[i] = screen_error_px(tile.error_m, d, pixels_per_tangent);
+        want_order_[i] = static_cast<std::uint32_t>(i);
+    }
+    // At most this many asked for per view per frame: the paging thread
+    // takes the most wanted first anyway, and later frames ask again.
+    constexpr std::size_t kMaxRequests = 16;
+    const auto order_end = want_order_.begin() + static_cast<std::ptrdiff_t>(wanted);
+    const auto top =
+        want_order_.begin() + static_cast<std::ptrdiff_t>(std::min(wanted, kMaxRequests / 4 + 1));
+    std::partial_sort(want_order_.begin(), top, order_end, [&](std::uint32_t a, std::uint32_t b) {
+        return want_priority_[a] > want_priority_[b];
+    });
+    std::uint32_t asked = 0;
+    const DatabaseManifest& m = db_->manifest();
+    for (auto it = want_order_.begin(); it != top && asked < kMaxRequests; ++it) {
+        const std::uint32_t slot = wants_[*it];
+        for (const TileKey& child : children(cache_->info(slot).key)) {
+            if (child.level > max_level_ || !m.has_tile(child) || cache_->find(child) ||
+                cache_->failed(child)) {
+                continue;
+            }
+            const auto reserved = cache_->reserve(child, estimate_bytes_, frame_);
+            if (!reserved) {
+                return;  // no room now
+            }
+            if (!pager_->request({*reserved, child, want_priority_[*it]})) {
+                cache_->cancel(*reserved);
+                return;
+            }
+            ++asked;
+        }
+    }
+    stats_.requests += asked;
+}
+
 std::uint32_t TerrainGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
                                  const SceneView& view, VkExtent2D extent) {
-    const auto tiles = static_cast<std::uint32_t>(lod_.size());
+    const std::uint32_t capacity = cache_->capacity();
     LodView lv;
     lv.eye_ecef = view.eye_ecef;
     lv.ecef_to_clip = view.ecef_to_clip;
     lv.pixels_per_tangent =
         static_cast<double>(extent.height) / std::max(static_cast<double>(view.tan_height), 1e-6);
     lv.pixel_error = pixel_error_;
-    const auto drawn =
-        static_cast<std::uint32_t>(select_tiles(lod_, roots_, lv, stack_, selected_));
+    // Children are asked for a little before they're needed (half the
+    // error), and for where the eye will be in a second at its speed now.
+    lv.request_error = pixel_error_ * 0.5;
+    const LocalTime at = now();
+    const std::uint32_t o = std::min(output, outputs_ - 1);
+    if (has_last_eye_[o]) {
+        const double dt = std::chrono::duration<double>(at - last_eye_at_[o]).count();
+        if (dt > 1e-3 && dt < 1.0) {
+            DVec3 velocity = (view.eye_ecef - last_eye_[o]) / dt;
+            const double speed = glm::length(velocity);
+            if (speed > 1000.0) {
+                velocity *= 1000.0 / speed;  // a jump, not motion
+            }
+            lv.lookahead_ecef = view.eye_ecef + velocity * 1.0;
+        }
+    }
+    last_eye_[o] = view.eye_ecef;
+    last_eye_at_[o] = at;
+    has_last_eye_[o] = true;
+
+    const TileSelection sel =
+        select_tiles(cache_->lod(), cache_->roots(), lv, stack_, selected_, wants_, split_);
+    for (std::size_t i = 0; i < sel.drawn; ++i) {
+        cache_->touch(selected_[i], frame_);
+    }
+    // A split needs its four children, even those out of view (the split
+    // tile's sphere can reach into the view while all its children's
+    // don't): kept, or evicting one would undo the split.
+    for (std::size_t i = 0; i < sel.split; ++i) {
+        cache_->touch(cache_->lod()[split_[i]].children[0], frame_);
+    }
+    // Children already there of a tile waiting for the rest aren't drawn
+    // yet, but are wanted: kept, or evicting them would undo the wait.
+    for (std::size_t i = 0; i < sel.wanted; ++i) {
+        for (const TileKey& child : children(cache_->info(wants_[i]).key)) {
+            if (const auto c = cache_->find(child); c && cache_->resident(*c)) {
+                cache_->touch(*c, frame_);
+            }
+        }
+    }
+    request_children(view, sel, lv.pixels_per_tangent);
+    const TileCacheStats& cs = cache_->stats();
+    stats_.drawn += static_cast<std::uint32_t>(sel.drawn);
+    stats_.misses += static_cast<std::uint32_t>(sel.misses);
+    stats_.resident = cs.resident;
+    stats_.loading = cs.loading;
+    stats_.bytes = cs.bytes;
+    stats_.evictions = cs.evictions;
+    stats_.failures = cs.failures;
+
+    const auto drawn = static_cast<std::uint32_t>(sel.drawn);
     if (drawn == 0) {
         return 0;
     }
-    const std::uint32_t base = (slot * outputs_ + output) * tiles;
+    const std::uint32_t base = (slot * outputs_ + o) * capacity;
     auto* records = static_cast<TileDraw*>(draws_.mapped) + base;
     for (std::uint32_t i = 0; i < drawn; ++i) {
         const std::uint32_t t = selected_[i];
-        const DVec3 o = origin_ecef_[t] - view.eye_ecef;
-        records[i] = {{static_cast<float>(o.x), static_cast<float>(o.y), static_cast<float>(o.z)},
-                      t,
-                      skirt_m_[t],
-                      {}};
+        const TileInfo& info = cache_->info(t);
+        const DVec3 off = info.origin_ecef - view.eye_ecef;
+        records[i] = {
+            {static_cast<float>(off.x), static_cast<float>(off.y), static_cast<float>(off.z)},
+            t,
+            info.skirt_m,
+            {}};
     }
     (void)vmaFlushAllocation(gpu_.allocator, draws_.memory, base * sizeof(TileDraw),
                              drawn * sizeof(TileDraw));

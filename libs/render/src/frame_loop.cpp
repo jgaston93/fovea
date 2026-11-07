@@ -42,7 +42,8 @@ FrameLoop::FrameLoop(Renderer& renderer, SceneState& scene, std::span<const Scen
     if (stats_ != nullptr) {
         stats_->write(LogLevel::info,
                       "frame,t_s,interval_ms,wait_ms,work_ms,missed,scene_sequence,sample_age_ms,"
-                      "recv_age_ms,heading_deg,gpu_frame,gpu_ms...");
+                      "recv_age_ms,heading_deg,tiles_drawn,tiles_resident,tile_uploads,"
+                      "tile_requests,tile_misses,gpu_frame,gpu_ms...");
     }
 }
 
@@ -101,6 +102,7 @@ const FrameRecord& FrameLoop::step() {
         overlay_.gpu_outputs = last_.gpu_outputs;
         overlay_.gpu_ms = last_.gpu_ms;
         overlay_.note = options_.overlay_note;
+        overlay_.terrain = last_terrain_;
         overlay_.host_age_ms = last_.recv_age_ms > 0.0 && last_.recv_age_ms < kLiveHostMs
                                    ? static_cast<float>(last_.sample_age_ms)
                                    : -1.0F;
@@ -137,6 +139,12 @@ const FrameRecord& FrameLoop::step() {
             summary_.recv_age_mean_ms += (r.recv_age_ms - summary_.recv_age_mean_ms) / k;
         }
     }
+    const TerrainStats& ts = renderer_.terrain_stats();
+    r.tiles_drawn = ts.drawn;
+    r.tiles_resident = ts.resident;
+    r.tile_uploads = ts.uploads;
+    r.tile_requests = ts.requests;
+    r.tile_misses = ts.misses;
     // In this loop's numbering (draws before the loop started don't count).
     const bool ours = t.gpu_outputs > 0 && t.gpu_frame >= first_renderer_frame_;
     r.gpu_frame = ours ? t.gpu_frame - first_renderer_frame_ : 0;
@@ -151,6 +159,7 @@ const FrameRecord& FrameLoop::step() {
     record(r);
     log(r);
     last_ = r;
+    last_terrain_ = ts;
     frames_completed_.store(frames_, std::memory_order_release);
     return last_;
 }
@@ -168,6 +177,10 @@ void FrameLoop::record(const FrameRecord& r) {
     }
     s.work_mean_ms += (r.work_ms - s.work_mean_ms) / (n + 1.0);
     s.work_max_ms = std::max(s.work_max_ms, r.work_ms);
+    s.tiles_resident_max = std::max(s.tiles_resident_max, r.tiles_resident);
+    s.tile_uploads += r.tile_uploads;
+    s.frames_with_misses += r.tile_misses > 0 ? 1 : 0;
+    s.tile_misses += r.tile_misses;
     // A frame's GPU times arrive two frames later; count each frame once.
     if (r.gpu_outputs > 0 && (s.gpu_samples == 0 || r.gpu_frame != last_.gpu_frame)) {
         s.gpu_outputs = r.gpu_outputs;
@@ -194,11 +207,12 @@ void FrameLoop::log(const FrameRecord& r) {
                                     static_cast<double>(r.gpu_ms[i]));
         used += n > 0 ? static_cast<std::size_t>(n) : 0;
     }
-    stats_->write(LogLevel::info, "%llu,%.6f,%.3f,%.3f,%.3f,%d,%llu,%.3f,%.3f,%.4f,%llu%s",
-                  static_cast<unsigned long long>(r.frame), r.t_s, r.interval_ms, r.wait_ms,
-                  r.work_ms, r.missed ? 1 : 0, static_cast<unsigned long long>(r.scene_sequence),
-                  r.sample_age_ms, r.recv_age_ms, r.heading_deg,
-                  static_cast<unsigned long long>(r.gpu_frame), gpu.data());
+    stats_->write(
+        LogLevel::info, "%llu,%.6f,%.3f,%.3f,%.3f,%d,%llu,%.3f,%.3f,%.4f,%u,%u,%u,%u,%u,%llu%s",
+        static_cast<unsigned long long>(r.frame), r.t_s, r.interval_ms, r.wait_ms, r.work_ms,
+        r.missed ? 1 : 0, static_cast<unsigned long long>(r.scene_sequence), r.sample_age_ms,
+        r.recv_age_ms, r.heading_deg, r.tiles_drawn, r.tiles_resident, r.tile_uploads,
+        r.tile_requests, r.tile_misses, static_cast<unsigned long long>(r.gpu_frame), gpu.data());
 }
 
 void FrameLoop::start() {

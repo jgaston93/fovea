@@ -259,9 +259,10 @@ TEST(FrameLoop, StatsAreCsvOneLinePerFrame) {
     std::fclose(f);
     ASSERT_EQ(lines.size(), 6U);  // header and 5 frames
     EXPECT_EQ(lines[0].rfind("frame,t_s,interval_ms", 0), 0U);
-    // The last frame has GPU times for two outputs: 11 fixed fields + 2.
+    // The last frame has GPU times for two outputs: 16 fixed fields (5 of
+    // them terrain) + 2.
     const auto commas = std::count(lines[5].begin(), lines[5].end(), ',');
-    EXPECT_EQ(commas, 12);
+    EXPECT_EQ(commas, 17);
     EXPECT_EQ(lines[5].rfind("4,", 0), 0U);
 }
 
