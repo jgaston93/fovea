@@ -20,20 +20,67 @@ void append(void* context, void* data, int size) {
 
 }  // namespace
 
-bool write_png(const std::filesystem::path& file, const RgbaImage& image) {
-    if (image.pixels.size() != static_cast<std::size_t>(image.width) * image.height * 4) {
-        return false;
-    }
+std::vector<std::uint8_t> encode_png(const RgbaImage& image) {
     std::vector<std::uint8_t> encoded;
-    if (stbi_write_png_to_func(&append, &encoded, static_cast<int>(image.width),
+    if (image.width == 0 || image.height == 0 ||
+        image.pixels.size() != static_cast<std::size_t>(image.width) * image.height * 4 ||
+        stbi_write_png_to_func(&append, &encoded, static_cast<int>(image.width),
                                static_cast<int>(image.height), 4, image.pixels.data(),
                                static_cast<int>(image.width) * 4) == 0) {
+        return {};
+    }
+    return encoded;
+}
+
+std::vector<std::uint8_t> encode_jpeg(const RgbaImage& image, int quality) {
+    std::vector<std::uint8_t> encoded;
+    if (image.width == 0 || image.height == 0 ||
+        image.pixels.size() != static_cast<std::size_t>(image.width) * image.height * 4 ||
+        stbi_write_jpg_to_func(&append, &encoded, static_cast<int>(image.width),
+                               static_cast<int>(image.height), 4, image.pixels.data(),
+                               std::clamp(quality, 1, 100)) == 0) {
+        return {};
+    }
+    return encoded;
+}
+
+bool write_png(const std::filesystem::path& file, const RgbaImage& image) {
+    const std::vector<std::uint8_t> encoded = encode_png(image);
+    if (encoded.empty()) {
         return false;
     }
     std::ofstream out(file, std::ios::binary);
     out.write(reinterpret_cast<const char*>(encoded.data()),
               static_cast<std::streamsize>(encoded.size()));
     return static_cast<bool>(out);
+}
+
+std::optional<RgbaImage> decode_image(std::span<const std::uint8_t> bytes, std::uint32_t max_side) {
+    if (bytes.empty() || bytes.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        return std::nullopt;
+    }
+    int w = 0;
+    int h = 0;
+    int channels = 0;
+    // The size first, from the header: a huge image is refused before it
+    // is decoded.
+    if (stbi_info_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &channels) ==
+            0 ||
+        w <= 0 || h <= 0 || static_cast<std::uint32_t>(w) > max_side ||
+        static_cast<std::uint32_t>(h) > max_side) {
+        return std::nullopt;
+    }
+    stbi_uc* data =
+        stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &channels, 4);
+    if (data == nullptr) {
+        return std::nullopt;
+    }
+    RgbaImage image;
+    image.width = static_cast<std::uint32_t>(w);
+    image.height = static_cast<std::uint32_t>(h);
+    image.pixels.assign(data, data + static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4);
+    stbi_image_free(data);
+    return image;
 }
 
 std::optional<RgbaImage> read_png(const std::filesystem::path& file) {
@@ -50,20 +97,7 @@ std::optional<RgbaImage> read_png(const std::filesystem::path& file) {
     if (!in.read(reinterpret_cast<char*>(bytes.data()), size)) {
         return std::nullopt;
     }
-    int w = 0;
-    int h = 0;
-    int channels = 0;
-    stbi_uc* data =
-        stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &channels, 4);
-    if (data == nullptr) {
-        return std::nullopt;
-    }
-    RgbaImage image;
-    image.width = static_cast<std::uint32_t>(w);
-    image.height = static_cast<std::uint32_t>(h);
-    image.pixels.assign(data, data + static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4);
-    stbi_image_free(data);
-    return image;
+    return decode_image(bytes);
 }
 
 ImageDifference compare_images(const RgbaImage& a, const RgbaImage& b, std::uint8_t threshold) {

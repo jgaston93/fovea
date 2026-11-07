@@ -12,6 +12,7 @@ add_executable(fovea_unit_tests
     unit/test_geodesy.cpp
     unit/test_image_file.cpp
     unit/test_log.cpp
+    unit/test_models.cpp
     unit/test_monitors.cpp
     unit/test_platform.cpp
     unit/test_projection.cpp
@@ -25,7 +26,7 @@ add_executable(fovea_unit_tests
     unit/test_toolchain.cpp
     unit/test_view.cpp)
 target_include_directories(fovea_unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(fovea_unit_tests PRIVATE fovea::core fovea::terrain fovea::platform
+target_link_libraries(fovea_unit_tests PRIVATE fovea::core fovea::terrain fovea::models fovea::platform
                                                fovea::net fovea::render fovea_cigi_test_host_lib
                                                GTest::gtest_main)
 target_compile_definitions(fovea_unit_tests PRIVATE FOVEA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")

@@ -147,9 +147,10 @@ target_compile_definitions(fovea_imgui PUBLIC
 target_link_libraries(fovea_imgui PUBLIC volk::volk Vulkan::Headers)
 set_target_properties(fovea_imgui PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# --- stb_image 2.30 / stb_image_write 1.16 (PNG files; libs/core only) --------
+# --- stb_image 2.30 / stb_image_write 1.16 (PNG and JPEG; libs/core only) ----
 # Two public-domain headers, pinned by commit and SHA-256. Used for headless
-# image dumps and golden-image tests, never on the render path.
+# image dumps, golden-image tests and model textures (D-024), never on the
+# render path.
 set(stb_commit a7d4c2175630e1ea5b6f8dd00ab96fed0b97b96d)
 FetchContent_Declare(stb_image
     URL https://raw.githubusercontent.com/nothings/stb/${stb_commit}/stb_image.h
@@ -163,6 +164,20 @@ FetchContent_MakeAvailable(stb_image stb_image_write)
 add_library(fovea_stb INTERFACE)
 target_include_directories(fovea_stb SYSTEM INTERFACE
     "${stb_image_SOURCE_DIR}" "${stb_image_write_SOURCE_DIR}")
+
+# --- cgltf 1.15 (glTF reading; libs/models only, D-023) -----------------------
+# One MIT-licensed C header with no dependencies, compiled once in its own
+# library (third-party code, so without Fovea's warning flags).
+FetchContent_Declare(cgltf
+    URL https://github.com/jkuhlmann/cgltf/archive/refs/tags/v1.15.tar.gz
+    URL_HASH SHA256=84e352092e5cd6aab7f66de62ddb66beb5e6f18d412ca9d12950d7a55bfef25a
+    SOURCE_SUBDIR do-not-configure)
+FetchContent_MakeAvailable(cgltf)
+file(WRITE "${CMAKE_BINARY_DIR}/fovea_cgltf/cgltf.c"
+    "#define CGLTF_IMPLEMENTATION\n#include <cgltf.h>\n")
+add_library(fovea_cgltf STATIC "${CMAKE_BINARY_DIR}/fovea_cgltf/cgltf.c")
+target_include_directories(fovea_cgltf SYSTEM PUBLIC "${cgltf_SOURCE_DIR}")
+set_target_properties(fovea_cgltf PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # --- bc7enc_rdo (BC7 and BC1 texture encoders; fovea-compiler only, D-017) ----
 # Rich Geldreich's encoders, MIT or public domain (the files used here; the

@@ -14,14 +14,15 @@ set(gdal "gdal|cpl_|ogr")
 
 # Library directory, then the include paths it must not use. Each library
 # may include only the fovea libraries it depends on in the graph.
-set(rule_core "${gpu}|${gdal}|fovea/(terrain|platform|net|render)/")
-set(rule_terrain "${gpu}|${gdal}|fovea/(platform|net|render)/")
-set(rule_net "${gpu}|${gdal}|fovea/(terrain|platform|render)/")
-set(rule_platform "${gdal}|fovea/(terrain|net|render)/")
+set(rule_core "${gpu}|${gdal}|fovea/(terrain|models|platform|net|render)/")
+set(rule_terrain "${gpu}|${gdal}|fovea/(models|platform|net|render)/")
+set(rule_models "${gpu}|${gdal}|fovea/(terrain|platform|net|render)/")
+set(rule_net "${gpu}|${gdal}|fovea/(terrain|models|platform|render)/")
+set(rule_platform "${gdal}|fovea/(terrain|models|net|render)/")
 set(rule_render "${gdal}|fovea/net/")
 
 set(violations "")
-foreach(lib IN ITEMS core terrain net platform render)
+foreach(lib IN ITEMS core terrain models net platform render)
     # Every C/C++ source or header: .h .hpp .c .cpp .inl .ipp and the like.
     file(GLOB_RECURSE sources LIST_DIRECTORIES false "${ROOT}/libs/${lib}/*.[hci]*")
     foreach(source IN LISTS sources)
