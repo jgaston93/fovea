@@ -1,8 +1,8 @@
 # Milestone 4: Airport and models
 
-The goal from `fovea-plan.md`: flattened runways, a glTF model library, and hand-placed KHSV landmarks. Models stand on the milestone 3 terrain, loaded on the paging thread and drawn at 60 Hz; milestone 6's entities will use the same model library.
+The goal from `fovea-plan.md`: flattened runways, a glTF model library, and hand-placed KHSV landmarks. Models stand on the milestone 3 terrain, loaded on the paging thread and drawn at 60 Hz; milestone 6's entities will use the same model library. Added 2026-11-07, at the owner's asking after step 4's first look: buildings that look like buildings, not coloured blocks (step 5), and Redstone Army Airfield (KHUA), already inside the KHSV database, with its runway and landmarks too (step 6).
 
-As before, each step is its own pull request. Steps 1 and 2 run in WSL and CI; steps 3 to 5 also need the Windows machine for the desk, and step 4 its Blender.
+As before, each step is its own pull request. Steps 1 and 2 run in WSL and CI; steps 3 to 7 also need the Windows machine for the desk, and steps 4 to 6 its Blender.
 
 ## The data (checked 2026-11-07)
 
@@ -49,9 +49,21 @@ As before, each step is its own pull request. Steps 1 and 2 run in WSL and CI; s
 - Blender scripts for the KHSV landmarks (the control tower, the terminal, hangars and a few large buildings), placed from the imagery in `data/placements/khsv.toml`; the compiler bakes them into the database (D-026).
 - **Done when:** on the desk each landmark stands on its footprint in the imagery, at the right height, from the CIGI eyepoint, and the owner finds it looks right.
 
-## Step 5: Hardware check
+## Step 5: Better building models
 
-- Fly the KHSV routes on the desk with the landmarks: frame timing, model loading, and the look of the airport from low altitude. Results recorded; anything unexpected becomes an issue.
+- Still generic and built by scripts (D-025), but looking like buildings:
+  - **Roofs from the imagery:** seen from the air a building is mostly its roof, so each landmark's roof shows the NAIP imagery over its footprint (the terminal's own blue and white, the hangars' ribbing), matching the photograph around it. How (a texture per placement made by the compiler, or the roof drawn from the terrain's own imagery) is decided at the start of the step, as a decision.
+  - **Walls and shapes:** walls textured with generic window bands, doors and hangar doors; arched roofs on hangars; the tower with a shaft, a faceted glass cab and a roof; the terminal's parts as they stand, not one block each.
+- **Done when:** on the desk the landmarks read as buildings from low altitude and match the imagery around them, and the owner finds they look right; drawing them stays within the frame (GPU time recorded).
+
+## Step 6: KHUA
+
+- Redstone Army Airfield (KHUA), about 2 km inside the KHSV database's east edge: its runway (17/35) in an airport file from the FAA's data, smoothed by the compiler (D-022), and its main buildings placed as KHSV's are (steps 4 and 5).
+- **Done when:** `tools/check-elevation.py` passes on its runway as on KHSV's, and on the desk its landmarks stand on their footprints and the owner finds they look right.
+
+## Step 7: Hardware check
+
+- Fly the KHSV and KHUA routes on the desk with the landmarks: frame timing, model loading, and the look of both airports from low altitude. Results recorded; anything unexpected becomes an issue.
 
 ## Inputs needed from you
 
@@ -60,4 +72,4 @@ As before, each step is its own pull request. Steps 1 and 2 run in WSL and CI; s
 | Plan | ~~D-023 to D-025~~ accepted: cgltf, uncompressed model textures for now, own generic massing models |
 | Plan | ~~D-022 and D-026~~ accepted |
 | Step 4 | ~~Which landmarks~~ the standard airport ones: the control tower, the terminal, hangars, and other large airport buildings |
-| Steps 4, 5 | Time at the desk |
+| Steps 4 to 7 | Time at the desk |
