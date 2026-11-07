@@ -362,8 +362,9 @@ TileLayer encode_placements(std::span<const Placement> placements) {
         // Name length, name, three doubles, a float, two zero bytes.
         l.data.resize(at + p.model.size() + std::size_t{32}, 0);
         put(l.data, at, static_cast<std::uint16_t>(p.model.size()));
-        std::copy(p.model.begin(), p.model.end(),
-                  l.data.begin() + static_cast<std::ptrdiff_t>(at + 2));
+        for (std::size_t k = 0; k < p.model.size(); ++k) {
+            l.data[at + 2 + k] = static_cast<std::uint8_t>(p.model[k]);
+        }
         std::size_t q = at + 2 + p.model.size();
         put(l.data, q, p.lat_deg);
         put(l.data, q + 8, p.lon_deg);
@@ -390,8 +391,10 @@ std::optional<std::vector<Placement>> decode_placements(const TileLayer& l) {
             return std::nullopt;
         }
         Placement p;
-        p.model.assign(in.begin() + static_cast<std::ptrdiff_t>(at + 2),
-                       in.begin() + static_cast<std::ptrdiff_t>(at + 2 + length));
+        p.model.resize(length);
+        for (std::size_t k = 0; k < length; ++k) {
+            p.model[k] = static_cast<char>(in[at + 2 + k]);
+        }
         const std::size_t q = at + 2 + length;
         p.lat_deg = get<double>(in, q);
         p.lon_deg = get<double>(in, q + 8);
