@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 
 #include <gtest/gtest.h>
 
@@ -57,11 +58,18 @@ TEST(ImageFile, DecodesPngAndJpegInMemoryWithinASize) {
     EXPECT_EQ(jpeg->width, 40U);
     EXPECT_EQ(jpeg->height, 24U);
     EXPECT_LT(compare_images(img, *jpeg, 12).fraction_over, 0.01);  // lossy, but close
-    EXPECT_FALSE(decode_image(encode_png(img), 39).has_value());     // wider than allowed
+    EXPECT_FALSE(decode_image(encode_png(img), 39).has_value());    // wider than allowed
     EXPECT_TRUE(decode_image(encode_png(img), 40).has_value());
     const std::vector<std::uint8_t> junk{1, 2, 3};
     EXPECT_FALSE(decode_image(junk).has_value());
     EXPECT_TRUE(encode_png(RgbaImage{}).empty());
+    // read_png reads PNG files only.
+    const std::filesystem::path file = "image_file_a_jpeg.png";
+    const auto j = encode_jpeg(img, 90);
+    std::ofstream(file, std::ios::binary)
+        .write(reinterpret_cast<const char*>(j.data()), static_cast<std::streamsize>(j.size()));
+    EXPECT_FALSE(read_png(file).has_value());
+    std::filesystem::remove(file);
 }
 
 TEST(ImageFile, CompareCountsPixelsOverTheThreshold) {
