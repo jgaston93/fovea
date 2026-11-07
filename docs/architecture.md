@@ -37,7 +37,7 @@ net       ← core
 render    ← core, platform, terrain, models  (+ volk, VMA, vk-bootstrap, Dear ImGui, private; the terrain paging thread, which loads models too)
 
 apps/fovea           ← core, terrain, platform, net, render
-apps/fovea-compiler  ← core, terrain      (+ GDAL)
+apps/fovea-compiler  ← core, terrain, models  (+ GDAL)
 tools/cigi-test-host ← core, net
 ```
 
