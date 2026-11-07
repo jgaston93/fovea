@@ -14,7 +14,8 @@
 //   model = "khsv_tower"            # <models dir>/khsv_tower.glb
 //   lat = 34.63950                  # degrees, the model's origin
 //   lon = -86.77391
-//   heading = 0.0                   # degrees clockwise from true north
+//   heading = 0.0                   # degrees clockwise from true north (any: taken
+//                                   # into 0 to 360)
 
 #include <filesystem>
 #include <optional>
@@ -38,7 +39,9 @@ struct PlacementFileResult {
     std::vector<PlacementSpec> placements;
     std::vector<std::string> errors;
 };
-PlacementFileResult load_placement_file(const std::filesystem::path& file);
+// A placement file's text; errors start with `file`.
+PlacementFileResult parse_placement_file(const std::string& text,
+                                         const std::filesystem::path& file);
 
 // What baking them did.
 struct PlacementReport {

@@ -296,15 +296,19 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
         CompileSettings::Placements pl;
         const fs::path file = path(placements["file"], "placements.file");
         pl.models = path(placements["models"], "placements.models");
-        if (!file.empty()) {
-            PlacementFileResult read = load_placement_file(file);
+        if (const auto t = file.empty() ? std::nullopt : read_text(file)) {
+            PlacementFileResult read = parse_placement_file(*t, file);
             r.errors.insert(r.errors.end(), read.errors.begin(), read.errors.end());
             pl.placements = std::move(read.placements);
+        } else if (!file.empty()) {
+            error(placements.node()->source(), "cannot read " + file.string());
         }
+        // The runtime draws placements from the root tiles only, for now
+        // (#48): any other level would compile and never show.
         if (const auto* l = placements.node()->as_table()->get("level")) {
             const auto level = l->value<std::int64_t>();
-            if (!level || *level < s.root_level || *level > s.finest_level) {
-                error(l->source(), "[placements] level is from the root level to the finest");
+            if (!level || *level != s.root_level) {
+                error(l->source(), "[placements] level must be the root level, for now (#48)");
             } else {
                 pl.level = static_cast<std::uint8_t>(*level);
             }
