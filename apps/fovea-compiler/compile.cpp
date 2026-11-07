@@ -573,6 +573,17 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
         }
         m.imagery = DatabaseManifest::Imagery{s.imagery->format, s.imagery->texels};
     }
+    if (s.placements) {
+        const std::uint8_t level = s.placements->level.value_or(s.root_level);
+        PlacementReport report;
+        if (!bake_placements(s.placements->placements, s.placements->models, part, m, level,
+                             s.finest_level, report, result.errors)) {
+            fs::remove_all(part, ec);
+            return result;
+        }
+        m.placements = DatabaseManifest::Placements{level};
+        result.placements = report;
+    }
     if (!write_manifest(part, m)) {
         return fail((part / "manifest.toml").string() + ": cannot write");
     }

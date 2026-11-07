@@ -53,6 +53,12 @@ credit = "GEOID18: NOAA National Geodetic Survey"
 airport = "../airports/khsv.toml"
 blend_m = 20.0
 
+# The KHSV landmarks (milestone 4 step 4): generic massing models, built by
+# data/models/khsv_landmarks.py, placed in the root tiles (D-026).
+[placements]
+file = "../placements/khsv.toml"
+models = "../models"
+
 [[credit]]
 layer = "elevation"
 name = "FAA airport data (KHSV runways)"

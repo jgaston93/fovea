@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "fovea/terrain/database.hpp"
+#include "placements.hpp"
 #include "settings.hpp"
 
 namespace fovea::compiler {
@@ -51,9 +52,10 @@ struct CompileResult {
     bool ok = false;
     std::vector<std::string> errors;
     DatabaseManifest manifest;
-    std::vector<LevelReport> levels;       // in the order built (finest first)
-    std::optional<ImageryReport> imagery;  // with [imagery] in the settings
-    std::vector<RunwayReport> runways;     // with [runways]
+    std::vector<LevelReport> levels;            // in the order built (finest first)
+    std::optional<ImageryReport> imagery;       // with [imagery] in the settings
+    std::vector<RunwayReport> runways;          // with [runways]
+    std::optional<PlacementReport> placements;  // with [placements]
 };
 
 // The root level's tiles touching the area, as a rectangle.

@@ -292,6 +292,26 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
         }
     }
 
+    if (const auto placements = root["placements"]; placements.is_table()) {
+        CompileSettings::Placements pl;
+        const fs::path file = path(placements["file"], "placements.file");
+        pl.models = path(placements["models"], "placements.models");
+        if (!file.empty()) {
+            PlacementFileResult read = load_placement_file(file);
+            r.errors.insert(r.errors.end(), read.errors.begin(), read.errors.end());
+            pl.placements = std::move(read.placements);
+        }
+        if (const auto* l = placements.node()->as_table()->get("level")) {
+            const auto level = l->value<std::int64_t>();
+            if (!level || *level < s.root_level || *level > s.finest_level) {
+                error(l->source(), "[placements] level is from the root level to the finest");
+            } else {
+                pl.level = static_cast<std::uint8_t>(*level);
+            }
+        }
+        s.placements = std::move(pl);
+    }
+
     for (const auto& dir : dirs) {
         std::error_code ec;
         for (const auto& entry : fs::directory_iterator(dir, ec)) {

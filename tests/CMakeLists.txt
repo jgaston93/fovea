@@ -56,7 +56,8 @@ gtest_discover_tests(fovea_gpu_tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT 
 
 # The terrain compiler, where it is built (GDAL found; apps/fovea-compiler).
 if(TARGET fovea_compiler_lib)
-    add_executable(fovea_compiler_tests unit/test_compiler.cpp)
+    add_executable(fovea_compiler_tests support/glb.cpp unit/test_compiler.cpp)
+    target_include_directories(fovea_compiler_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(fovea_compiler_tests PRIVATE fovea_compiler_lib GDAL::GDAL
                                                        GTest::gtest_main)
     fovea_target_defaults(fovea_compiler_tests)

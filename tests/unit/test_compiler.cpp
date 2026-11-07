@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <memory>
 #include <random>
 #include <ranges>
@@ -23,10 +24,12 @@
 
 #include "compile.hpp"
 #include "elevation.hpp"
+#include "fovea/core/geodesy.hpp"
 #include "fovea/terrain/database.hpp"
 #include "fovea/terrain/tile_file.hpp"
 #include "runways.hpp"
 #include "settings.hpp"
+#include "support/glb.hpp"
 #include "texture.hpp"
 
 namespace fovea::compiler {
@@ -1304,6 +1307,110 @@ TEST(CompilerRunways, AirportFileMistakesAreRefused) {
     EXPECT_FALSE(parse_settings(bad_blend, "s.toml", dir).errors.empty());
     fs::remove(dir / "airport.toml");
     EXPECT_FALSE(parse_settings(good, "s.toml", dir).errors.empty());  // unreadable
+}
+
+// Placements (milestone 4 step 4, D-026): a box set at an angle on sloping
+// ground sits at the lowest ground under its footprint, in the tile that
+// holds it at the root level, its model copied in.
+TEST(CompilerPlacements, LandOnTheLowestGroundUnderTheirFootprint) {
+    GDALAllRegister();
+    const Scene scene("placements");
+    fs::create_directories(scene.dir / "models");
+    const auto box = test::make_glb([] {
+        test::GlbSpec g = test::glb_box(10.0F, 5.0F, 20.0F);
+        g.extras = R"({"fovea_material": 1})";
+        return g;
+    }());
+    {
+        std::ofstream out(scene.dir / "models" / "shed.glb", std::ios::binary);
+        out.write(reinterpret_cast<const char*>(box.data()),
+                  static_cast<std::streamsize>(box.size()));
+    }
+    // Over the newer DEM (plane A + 25 m), clear of its hole and edges.
+    const double lat = (scene.extent.south_deg + scene.extent.north_deg) / 2 - 0.0012;
+    const double lon = scene.extent.west_deg + 0.0011;
+    {
+        std::ofstream(scene.dir / "placed.toml")
+            << std::setprecision(12) << "[[placement]]\nmodel = \"shed\"\nlat = " << lat
+            << "\nlon = " << lon << "\nheading = 30.0\n";
+    }
+    const auto r = scene.build(scene.settings() +
+                               "[placements]\nfile = \"placed.toml\"\nmodels = \"models\"\n");
+    ASSERT_TRUE(r.ok) << (r.errors.empty() ? "" : r.errors[0]);
+    ASSERT_TRUE(r.placements.has_value());
+    EXPECT_EQ(r.placements->placements, 1U);
+    ASSERT_TRUE(r.manifest.placements.has_value());
+    EXPECT_EQ(r.manifest.placements->level, Scene::kRoot);
+    EXPECT_TRUE(fs::exists(scene.dir / "db" / "models" / "shed.glb"));
+    const TileKey key = tile_at(lat, lon, Scene::kRoot);
+    const TileResult t = read_tile(scene.dir / "db" / tile_path(key), key);
+    ASSERT_TRUE(t.tile.has_value());
+    const TileLayer* layer = t.tile->find(kPlacementsLayer);
+    ASSERT_NE(layer, nullptr);
+    const auto placed = decode_placements(*layer);
+    ASSERT_TRUE(placed.has_value());
+    ASSERT_EQ(placed->size(), 1U);
+    EXPECT_EQ((*placed)[0].model, "shed");
+    EXPECT_EQ((*placed)[0].heading_deg, 30.0F);
+    // The ground is a plane, so its lowest point under the footprint is a
+    // corner: 10 m either side across, 20 m front and back, turned 30
+    // degrees (the front north-north-east, the left west-north-west).
+    const double h = glm::radians(30.0);
+    const DMat3 ned = ned_to_ecef(lat, lon);
+    double lowest = 1e300;
+    for (const double x : {-10.0, 10.0}) {
+        for (const double z : {-20.0, 20.0}) {
+            const DVec3 front(std::cos(h), std::sin(h), 0.0);
+            const DVec3 left(std::sin(h), -std::cos(h), 0.0);
+            const Geodetic g =
+                ecef_to_geodetic(geodetic_to_ecef({lat, lon, 0.0}) + ned * (front * z + left * x));
+            const auto [height, clear] = scene.expected(g.lat_deg, g.lon_deg, 3.0);
+            ASSERT_TRUE(clear);
+            lowest = std::min(lowest, height + Scene::geoid(g.lat_deg, g.lon_deg));
+        }
+    }
+    EXPECT_NEAR((*placed)[0].height_m, lowest, 0.02);
+    // And not the height at its origin: the ground rises across it.
+    const auto [at_origin, clear] = scene.expected(lat, lon, 3.0);
+    EXPECT_GT(at_origin + Scene::geoid(lat, lon) - lowest, 0.3);
+}
+
+TEST(CompilerPlacements, MistakesAreRefused) {
+    GDALAllRegister();
+    const Scene scene("placements_bad");
+    fs::create_directories(scene.dir / "models");
+    const auto box = test::make_glb([] {
+        test::GlbSpec g = test::glb_box(2.0F, 2.0F, 2.0F);
+        g.extras = R"({"fovea_material": 1})";
+        return g;
+    }());
+    std::ofstream(scene.dir / "models" / "shed.glb", std::ios::binary)
+        .write(reinterpret_cast<const char*>(box.data()), static_cast<std::streamsize>(box.size()));
+    std::ofstream(scene.dir / "models" / "junk.glb") << "not a model";
+    const double lat = (scene.extent.south_deg + scene.extent.north_deg) / 2;
+    const double lon = scene.extent.west_deg + 0.0011;
+    const auto with = [&](const std::string& model, double la, double lo, double heading) {
+        {
+            std::ofstream out(scene.dir / "placed.toml");
+            out << std::setprecision(12) << "[[placement]]\nmodel = \"" << model
+                << "\"\nlat = " << la << "\nlon = " << lo << "\nheading = " << heading << "\n";
+        }
+        const auto loaded = parse_settings(
+            scene.settings() + "[placements]\nfile = \"placed.toml\"\nmodels = \"models\"\n",
+            "settings.toml", scene.dir);
+        if (!loaded.settings) {
+            return loaded.errors.empty() ? std::string("?") : loaded.errors[0];
+        }
+        const auto r = compile(*loaded.settings, 2, nullptr);
+        EXPECT_FALSE(fs::exists(scene.dir / "db.part"));
+        return r.ok ? std::string() : (r.errors.empty() ? std::string("?") : r.errors[0]);
+    };
+    EXPECT_EQ(with("shed", lat, lon, 0.0), "");
+    EXPECT_NE(with("ghost", lat, lon, 0.0).find("ghost"), std::string::npos);
+    EXPECT_NE(with("junk", lat, lon, 0.0).find("junk"), std::string::npos);
+    EXPECT_NE(with("shed", lat + 1.0, lon, 0.0).find("outside"), std::string::npos);
+    EXPECT_NE(with("../shed", lat, lon, 0.0).find("model name"), std::string::npos);
+    EXPECT_NE(with("shed", lat, lon, 360.0).find("heading"), std::string::npos);
 }
 
 TEST(CompilerTexture, MipChainsAndFormatsRoundTrip) {
