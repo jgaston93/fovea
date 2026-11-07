@@ -113,6 +113,16 @@ Display sync is not guaranteed just because one GPU renders all three views. Pre
 - Height-of-terrain query support so ground vehicles sit on terrain.
 - Entity layer kept protocol-neutral so a future DIS bridge can feed the same table.
 
+## Environment
+
+Added 2026-11-07, at the owner's asking: the sky, the light and the weather, which the first milestones left as a fixed placeholder (a gradient sky and a sun fixed in the south-east). Linear HDR rendering with tone mapping per view (foundational decision 3) is what they build on.
+
+- Atmosphere and aerial perspective: a physically based sky (atmospheric scattering), and distant terrain and models fading into haze with distance, which also softens where terrain levels of detail change; visibility set by the host or config.
+- Time of day: the sun and moon placed from the date, time and location; the sky and the lighting following them through dawn, dusk and night; stars.
+- Night lighting: airport and approach lights and lit windows, drawn with the clustered lighting reserved for them (foundational decision 4).
+- Weather: visibility and fog, cloud layers (2D layers first; volumetric clouds if the frame allows), precipitation; wet or snow-covered ground later.
+- Host control: the environment set over CIGI (time of day, atmosphere, weather), from the ICD, as every packet; and in config without a host.
+
 ## Sensor views (future)
 
 - IR: render per-material temperature using a GPU material property table (thermal parameters, time of day, weather), then sensor effects (blur, noise, gain, white-hot/black-hot).
@@ -139,10 +149,11 @@ Display sync is not guaranteed just because one GPU renders all three views. Pre
 2. CIGI eyepoint: build a small scripted CIGI test host, receive its eyepoint over CIGI, and fly a camera over a test grid; log end-to-end latency.
 3. First terrain: compiler builds a small KHSV database (3DEP elevation + NAIP imagery + LOD); runtime streams it at a locked 60 Hz.
 4. Airport and models: flattened runways, glTF model library, hand-placed KHSV landmarks.
-5. Low-level cues: procedural detail textures, scattered vegetation with instancing and impostors.
-6. Entities: CIGI entity control, interpolation, articulated rotors, height-of-terrain queries.
-7. Evaluation: fly scripted hover and low-level routes and compare frame timing and visual cues against written acceptance criteria.
-8. Later: material maps and IR, lidar, DIS bridge, multi-machine channels.
+5. Environment: atmosphere and aerial perspective, time of day with the sun, moon and stars, night lighting (airport lights), weather (visibility, cloud layers, precipitation), set over CIGI or by config.
+6. Low-level cues: procedural detail textures, scattered vegetation with instancing and impostors.
+7. Entities: CIGI entity control, interpolation, articulated rotors, height-of-terrain queries.
+8. Evaluation: fly scripted hover and low-level routes and compare frame timing and visual cues against written acceptance criteria.
+9. Later: material maps and IR, lidar, DIS bridge, multi-machine channels.
 
 ## First Claude Code session tasks
 

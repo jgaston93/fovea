@@ -207,7 +207,7 @@ void CigiAdapter::apply_entity(const cigi::EntityControl& e, SceneSnapshot& scen
         return;
     }
     if (e.attach) {
-        // Child entities arrive in milestone 6. Until then one that was top
+        // Child entities arrive in milestone 7. Until then one that was top
         // level is hidden rather than left at its old place.
         ++stats_.attached_entities;
         if (entity != nullptr) {

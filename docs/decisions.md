@@ -160,7 +160,7 @@ Models are glTF 2.0 binary files (`.glb`), as Blender exports them. `libs/models
 
 **Status:** Accepted (2026-11-07)
 
-The paging thread decodes a model's PNG or JPEG textures with stb_image (built until now for PNG only, D-012, which left texture formats to this choice; JPEG is added) and builds their mips, and the GPU holds them as RGBA8. Model files stay plain glTF, straight from Blender, with no conversion step, and a few dozen landmarks take little of the memory budget. The cost is four times BC7's memory and upload, and the decode on the paging thread. Compressed textures (BC7 made offline, as terrain imagery is, or the standard `KHR_texture_basisu`) are revisited in milestone 5, when vegetation and many models make memory and uploads matter.
+The paging thread decodes a model's PNG or JPEG textures with stb_image (built until now for PNG only, D-012, which left texture formats to this choice; JPEG is added) and builds their mips, and the GPU holds them as RGBA8. Model files stay plain glTF, straight from Blender, with no conversion step, and a few dozen landmarks take little of the memory budget. The cost is four times BC7's memory and upload, and the decode on the paging thread. Compressed textures (BC7 made offline, as terrain imagery is, or the standard `KHR_texture_basisu`) are revisited in milestone 6, when vegetation and many models make memory and uploads matter.
 
 ## D-025 Models are Fovea's own and generic, built by committed scripts
 
