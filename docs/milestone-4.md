@@ -10,7 +10,7 @@ As before, each step is its own pull request. Steps 1 and 2 run in WSL and CI; s
 - **Landmark positions:** read off the NAIP imagery already in the database (public domain), not taken from OpenStreetMap: OSM's licence (ODbL) asks share-alike of derived databases, and its servers couldn't be reached to check its coverage of the airport's buildings. OSM can follow for taxiways, aprons and footprints if wanted, with its notice in `ATTRIBUTION.md`.
 - **Models:** none suitable is public and free of restrictions, so Fovea makes its own, generic ones (D-025). Blender 5.2 is on the Windows machine.
 
-## Decisions (in `decisions.md`: D-023 to D-025 accepted 2026-11-07; D-022 and D-026 proposed)
+## Decisions (accepted 2026-11-07, in `decisions.md`)
 
 - **D-022 Runways are smoothed in the compiler, from the elevation itself.** The compiler takes each runway's rectangle from a committed airport file (FAA ends and widths) and, inside it, replaces the finest level's heights with a smooth surface fitted to the 1 m lidar: smooth along the runway, keeping its grade changes, and across it, keeping its crown (a 1 to 1.5% cross slope puts the edges 0.2 to 0.35 m below the centreline), blended into the surrounding ground over the shoulders. Coarser levels are filtered from it as now, so their recorded errors stay true. This removes the lidar's noise and anything on the runway when it was flown, without moving the surface off the survey; a straight line between the surveyed ends, or a level cross-section, would not. Taxiways and aprons follow later.
 - **D-023 Models are glTF 2.0 binary (`.glb`), read by `libs/models` with cgltf.** A CPU-only library like `libs/terrain` (no Vulkan), so its parsing is tested without a GPU and a host could use it too. cgltf (MIT) is one file with no dependencies, and writes glTF too (for tests). fastgltf is faster, but needs simdjson, and parsing is a small part of loading a model, done once per model on the paging thread.
@@ -47,6 +47,6 @@ As before, each step is its own pull request. Steps 1 and 2 run in WSL and CI; s
 | Needed by | Input |
 |---|---|
 | Plan | ~~D-023 to D-025~~ accepted: cgltf, uncompressed model textures for now, own generic massing models |
-| Plan | Approve D-022 (runways smoothed from the lidar, not flattened to the FAA's ends) and D-026 (placements as a tile layer, in the roots for KHSV) |
-| Step 4 | Which landmarks matter most to you (the tower, the terminal, the hangars, anything else) |
+| Plan | ~~D-022 and D-026~~ accepted |
+| Step 4 | ~~Which landmarks~~ the standard airport ones: the control tower, the terminal, hangars, and other large airport buildings |
 | Steps 4, 5 | Time at the desk |
