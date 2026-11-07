@@ -104,8 +104,11 @@ def list_stac(layer: dict, area: dict) -> list[dict]:
 
 def resolve(sources: dict) -> list[dict]:
     """Every file the sources name, asking the services."""
-    area, out = sources["area"], []
+    out = []
     for layer in sources["layer"]:
+        # A layer can ask for a larger extent than the area (e.g. all the
+        # database's tiles, for a layer without a backdrop).
+        area = layer.get("extent", sources["area"])
         kind = layer["kind"]
         if kind == "tnm":
             files = list_tnm(layer, area)

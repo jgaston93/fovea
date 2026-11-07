@@ -9,11 +9,14 @@
 //
 // The finest level samples the sources bilinearly and adds the geoid
 // (ellipsoidal heights, D-020); each coarser level is filtered from the one
-// below. The database is built in
+// below. Imagery (D-017) follows, into the same tiles: the finest level
+// from the sources, each coarser tile from its children's halves, each
+// with its mip chain. The database is built in
 // "<output>.part" and moved into place once complete, replacing an older
 // database there.
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -31,11 +34,18 @@ struct LevelReport {
     float max_m = 0.0F;
 };
 
+struct ImageryReport {
+    std::size_t tiles = 0;
+    double seconds = 0.0;
+    std::size_t bytes = 0;  // the imagery layers, mips included
+};
+
 struct CompileResult {
     bool ok = false;
     std::vector<std::string> errors;
     DatabaseManifest manifest;
-    std::vector<LevelReport> levels;  // in the order built (finest first)
+    std::vector<LevelReport> levels;       // in the order built (finest first)
+    std::optional<ImageryReport> imagery;  // with [imagery] in the settings
 };
 
 // The root level's tiles touching the area, as a rectangle.

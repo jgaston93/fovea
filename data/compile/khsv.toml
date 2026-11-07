@@ -29,6 +29,14 @@ sources = [
 ]
 geoid = "geoid/us_noaa_g2018u0.tif"
 
+# NAIP 2023 (0.6 m): 512 texels across a level-16 tile is 0.6 x 0.5 m.
+# BC7 by default (D-017); "bc1" for half the size, "rgba8" for exact colour.
+[imagery]
+format = "bc7"
+texels = 512
+cache = "../cache/khsv"
+sources = ["imagery/m_*.tif"]
+
 [[credit]]
 layer = "elevation"
 name = "USGS 3DEP 1 m lidar DEMs and 1/3 arc-second DEM"
@@ -38,3 +46,8 @@ credit = "Elevation data: U.S. Geological Survey, 3D Elevation Program"
 layer = "elevation"
 name = "NOAA GEOID18"
 credit = "GEOID18: NOAA National Geodetic Survey"
+
+[[credit]]
+layer = "imagery"
+name = "USDA NAIP 2023"
+credit = "Imagery: USDA National Agriculture Imagery Program"

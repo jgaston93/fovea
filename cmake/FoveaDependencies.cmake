@@ -164,6 +164,26 @@ add_library(fovea_stb INTERFACE)
 target_include_directories(fovea_stb SYSTEM INTERFACE
     "${stb_image_SOURCE_DIR}" "${stb_image_write_SOURCE_DIR}")
 
+# --- bc7enc_rdo (BC7 and BC1 texture encoders; fovea-compiler only, D-017) ----
+# Rich Geldreich's encoders, MIT or public domain (the files used here; the
+# repository's bc7e.ispc is Apache-2.0 and not used, nor its bundled ispc
+# binary). No releases, so pinned by commit. bc7enc.cpp encodes BC7 (modes 1,
+# 5, 6 and 7), rgbcx BC1, bc7decomp decodes BC7 for the tests and checks.
+# Only the compiler uses them, which isn't built on Windows (D-019).
+if(NOT WIN32)
+    FetchContent_Declare(bc7enc_rdo
+        URL https://github.com/richgel999/bc7enc_rdo/archive/b9438627eef73a1157e84201b6fa6eb2ffd6d9f0.tar.gz
+        URL_HASH SHA256=bbb33d1dbb6178a3a2c044956c3cc0b8ea9fc2f2903824379dd86f87d53b64c6
+        SOURCE_SUBDIR do-not-configure)
+    FetchContent_MakeAvailable(bc7enc_rdo)
+    add_library(fovea_bc7enc STATIC
+        "${bc7enc_rdo_SOURCE_DIR}/bc7enc.cpp"
+        "${bc7enc_rdo_SOURCE_DIR}/bc7decomp.cpp"
+        "${bc7enc_rdo_SOURCE_DIR}/rgbcx.cpp")
+    target_include_directories(fovea_bc7enc SYSTEM PUBLIC "${bc7enc_rdo_SOURCE_DIR}")
+    set_target_properties(fovea_bc7enc PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+
 # --- GoogleTest 1.15.2 (tests only) -------------------------------------------
 if(FOVEA_BUILD_TESTS)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)

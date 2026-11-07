@@ -156,6 +156,59 @@ TEST(TileFile, ElevationLayerRoundTripsAndRefusesNonsense) {
     EXPECT_FALSE(decode_elevation(encode_elevation(nan)).has_value());
 }
 
+TEST(TileFile, ImageryLayerRoundTripsAndRefusesNonsense) {
+    EXPECT_EQ(imagery_mip_count(512), 10U);
+    EXPECT_EQ(imagery_mip_count(4), 3U);
+    EXPECT_EQ(imagery_mip_bytes(ImageryFormat::bc7_srgb, 512), 128U * 128 * 16);
+    EXPECT_EQ(imagery_mip_bytes(ImageryFormat::bc1_srgb, 8), 4U * 8);
+    EXPECT_EQ(imagery_mip_bytes(ImageryFormat::bc7_srgb, 2), 16U);  // one block below 4 x 4
+    EXPECT_EQ(imagery_mip_bytes(ImageryFormat::rgba8_srgb, 2), 16U);
+    EXPECT_EQ(imagery_format_from_name("bc1"), ImageryFormat::bc1_srgb);
+    EXPECT_FALSE(imagery_format_from_name("bc3").has_value());
+
+    ImageryImage image;
+    image.format = ImageryFormat::bc1_srgb;
+    image.size = 8;
+    for (std::uint32_t s = 8; s >= 1; s /= 2) {
+        auto& mip = image.mips.emplace_back(imagery_mip_bytes(image.format, s));
+        for (std::size_t i = 0; i < mip.size(); ++i) {
+            mip[i] = static_cast<std::uint8_t>(i * 7 + s);
+        }
+    }
+    const TileLayer layer = encode_imagery(image);
+    EXPECT_EQ(layer.name, kImageryLayer);
+    EXPECT_EQ(layer.format, 2U);
+    const auto back = decode_imagery(layer);
+    ASSERT_TRUE(back.has_value());
+    EXPECT_EQ(back->format, ImageryFormat::bc1_srgb);
+    EXPECT_EQ(back->size, 8U);
+    EXPECT_EQ(back->mips, image.mips);
+
+    // Through a tile file, beside the elevation.
+    ElevationGrid g;
+    g.size = 2;
+    g.heights = {1.0F, 2.0F, 3.0F, 4.0F};
+    const TileFile tile{{3, 1, 2}, {encode_elevation(g), layer}};
+    const TileResult read = decode_tile(encode_tile(tile), TileKey{3, 1, 2});
+    ASSERT_TRUE(read.tile.has_value()) << read.detail;
+    ASSERT_NE(read.tile->find(kImageryLayer), nullptr);
+    EXPECT_EQ(decode_imagery(*read.tile->find(kImageryLayer))->mips, image.mips);
+
+    const auto broken = [&](const std::function<void(TileLayer&)>& f) {
+        TileLayer l = layer;
+        f(l);
+        return !decode_imagery(l).has_value();
+    };
+    EXPECT_TRUE(broken([](TileLayer& l) { l.data.pop_back(); }));
+    EXPECT_TRUE(broken([](TileLayer& l) { l.data.push_back(0); }));
+    EXPECT_TRUE(broken([](TileLayer& l) { l.format = 9; }));
+    EXPECT_TRUE(broken([](TileLayer& l) { l.format = 256 + 1; }));  // not bc7 when narrowed
+    EXPECT_TRUE(broken([](TileLayer& l) { l.data[0] = 6; }));       // not a power of two
+    EXPECT_TRUE(broken([](TileLayer& l) { l.data[0] = 2; }));       // below 4
+    EXPECT_TRUE(broken([](TileLayer& l) { l.data[4] = 3; }));       // not the full chain
+    EXPECT_TRUE(broken([](TileLayer& l) { l.data.resize(4); }));
+}
+
 // --- Databases ---
 
 // A database on disk whose terrain follows `height(lat, lon)` exactly at its
@@ -242,6 +295,21 @@ TEST(TerrainDatabase, ManifestRoundTripsAndIsChecked) {
     EXPECT_TRUE(back.manifest->has_tile({12, 1081, 2835}));
     EXPECT_FALSE(back.manifest->has_tile({12, 1087, 2835}));
     EXPECT_EQ(back.manifest->finest_level(), 12);
+    EXPECT_FALSE(back.manifest->imagery.has_value());
+
+    m.imagery = DatabaseManifest::Imagery{ImageryFormat::bc1_srgb, 256};
+    const ManifestResult with = parse_manifest(manifest_text(m), "m.toml");
+    ASSERT_TRUE(with.manifest.has_value()) << with.errors[0];
+    ASSERT_TRUE(with.manifest->imagery.has_value());
+    EXPECT_EQ(with.manifest->imagery->format, ImageryFormat::bc1_srgb);
+    EXPECT_EQ(with.manifest->imagery->texels, 256U);
+    for (const char* bad : {"format = \"bc3\"\ntexels = 256", "format = \"bc7\"\ntexels = 300",
+                            "format = \"bc7\"\ntexels = 8192", "format = \"bc7\""}) {
+        std::string text = manifest_text(m);
+        const std::size_t at = text.find("format = \"bc1\"\ntexels = 256");
+        text.replace(at, std::string_view("format = \"bc1\"\ntexels = 256").size(), bad);
+        EXPECT_FALSE(parse_manifest(text, "m.toml").manifest.has_value()) << bad;
+    }
 
     EXPECT_FALSE(parse_manifest("schema = 2\n[layers.elevation]\nformat = \"float32\"\nsamples = "
                                 "17\n[[level]]\nlevel = 1\nx = [0, 0]\ny = [0, 0]\n",

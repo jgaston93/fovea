@@ -93,4 +93,36 @@ struct ElevationGrid {
 TileLayer encode_elevation(const ElevationGrid& grid);
 std::optional<ElevationGrid> decode_elevation(const TileLayer& layer);
 
+// The imagery layer (D-017): a square texture covering the tile, texel
+// centres inside it (texel (0, 0) is the south-west corner's), with its
+// full mip chain down to 1 x 1, ready to upload: row 0 at the tile's
+// south edge, as the elevation grid. Colours are sRGB. The layer's format
+// is the texture format, so tiles of one database can differ.
+//   data: size u32 (texels per side of mip 0, a power of two from 4 to
+//   4096), mip count u32, then each mip in turn, largest first (BC formats
+//   as 4 x 4 blocks in rows, a mip smaller than 4 x 4 as one block).
+inline constexpr std::string_view kImageryLayer = "imagery";
+
+enum class ImageryFormat : std::uint8_t {  // the layer's format number
+    bc7_srgb = 1,                          // 16 bytes per 4 x 4 block
+    bc1_srgb = 2,                          // 8 bytes per block, no alpha
+    rgba8_srgb = 3,                        // uncompressed, alpha 255
+};
+
+// "bc7", "bc1", "rgba8".
+std::string_view imagery_format_name(ImageryFormat format);
+std::optional<ImageryFormat> imagery_format_from_name(std::string_view name);
+// The bytes of one mip `size` texels across.
+std::size_t imagery_mip_bytes(ImageryFormat format, std::uint32_t size);
+std::uint32_t imagery_mip_count(std::uint32_t size);  // down to 1 x 1
+
+struct ImageryImage {
+    ImageryFormat format = ImageryFormat::bc7_srgb;
+    std::uint32_t size = 0;                       // mip 0, texels per side
+    std::vector<std::vector<std::uint8_t>> mips;  // largest first, the full chain
+};
+
+TileLayer encode_imagery(const ImageryImage& image);
+std::optional<ImageryImage> decode_imagery(const TileLayer& layer);
+
 }  // namespace fovea
