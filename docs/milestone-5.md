@@ -10,7 +10,7 @@ As before, each step is its own pull request. Steps 1 and 2 run in WSL and CI (l
 - The desk's views render at 2560 x 1440 and two of 1080 x 1920 (render resolution, which the architecture keeps independent of output resolution). GPU time is 1.0 to 2.3 ms an output at most (milestone 4 step 7), against a 16.7 ms frame: there is room.
 - Texture aliasing (terrain imagery, model textures shrinking with distance) is already handled by full mip chains and anisotropic filtering. What's left is geometry: edges, and things thinner than a pixel.
 
-## Decisions (proposed, in `decisions.md`)
+## Decisions (accepted 2026-11-07, in `decisions.md`)
 
 - **D-027 Multisampling first.** The scene pass renders with multisampling (MSAA), 4 samples by default, the count set per deployment in config (`[display] msaa = 1, 2, 4 or 8`, as the GPU allows). It smooths every geometric edge and thin geometry seen from any angle, in every view alike, with no history: nothing smears when the eye moves fast, and the channels stay consistent with each other. The alternatives: temporal anti-aliasing (TAA) also smooths shading and is cheaper per sample, but blends earlier frames, so it needs motion vectors for every moving object (entities, milestone 9) and blurs or ghosts under the fast, steady motion of a simulator, which is the case that matters most here; post-process filters (FXAA, SMAA) are cheapest but only guess at edges from the final image, and crawl on thin geometry. MSAA's cost is memory and bandwidth: at 4 samples, 48 bytes a rendered pixel for colour and depth (about 180 MB for the 2560 x 1440 view and 100 MB for each portrait one at the desk's render resolution; more where a deployment renders above its output), plus the single-sampled targets the resolve writes; the desk measures it. TAA or SMAA can be added later, as an option, if shading aliasing shows.
   Alpha-masked materials (models' cut-outs, milestone 4 step 3, and later vegetation, milestone 7) use alpha to coverage under multisampling, so their edges are smoothed too rather than cut pixel by pixel.
@@ -34,5 +34,5 @@ As before, each step is its own pull request. Steps 1 and 2 run in WSL and CI (l
 
 | Needed by | Input |
 |---|---|
-| Plan | Approve D-027 (multisampling first, 4 by default) and D-028 (a weighted resolve before tone mapping) |
+| Plan | ~~D-027 and D-028~~ accepted |
 | Step 3 | Time at the desk: comparing edges with and without |
