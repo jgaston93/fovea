@@ -8,10 +8,10 @@
 // measured against them.
 //
 // The finest level samples the sources bilinearly and adds the geoid
-// (ellipsoidal heights, D-020); each coarser level is filtered from the one
-// below. Imagery (D-017) follows, into the same tiles: the finest level
-// from the sources, each coarser tile from its children's halves, each
-// with its mip chain. The database is built in
+// (ellipsoidal heights, D-020), with the runways smoothed (D-022, fitted
+// first); each coarser level is filtered from the one below. Imagery (D-017) follows, into the same
+// tiles: the finest level from the sources, each coarser tile from its children's halves, each with
+// its mip chain. The database is built in
 // "<output>.part" and moved into place once complete, replacing an older
 // database there.
 
@@ -40,12 +40,20 @@ struct ImageryReport {
     std::size_t bytes = 0;  // the imagery layers, mips included
 };
 
+struct RunwayReport {
+    std::string name;
+    double length_m = 0.0;
+    double rms_m = 0.0;  // the sources on the runway against the fit
+    double max_abs_m = 0.0;
+};
+
 struct CompileResult {
     bool ok = false;
     std::vector<std::string> errors;
     DatabaseManifest manifest;
     std::vector<LevelReport> levels;       // in the order built (finest first)
     std::optional<ImageryReport> imagery;  // with [imagery] in the settings
+    std::vector<RunwayReport> runways;     // with [runways]
 };
 
 // The root level's tiles touching the area, as a rectangle.

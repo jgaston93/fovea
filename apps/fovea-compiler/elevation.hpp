@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,9 @@ public:
     // shared samples.
     bool heights(const TileKey& key, std::uint32_t samples, std::vector<float>& out,
                  std::string& error) const;
+    // The same at any points (NAD83 geographic, as the tiles' grids).
+    bool at_points(std::span<const double> lat_deg, std::span<const double> lon_deg,
+                   std::vector<float>& out, std::string& error) const;
 
 private:
     struct Source;

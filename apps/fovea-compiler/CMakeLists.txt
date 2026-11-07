@@ -20,6 +20,7 @@ add_library(fovea_compiler_lib STATIC
     compile.cpp
     elevation.cpp
     imagery.cpp
+    runways.cpp
     settings.cpp
     texture.cpp)
 target_include_directories(fovea_compiler_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

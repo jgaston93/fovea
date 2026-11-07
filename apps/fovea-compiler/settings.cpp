@@ -219,6 +219,76 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
         s.imagery = std::move(im);
     }
 
+    if (const auto runways = root["runways"]; runways.is_table()) {
+        const auto blend = runways["blend_m"].value<double>();
+        if (blend && !(*blend >= 0.0 && *blend <= 1000.0)) {
+            error(runways.node()->source(), "[runways] blend_m is from 0 to 1000");
+        }
+        s.runway_blend_m = blend.value_or(s.runway_blend_m);
+        const fs::path f = path(runways["airport"], "runways.airport");
+        const auto t = f.empty() ? std::nullopt : read_text(f);
+        if (!f.empty() && !t) {
+            error(runways.node()->source(), "cannot read " + f.string());
+        }
+        toml::table airport;
+        if (t) {
+            try {
+                airport = toml::parse(*t, f.string());
+            } catch (const toml::parse_error& e) {
+                r.errors.push_back(f.string() + ":" + std::to_string(e.source().begin.line) + ": " +
+                                   std::string(e.description()));
+            }
+        }
+        const auto bad = [&](const toml::node& at, const std::string& msg) {
+            r.errors.push_back(f.string() + ":" + std::to_string(at.source().begin.line) + ": " +
+                               msg);
+        };
+        const auto* list = airport["runway"].as_array();
+        if (t && (list == nullptr || list->empty())) {
+            r.errors.push_back(f.string() + ": no [[runway]]");
+        }
+        if (list != nullptr) {
+            for (const auto& node : *list) {
+                const auto* rt = node.as_table();
+                const auto* ends = rt != nullptr ? (*rt)["end"].as_array() : nullptr;
+                const auto width = rt != nullptr ? (*rt)["width_ft"].value<double>() : std::nullopt;
+                if (rt == nullptr || !(*rt)["name"].is_string() || !width || !(*width > 0.0) ||
+                    ends == nullptr || ends->size() != 2) {
+                    bad(node, "a [[runway]] needs name, width_ft and two [[runway.end]]");
+                    continue;
+                }
+                Runway rw;
+                rw.name = (*rt)["name"].value_or(std::string{});
+                rw.width_m = *width * 0.3048;
+                rw.length_m = (*rt)["length_ft"].value_or(0.0) * 0.3048;
+                bool ok = true;
+                for (std::size_t i = 0; i < 2; ++i) {
+                    const auto* et = (*ends)[i].as_table();
+                    const auto lat = et != nullptr ? parse_degrees_minutes(
+                                                         (*et)["lat"].value_or(std::string{}), true)
+                                                   : std::nullopt;
+                    const auto lon =
+                        et != nullptr
+                            ? parse_degrees_minutes((*et)["lon"].value_or(std::string{}), false)
+                            : std::nullopt;
+                    const auto elev =
+                        et != nullptr ? (*et)["elevation_ft"].value<double>() : std::nullopt;
+                    if (et == nullptr || !(*et)["id"].is_string() || !lat || !lon || !elev) {
+                        bad((*ends)[i],
+                            "a [[runway.end]] needs id, lat and lon (\"34-39.167130N\", "
+                            "\"086-46.926028W\") and elevation_ft");
+                        ok = false;
+                        continue;
+                    }
+                    rw.ends[i] = {(*et)["id"].value_or(std::string{}), *lat, *lon, *elev * 0.3048};
+                }
+                if (ok) {
+                    s.runways.push_back(std::move(rw));
+                }
+            }
+        }
+    }
+
     for (const auto& dir : dirs) {
         std::error_code ec;
         for (const auto& entry : fs::directory_iterator(dir, ec)) {

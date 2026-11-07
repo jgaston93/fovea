@@ -1,0 +1,43 @@
+# Huntsville International (KHSV): its runways, from the FAA's airport data
+# as AirNav publishes it (www.airnav.com/airport/KHSV, checked 2026-11-07).
+# Ends are the pavement's ends, as published (degrees-minutes, NAD83);
+# elevations are surveyed, in feet, NAVD88. US Government work, public
+# domain. The compiler smooths the elevation on each runway (D-022), and
+# tools/check-elevation.py checks the database against these.
+
+name = "KHSV"
+field_elevation_ft = 628.9  # the highest point of the runways
+
+[[runway]]
+name = "18R/36L"
+width_ft = 150.0
+length_ft = 12600.0
+
+[[runway.end]]
+id = "18R"
+lat = "34-39.167130N"
+lon = "086-46.926028W"
+elevation_ft = 628.4
+
+[[runway.end]]
+id = "36L"
+lat = "34-37.090260N"
+lon = "086-46.967450W"
+elevation_ft = 611.2
+
+[[runway]]
+name = "18L/36R"
+width_ft = 150.0
+length_ft = 10001.0
+
+[[runway.end]]
+id = "18L"
+lat = "34-39.185908N"
+lon = "086-45.927885W"
+elevation_ft = 609.3
+
+[[runway.end]]
+id = "36R"
+lat = "34-37.537492N"
+lon = "086-45.961032W"
+elevation_ft = 588.6

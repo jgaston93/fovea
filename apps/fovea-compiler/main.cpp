@@ -86,6 +86,11 @@ int main(int argc, char** argv) {
                         result.imagery->tiles, result.imagery->seconds,
                         static_cast<double>(result.imagery->bytes) / 1e9);
         }
+        for (const auto& r : result.runways) {
+            std::printf(
+                "runway %s: %.0f m; the sources on it %.3f m RMS from the fit, at most %.2f m\n",
+                r.name.c_str(), r.length_m, r.rms_m, r.max_abs_m);
+        }
         std::printf("wrote %s\n", s.output.string().c_str());
     } catch (const std::exception& e) {
         (void)std::fprintf(stderr, "fovea-compiler: %s\n", e.what());
