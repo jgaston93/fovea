@@ -86,7 +86,7 @@ Lock these in before milestone 1 is complete, because they are expensive to retr
 - Fovea depends only on public interfaces and its own example configuration.
 - Sensor modes use generic, publicly documented behavior rather than models of specific fielded systems.
 - Do not commit terrain databases or raw source data. Commit source manifests, download scripts, and compiler settings so the database can be rebuilt.
-- Choose a repository license before the first public push.
+- Choose a repository license: still to do, now that the repository is public (#23).
 - Keep a data attribution file listing each source, its license, and any notice required for published builds or databases.
 
 ## Display channels
@@ -112,7 +112,7 @@ Display sync is not guaranteed just because one GPU renders all three views. Pre
 - Interpolation/extrapolation to smooth host update rate vs. 60 Hz frame rate.
 - Height-of-terrain query support so ground vehicles sit on terrain.
 - Entity layer kept protocol-neutral so a future DIS bridge can feed the same table.
-- Entity lights: navigation, landing and search lights, landing and search lights lighting the ground they fall on.
+- Entity lights: navigation, landing and search lights; landing and search lights also light the ground they fall on.
 - Terrain queries for the host: hosts ask the IG for height of terrain and line of sight over CIGI (request and response packets, from the ICD), answered from the same CPU-only library a host can link (foundational decision 1).
 
 ## Environment
@@ -137,11 +137,11 @@ Added 2026-11-07, at the owner's asking: the sky, the light and the weather, whi
 
 ## Effects
 
-- A particle system (core): smoke, dust, fire, explosions, spray; set over CIGI's effect packets (from the ICD) or by modules (rotor downwash, brownout).
+- A particle system (core): smoke, dust, fire, explosions, spray; driven over CIGI as the ICD has it (CIGI 3.3 has no effect packets of its own: effects are entities of effect types, under Entity Control), or by modules (rotor downwash, brownout).
 
 ## Wide-area coverage
 
-- The counterpart to close-range detail: coarser global sources beyond the local high-resolution areas (Copernicus 30 m elevation, Sentinel-2 imagery), several databases or areas, and scaling from 20 km to regions and continents, the terrain paging and the database format as they are.
+- The counterpart to close-range detail: coarser global sources beyond the local high-resolution areas (Copernicus 30 m elevation, Sentinel-2 imagery), several databases or areas, and scaling from 20 km to regions and continents. That needs the paging and the format extended: today every root tile is pinned (30 for KHSV, about a million for a continent) and every tile is a file of its own (D-018), so at scale roots page like other tiles and tiles are packed into larger files.
 
 ## Control plane
 
@@ -161,11 +161,14 @@ Added 2026-11-07, at the owner's asking: the sky, the light and the weather, whi
 
 ## Suggested tech stack
 
+As chosen (`docs/decisions.md` has each choice and why):
+
 - C++20, CMake, Vulkan 1.3.
-- volk (loader), VMA (memory), vk-bootstrap (setup), GLFW or SDL for windows and input.
-- GDAL in the compiler only.
-- A glTF loader such as cgltf or fastgltf.
-- A CIGI implementation: evaluate the Common Image Generator Interface Class Library (CCL) and check its license, or write a minimal packet codec for the needed packets.
+- volk (loader), VMA (memory), vk-bootstrap (setup), SDL3 for windows and input.
+- Slang for shaders, compiled to SPIR-V by the build.
+- GDAL in the compiler only (D-019).
+- cgltf for glTF (D-023).
+- Fovea's own CIGI 3.3 codec, from the ICD (D-014), rather than the Common Image Generator Interface Class Library.
 
 ## Milestones
 
@@ -197,7 +200,7 @@ Done in milestone 1 (kept as the record):
 
 ## Open questions
 
-- Answered: CIGI 3.3 first (D-013), with packets added as milestones need them (milestones 2, 6 and 9 so far); the development GPU is an RTX 5070 Ti; KHSV's landmarks are Fovea's own generic models (D-025).
+- Answered: CIGI 3.3 first (D-013), with packets added as milestones need them (milestone 2's so far; milestones 6 and 9 add theirs); the development GPU is an RTX 5070 Ti; KHSV's landmarks are Fovea's own generic models (D-025).
 - Physical screen geometry and eye point measurements for the example frustum config (#22).
 - Model sources and licenses for aircraft and vehicle entities.
 - Repository license (#23).
