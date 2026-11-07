@@ -84,9 +84,10 @@ For a first area of about 20 x 20 km around KHSV (34.55-34.72 N, 86.90-86.65 W):
   |---|---|---|---|---|---|---|
   | `khsv-approach.toml`: 36L, then climb-out | 10,791 | 1 | 1.9 ms | 2,238 | 2,208 | 67, all in the first 10 s |
   | `khsv-survey.toml`: 500 m, 150 m/s, 7 min | 27,276 | 1 | 1.8 ms | 3,498 | 6,240 | 78: 65 in the first 10 s, the rest in two turns |
-  | `khsv-low.toml` (new): 110 m, 60 m/s, a 180 degree turn | 15,887 | 1 | 2.0 ms | 2,350 | 2,320 | 84: 60 in the first 10 s, 23 in the turn |
+  | `khsv-low.toml` (new): 110 m, 60 m/s, two 180 degree turns | 15,887 | 1 | 2.0 ms | 2,350 | 2,320 | 84: 60 in the first 10 s, 23 in the first turn, 1 in the second |
 
-  No validation messages in any run. Each run's one missed frame is its third or fourth: the first frame with 16 tiles to upload (an interval of 30 to 34 ms); none after start-up (step 6's second, the screenshot's, didn't recur with no screenshot taken). In turns, tiles coming into view are drawn a level or two coarse for under a second while their children load: the request prediction follows the velocity, not the turn. The owner watched the low pass a second time (15,886 frames, 1 missed, 165 frames coarse, again at the start and in the turn) and saw no popping, and the terrain at 110 m looked right; screenshots at 60 s and 140 s show the runway markings, fields and tree cover sharp near the eye, with no holes or cracks.
+  No validation messages in any run. Each run's one missed frame is its third or fourth: the first frame with 16 tiles to upload (an interval of 30 to 34 ms); none after start-up (step 6's second, the screenshot's, didn't recur with no screenshot taken). In turns, tiles coming into view are drawn a level or two coarse for under a second while their children load: the request prediction follows the velocity, not the turn. The owner watched the low pass a second time (15,886 frames, 1 missed, 165 frames coarse, again at the start and in the turns) and saw no popping, and the terrain at 110 m looked right; screenshots at 60 s and 140 s show the runway markings, fields and tree cover sharp near the eye, with no holes or cracks.
+- **Review:** fixed: `khsv-low.toml` ended in its second turn, so once the flight ended the eye held a 33 degree bank (the runs above ended that way; it now levels out first); its comments put the south leg over fields, where it runs along the airfield's western edge.
 - **Issues:** #41 (the start-up missed frame: uploads are limited by count, not bytes) and #42 (coarse tiles in turns).
 
 ## Inputs needed from you
