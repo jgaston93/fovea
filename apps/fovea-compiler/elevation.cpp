@@ -60,9 +60,23 @@ std::unique_ptr<ElevationSources> ElevationSources::open(
         }
         src.width = GDALGetRasterXSize(src.dataset);
         src.height = GDALGetRasterYSize(src.dataset);
+        if (src.width < 2 || src.height < 2) {
+            error = file.string() + ": smaller than 2 x 2 pixels";
+            break;
+        }
+        GDALRasterBandH band = GDALGetRasterBand(src.dataset, 1);
+        // Heights in metres as stored: a scaled band or other units would
+        // come out wrong silently.
+        const std::string unit = GDALGetRasterUnitType(band);
+        if (GDALGetRasterScale(band, nullptr) != 1.0 || GDALGetRasterOffset(band, nullptr) != 0.0 ||
+            !(unit.empty() || unit == "m" || unit == "metre" || unit == "meter" ||
+              unit == "metres" || unit == "meters")) {
+            error = file.string() + ": heights not stored in metres (scale, offset or unit '" +
+                    unit + "')";
+            break;
+        }
         int has_nodata = 0;
-        const double nodata =
-            GDALGetRasterNoDataValue(GDALGetRasterBand(src.dataset, 1), &has_nodata);
+        const double nodata = GDALGetRasterNoDataValue(band, &has_nodata);
         src.has_nodata = has_nodata != 0;
         src.nodata = static_cast<float>(nodata);
         // The source's own axis order may differ (latitude first in EPSG's
@@ -149,9 +163,10 @@ bool ElevationSources::heights(const TileKey& key, std::uint32_t samples, std::v
             xs[i] = (xs[i] - src.gt[0]) / src.gt[1] - 0.5;
             ys[i] = (ys[i] - src.gt[3]) / src.gt[5] - 0.5;
             if (ok[i] != 0 && std::isfinite(xs[i]) && std::isfinite(ys[i]) && xs[i] >= 0.0 &&
-                ys[i] >= 0.0 && xs[i] < src.width - 1 && ys[i] < src.height - 1) {
-                const int c = static_cast<int>(xs[i]);
-                const int r = static_cast<int>(ys[i]);
+                ys[i] >= 0.0 && xs[i] <= src.width - 1 && ys[i] <= src.height - 1) {
+                // On the last pixel centre: the cell before it, at its end.
+                const int c = std::min(static_cast<int>(xs[i]), src.width - 2);
+                const int r = std::min(static_cast<int>(ys[i]), src.height - 2);
                 c0 = std::min(c0, c);
                 c1 = std::max(c1, c + 1);
                 r0 = std::min(r0, r);
@@ -177,8 +192,8 @@ bool ElevationSources::heights(const TileKey& key, std::uint32_t samples, std::v
         std::size_t kept = 0;
         for (std::size_t i = 0; i < todo.size(); ++i) {
             if (ok[i] != 0) {
-                const int c = static_cast<int>(xs[i]);
-                const int r = static_cast<int>(ys[i]);
+                const int c = std::min(static_cast<int>(xs[i]), src.width - 2);
+                const int r = std::min(static_cast<int>(ys[i]), src.height - 2);
                 const std::size_t at =
                     static_cast<std::size_t>(r - r0) * static_cast<std::size_t>(w) +
                     static_cast<std::size_t>(c - c0);
@@ -221,17 +236,25 @@ std::optional<Geoid> Geoid::load(const std::filesystem::path& file, const GeoBou
     std::array<double, 6> gt{};
     const int width = GDALGetRasterXSize(ds);
     const int height = GDALGetRasterYSize(ds);
+    OGRSpatialReferenceH srs = GDALGetSpatialRef(ds);
     if (GDALGetGeoTransform(ds, gt.data()) != CE_None || gt[2] != 0.0 || gt[4] != 0.0 ||
-        GDALGetRasterCount(ds) < 1) {
+        srs == nullptr || OSRIsGeographic(srs) == 0 || GDALGetRasterCount(ds) < 1) {
         error = file.string() + ": not a north-up geographic grid";
         GDALClose(ds);
         return g;
     }
     g.emplace();
-    // Grids east of 180 (0-360 longitudes, as GEOID18's) are read there.
-    g->lon_shift_ = area.west_deg < gt[0] ? 360.0 : 0.0;
+    // Longitudes are taken in the grid's own 360 degrees (0-360 for
+    // GEOID18).
+    g->grid_west_ = gt[0];
     // Pixel centres on either side of the area, and one more for margin.
-    const auto column = [&](double lon) { return (lon + g->lon_shift_ - gt[0]) / gt[1] - 0.5; };
+    const auto column = [&](double lon) { return (g->wrap(lon) - gt[0]) / gt[1] - 0.5; };
+    if (column(area.east_deg) < column(area.west_deg)) {
+        error = file.string() + ": the area crosses the grid's edge at " + std::to_string(gt[0]) +
+                " degrees longitude";
+        GDALClose(ds);
+        return std::nullopt;
+    }
     const auto row = [&](double lat) { return (lat - gt[3]) / gt[5] - 0.5; };
     const int c0 =
         static_cast<int>(std::floor(std::min(column(area.west_deg), column(area.east_deg)))) - 1;
@@ -273,8 +296,13 @@ std::optional<Geoid> Geoid::load(const std::filesystem::path& file, const GeoBou
     return g;
 }
 
+double Geoid::wrap(double lon_deg) const {
+    const double w = std::fmod(lon_deg - grid_west_, 360.0);
+    return grid_west_ + (w < 0.0 ? w + 360.0 : w);
+}
+
 double Geoid::at(double lat_deg, double lon_deg) const {
-    const double fx = (lon_deg + lon_shift_ - origin_lon_) / step_lon_;
+    const double fx = (wrap(lon_deg) - origin_lon_) / step_lon_;
     const double fy = (lat_deg - origin_lat_) / step_lat_;
     const int c = std::clamp(static_cast<int>(std::floor(fx)), 0, columns_ - 2);
     const int r = std::clamp(static_cast<int>(std::floor(fy)), 0, rows_ - 2);

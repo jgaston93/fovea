@@ -127,8 +127,9 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
     const auto samples = elevation["samples"].value<std::int64_t>();
     // Odd: a coarser tile's samples fall on every second sample of its
     // children.
-    if (!samples || *samples < 3 || *samples > 8193 || *samples % 2 == 0) {
-        error(root.source(), "[elevation] needs odd samples from 3 to 8193");
+    // At most 1025: a worker holds up to 16 grids at once (64 MB at 1025).
+    if (!samples || *samples < 3 || *samples > 1025 || *samples % 2 == 0) {
+        error(root.source(), "[elevation] needs odd samples from 3 to 1025");
     } else {
         s.samples = static_cast<std::uint32_t>(*samples);
     }
@@ -153,13 +154,14 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
                 error(node.source(), "a source is a \"directory/file pattern\" string");
                 continue;
             }
-            const fs::path dir = cache / rel.parent_path();
+            // Normal paths, so two spellings of a directory or file are one.
+            const fs::path dir = (cache / rel.parent_path()).lexically_normal();
             std::vector<fs::path> found;
             std::error_code ec;
             for (const auto& entry : fs::directory_iterator(dir, ec)) {
                 if (entry.is_regular_file() &&
                     wildcard_match(rel.filename().string(), entry.path().filename().string())) {
-                    found.push_back(entry.path());
+                    found.push_back(entry.path().lexically_normal());
                 }
             }
             if (ec) {
@@ -183,7 +185,7 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
     for (const auto& dir : dirs) {
         std::error_code ec;
         for (const auto& entry : fs::directory_iterator(dir, ec)) {
-            if (entry.is_regular_file() && !taken.contains(entry.path())) {
+            if (entry.is_regular_file() && !taken.contains(entry.path().lexically_normal())) {
                 r.warnings.push_back(entry.path().string() + ": not in any elevation source");
             }
         }

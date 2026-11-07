@@ -62,11 +62,12 @@ public:
     double at(double lat_deg, double lon_deg) const;
 
 private:
+    double wrap(double lon_deg) const;
     double origin_lon_ = 0.0;  // the first held column's centre
     double origin_lat_ = 0.0;  // the first held row's centre
     double step_lon_ = 0.0;
     double step_lat_ = 0.0;   // negative for a north-up grid
-    double lon_shift_ = 0.0;  // added to a query longitude (0 or 360)
+    double grid_west_ = 0.0;  // query longitudes are wrapped into [this, this + 360)
     int columns_ = 0;
     int rows_ = 0;
     std::vector<float> values_;
