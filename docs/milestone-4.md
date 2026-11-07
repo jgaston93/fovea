@@ -73,6 +73,18 @@ As before, each step is its own pull request. Steps 1 and 2 run in WSL and CI; s
 ## Step 7: Hardware check
 
 - Fly the KHSV and KHUA routes on the desk with the landmarks: frame timing, model loading, and the look of both airports from low altitude. Results recorded; anything unexpected becomes an issue.
+- **Result** (2026-11-07, RTX 5070 Ti, `config/khsv.toml` on three monitors, release build, validation on; the database with both airports' runways and 27 landmarks; each route once, flown by the test host, unattended):
+
+  | Route | Frames | Missed | GPU per output, max | Tiles resident, max | Frames drawing tiles coarser than wanted |
+  |---|---|---|---|---|---|
+  | `khsv-approach.toml` | 12,590 | 1 | 1.9 ms | 2,418 | 72 |
+  | `khsv-low.toml` | 15,886 | 1 | 2.0 ms | 2,326 | 91 |
+  | `khsv-airport.toml` (round the buildings) | 13,189 | 0 | 2.2 ms | 2,142 | 101 |
+  | `khua-low.toml` | 10,491 | 2 | 2.3 ms | 1,842 | 110 |
+  | `khsv-survey.toml` (7 minutes) | 27,576 | 1 | 1.9 ms | 3,498 | 84 |
+
+  No validation messages. Every missed frame is in a run's first 0.08 s, waiting on presentation (#41); none after. The landmarks cost little: GPU time at most 2.3 ms an output against milestone 3's 2.0 ms on the same routes, and the route round the buildings missed no frame. The look of both airports was the owner's at the desk check (steps 4 to 6, above).
+- **Issues:** carried forward, none new from these runs: #41 (the start-up present stall), #42 (coarse tiles in turns), #48 (placements below the roots), #53 (the buildings' walls, for milestone 7).
 
 ## Inputs needed from you
 
