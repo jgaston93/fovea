@@ -2,10 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
-#include <fstream>
 #include <map>
 #include <memory>
-#include <sstream>
 #include <unordered_map>
 
 #include <toml++/toml.hpp>
@@ -50,18 +48,11 @@ private:
 
 }  // namespace
 
-PlacementFileResult load_placement_file(const fs::path& file) {
+PlacementFileResult parse_placement_file(const std::string& text, const fs::path& file) {
     PlacementFileResult r;
-    std::ifstream in(file);
-    if (!in) {
-        r.errors.push_back(file.string() + ": cannot read");
-        return r;
-    }
-    std::ostringstream text;
-    text << in.rdbuf();
     toml::table root;
     try {
-        root = toml::parse(text.str(), file.string());
+        root = toml::parse(text, file.string());
     } catch (const toml::parse_error& e) {
         r.errors.push_back(file.string() + ":" + std::to_string(e.source().begin.line) + ": " +
                            std::string(e.description()));
@@ -88,7 +79,14 @@ PlacementFileResult load_placement_file(const fs::path& file) {
         p.model = *model;
         p.lat_deg = *lat;
         p.lon_deg = *lon;
-        p.heading_deg = static_cast<float>(*heading);
+        // Into [0, 360): -0.9 is 359.1, and one a hair under 360 that
+        // rounds to it as a float is 0.
+        double h = std::fmod(*heading, 360.0);
+        h = h < 0.0 ? h + 360.0 : h;
+        p.heading_deg = static_cast<float>(h);
+        if (p.heading_deg >= 360.0F) {
+            p.heading_deg = 0.0F;
+        }
         // valid_placement's checks, but the height (found later).
         if (!valid_placement({p.model, p.lat_deg, p.lon_deg, 0.0, p.heading_deg})) {
             r.errors.push_back(where +
@@ -135,7 +133,7 @@ bool bake_placements(const std::vector<PlacementSpec>& placements, const fs::pat
     }
 
     // Each on the lowest ground under its footprint: the finest level at
-    // its corners and every 2 m between.
+    // its corners and every metre between (KHSV's grid is 1.2 m).
     FinestHeights heights(part, finest);
     std::unordered_map<TileKey, std::vector<Placement>> by_tile;
     for (const PlacementSpec& p : placements) {
@@ -150,7 +148,7 @@ bool bake_placements(const std::vector<PlacementSpec>& placements, const fs::pat
         const DMat3 ned = ned_to_ecef(p.lat_deg, p.lon_deg);
         const DVec3 origin = geodetic_to_ecef({p.lat_deg, p.lon_deg, 0.0});
         const auto steps = [](double a, double b) {
-            return std::max(1, static_cast<int>(std::ceil((b - a) / 2.0)));
+            return std::max(1, static_cast<int>(std::ceil(b - a)));  // a metre: under the grid's
         };
         const int nx = steps(f.x0, f.x1);
         const int nz = steps(f.z0, f.z1);

@@ -1375,6 +1375,23 @@ TEST(CompilerPlacements, LandOnTheLowestGroundUnderTheirFootprint) {
     EXPECT_GT(at_origin + Scene::geoid(lat, lon) - lowest, 0.3);
 }
 
+TEST(CompilerPlacements, HeadingsAreTakenIntoZeroTo360) {
+    const auto heading = [](const std::string& h) {
+        const auto r = parse_placement_file(
+            "[[placement]]\nmodel = \"a\"\nlat = 1.0\nlon = 2.0\nheading = " + h + "\n", "p.toml");
+        EXPECT_TRUE(r.errors.empty()) << (r.errors.empty() ? "" : r.errors[0]);
+        return r.placements.empty() ? -1.0F : r.placements[0].heading_deg;
+    };
+    EXPECT_FLOAT_EQ(heading("0.9"), 0.9F);
+    EXPECT_FLOAT_EQ(heading("-0.9"), 359.1F);
+    EXPECT_FLOAT_EQ(heading("360.0"), 0.0F);
+    EXPECT_FLOAT_EQ(heading("359.99999999"), 0.0F);  // rounds to 360 as a float
+    EXPECT_FLOAT_EQ(heading("725.5"), 5.5F);
+    const auto bad = parse_placement_file("[[placement]]\nmodel = \"a\"\nlat = 1.0\n", "p.toml");
+    ASSERT_FALSE(bad.errors.empty());
+    EXPECT_NE(bad.errors[0].find("p.toml:1"), std::string::npos) << bad.errors[0];
+}
+
 TEST(CompilerPlacements, MistakesAreRefused) {
     GDALAllRegister();
     const Scene scene("placements_bad");
@@ -1410,7 +1427,15 @@ TEST(CompilerPlacements, MistakesAreRefused) {
     EXPECT_NE(with("junk", lat, lon, 0.0).find("junk"), std::string::npos);
     EXPECT_NE(with("shed", lat + 1.0, lon, 0.0).find("outside"), std::string::npos);
     EXPECT_NE(with("../shed", lat, lon, 0.0).find("model name"), std::string::npos);
-    EXPECT_NE(with("shed", lat, lon, 360.0).find("heading"), std::string::npos);
+    // Below the roots: the runtime wouldn't draw them yet (#48).
+    {
+        const auto loaded = parse_settings(scene.settings() +
+                                               "[placements]\nfile = \"placed.toml\"\nmodels = "
+                                               "\"models\"\nlevel = 16\n",
+                                           "settings.toml", scene.dir);
+        ASSERT_FALSE(loaded.errors.empty());
+        EXPECT_NE(loaded.errors.back().find("root level"), std::string::npos) << loaded.errors[0];
+    }
 }
 
 TEST(CompilerTexture, MipChainsAndFormatsRoundTrip) {

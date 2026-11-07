@@ -92,11 +92,13 @@ int main(int argc, char** argv) {
                 r.name.c_str(), r.length_m, r.rms_m, r.max_abs_m);
         }
         if (const auto& p = result.placements) {
-            std::printf(
-                "placements: %zu of %zu models in %zu tiles; the most ground rising under a "
-                "footprint %.1f m (%s)\n",
-                p->placements, p->models, p->tiles, p->largest_rise_m,
-                p->largest_rise_model.c_str());
+            std::printf("placements: %zu of %zu models in %zu tiles", p->placements, p->models,
+                        p->tiles);
+            if (!p->largest_rise_model.empty()) {
+                std::printf("; the most ground rising under a footprint %.1f m (%s)",
+                            p->largest_rise_m, p->largest_rise_model.c_str());
+            }
+            std::printf("\n");
         }
         std::printf("wrote %s\n", s.output.string().c_str());
     } catch (const std::exception& e) {

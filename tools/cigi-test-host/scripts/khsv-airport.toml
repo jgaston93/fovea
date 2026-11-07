@@ -1,7 +1,8 @@
 # Round KHSV's buildings (milestone 4 step 4): about 70 m over the
 # airfield at 50 m/s, north up the middle of the field past the control
 # tower, a right turn all the way round over the hangars and the terminal's
-# ramp, north over the terminal, and a turn back south; level at the end;
+# ramp, north over the terminal, and a turn back south, west of runway
+# 18R/36L; level at the end;
 # once (about 3 minutes). For judging the landmarks. Run Fovea with
 # config/khsv.toml, then:
 #   cigi-test-host tools/cigi-test-host/scripts/khsv-airport.toml
@@ -30,7 +31,7 @@ duration = 40.0
 speed = 50.0
 
 [[segment]]
-kind = "turn"       # right, all the way round (480 m across): the hangars and the ramp
+kind = "turn"       # right, all the way round (955 m across): the hangars and the ramp
 duration = 60.0
 speed = 50.0
 turn_rate = 6.0
@@ -47,6 +48,6 @@ speed = 50.0
 turn_rate = -6.0
 
 [[segment]]
-kind = "straight"   # south past the cargo buildings' side of the field; level
+kind = "straight"   # south, 955 m west, beyond runway 18R/36L; level
 duration = 40.0
 speed = 50.0

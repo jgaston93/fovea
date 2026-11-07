@@ -25,7 +25,7 @@
 //   [placements]                    # optional: models placed (D-026)
 //   file = "../placements/khsv.toml"  # their [[placement]]s (placements.hpp)
 //   models = "../models"            # where their .glb files are
-//   level = 12                      # whose tiles hold them (default: the root level)
+//   level = 12                      # whose tiles hold them: the root level, for now (#48)
 //   [[credit]]                      # the manifest's [[source]] entries
 //   layer = "elevation"
 //   name = "USGS 3DEP 1 m DEM"
