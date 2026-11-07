@@ -51,16 +51,26 @@ def shade(c, f):
     return tuple(min(255.0, max(0.0, v * f)) for v in c)
 
 
-def office_facade(wall, glass_from=1.0, glass_to=2.6, bay=1.5):
-    """4 m floors: a glass band with mullions every `bay` metres."""
-    img = blank(6.0, 4.0, wall)
+def office_facade(wall, glass_from=1.0, glass_to=2.6, bay=1.5, seed=0):
+    """4 m floors, 24 m before it repeats: a glass band each floor, its
+    panes `bay` metres wide behind thin frames that barely show, each pane
+    lighter up its height (the sky in it) and a little lighter or darker
+    than its neighbours (blinds drawn or not), so no grid shows."""
+    rng = np.random.default_rng(seed)
+    img = blank(24.0, 4.0, wall)
     a, b = int(glass_from * PX), int(glass_to * PX)
-    # Glass shows the sky: lighter up the pane, a blue-grey.
-    rows = np.linspace(0.8, 1.0, b - a)[:, None]
-    img[a:b, :, :3] = srgb((118, 138, 156)) * rows[:, :, None]
-    for x in range(0, img.shape[1], int(bay * PX)):
-        img[a:b, x:x + 2, :3] = srgb((70, 72, 74))
-    img[0:3, :, :3] = srgb(shade(wall, 0.8))  # the floor slab's line
+    glass = srgb((112, 130, 146))
+    sky = np.linspace(0.86, 1.02, b - a)[:, None, None]
+    panes = int(round(24.0 / bay))
+    edges = np.linspace(0, img.shape[1], panes + 1).astype(int)
+    for k in range(panes):
+        x0, x1 = edges[k], edges[k + 1]
+        tint = rng.choice([0.97, 0.99, 1.0, 1.0, 1.0, 1.01, 1.05])  # now and then blinds down
+        img[a:b, x0:x1, :3] = np.minimum(glass * sky * tint, 1.0)
+        img[a:b, x0:x0 + 1, :3] *= 0.86  # the frame, faint
+    img[a:a + 1, :, :3] *= 0.86
+    img[b - 1:b, :, :3] *= 0.86
+    img[0:2, :, :3] = srgb(shade(wall, 0.9))  # the floor slab's line, faint
     return img
 
 
@@ -95,13 +105,23 @@ def metal_wall(wall, eave, height, bay, feature):
     return img
 
 
-def hangar_door(wall):
-    """Door leaves 4 m wide, rails every 2 m."""
-    img = blank(8.0, 4.0, shade(wall, 0.92))
-    for x in range(0, img.shape[1], 4 * PX):
-        img[:, x:x + 3, :3] = srgb(shade(wall, 0.55))
-    for y in range(0, img.shape[0], 2 * PX):
-        img[y:y + 2, :, :3] = srgb(shade(wall, 0.7))
+def hangar_door(wall, height, seed=0):
+    """Hangar doors, 16 m of them before they repeat and the door's full
+    height (so nothing repeats upwards): leaves 4 m wide of fine vertical
+    ribbing, thin seams between them, each leaf a shade apart (doors are
+    repainted and weather leaf by leaf), a dark track along the bottom, a
+    header along the top, and a personnel door in one leaf."""
+    rng = np.random.default_rng(seed)
+    img = corrugated(shade(wall, 0.95), 16.0, height, depth=0.1)
+    leaf = 4 * PX
+    for x0 in range(0, img.shape[1], leaf):
+        img[:, x0:x0 + leaf, :3] *= rng.uniform(0.95, 1.04)
+        img[:, x0:x0 + 2, :3] *= 0.75  # the seam
+    img[0:int(0.25 * PX), :, :3] *= 0.55  # the track
+    top = int((height - 0.8) * PX)
+    img[top:top + int(0.5 * PX), :, :3] = srgb(shade(wall, 0.75))  # the header
+    x0 = int(9.5 * PX)  # a personnel door
+    img[0:int(2.1 * PX), x0:x0 + int(0.9 * PX), :3] = srgb(shade(wall, 0.7))
     return img
 
 
@@ -131,6 +151,31 @@ def cab_glass():
     img = blank(2.0, 2.0, (70, 90, 104))
     img[:, :4, :3] = srgb((180, 182, 184))
     img[:4, :, :3] = srgb((180, 182, 184))
+    return img
+
+
+def ac_top(casing):
+    """An air-conditioning unit's top, seen once edge to edge: two fans in
+    dark grilles, a rim of casing round them."""
+    img = blank(3.0, 2.2, casing)
+    h, w = img.shape[:2]
+    yy, xx = np.mgrid[0:h, 0:w]
+    r = 0.42 * h
+    for cxp in (w * 0.27, w * 0.73):
+        d = np.hypot(xx - cxp, yy - h / 2)
+        fan = d < r
+        img[fan, :3] = srgb((58, 60, 62))
+        ring = fan & (np.abs(d - r * 0.6) < 1.2)
+        img[ring, :3] = srgb((96, 98, 100))
+        img[d < r * 0.18, :3] = srgb((84, 86, 88))  # the hub
+    return img
+
+
+def louvres(casing):
+    """An air-conditioning unit's sides: louvres every 0.1 m."""
+    img = blank(2.0, 1.4, casing)
+    for y in range(0, img.shape[0], int(0.1 * PX)):
+        img[y:y + 1, :, :3] *= 0.72
     return img
 
 
@@ -226,14 +271,38 @@ class Model:
                                  (cx + w / 2 - thick / 2, cy, thick, d - 2 * thick)]:
             self.box(wall, wall, px, py, pw, pd, z, z + height)
 
-    def rooftop_plant(self, mat, cx, cy, w, d, z, seed, per_1000_m2=1.2):
-        """Air-handling units scattered over a flat roof, clear of its edges."""
+    def rooftop_plant(self, side, top, cx, cy, w, d, z, seed):
+        """Air-conditioning units as roofs have them: one size, in tidy rows
+        of a few, a cluster or two per roof (one more per 8,000 m2, up to
+        four), square to the building, clear of the edges. Each unit's top
+        (`top`) shows its fans once, edge to edge; its sides (`side`)
+        louvres."""
         rng = random.Random(seed)
-        for _ in range(max(1, int(w * d / 1000 * per_1000_m2))):
-            uw, ud, uh = rng.uniform(3, 7), rng.uniform(2, 5), rng.uniform(1.2, 2.5)
-            ux = cx + rng.uniform(-w / 2 + 4 + uw / 2, w / 2 - 4 - uw / 2)
-            uy = cy + rng.uniform(-d / 2 + 4 + ud / 2, d / 2 - 4 - ud / 2)
-            self.box(mat, mat, ux, uy, uw, ud, z, z + uh)
+        uw, ud, uh, gap = 3.0, 2.2, 1.4, 1.0
+        clusters = min(4, 1 + int(w * d / 8000))
+        rows, cols = (2, 3) if w >= 30 and d >= 30 else (1, 2)
+        span_x = cols * uw + (cols - 1) * gap
+        span_y = rows * ud + (rows - 1) * gap
+        if span_x > w - 8 or span_y > d - 8:
+            return
+        placed = []
+        for _ in range(clusters * 20):  # tries, for clusters clear of each other
+            if len(placed) == clusters:
+                break
+            ox = cx + rng.uniform(-(w - span_x) / 2 + 4, (w - span_x) / 2 - 4)
+            oy = cy + rng.uniform(-(d - span_y) / 2 + 4, (d - span_y) / 2 - 4)
+            if any(abs(ox - px) < span_x + 6 and abs(oy - py) < span_y + 6 for px, py in placed):
+                continue
+            placed.append((ox, oy))
+            for i in range(cols):
+                for j in range(rows):
+                    ux = ox - span_x / 2 + uw / 2 + i * (uw + gap)
+                    uy = oy - span_y / 2 + ud / 2 + j * (ud + gap)
+                    x0, x1, y0, y1 = ux - uw / 2, ux + uw / 2, uy - ud / 2, uy + ud / 2
+                    lo = [(x0, y0, z), (x1, y0, z), (x1, y1, z), (x0, y1, z)]
+                    hi = [(x, y, z + uh) for x, y, _ in lo]
+                    self.quad_strip(side, lo, hi)
+                    self.face(top, hi, uvs=[(0, 0), (1, 0), (1, 1), (0, 1)])
 
     def arched_hangar(self, wall, door, roof, w, d, eave, rise, segments=12):
         """Walls to `eave`, an arched roof rising `rise` more across the
@@ -322,21 +391,26 @@ def flat_roofed(name, w, d, h, facade="office", plant=True):
     behind a parapet, plant on the roof."""
     roof = roof_colour(ROOF[name])
     if facade == "glass":
-        walls = material("glass_wall", office_facade(GLASS_WALL, 0.8, 3.2, 2.0), 1, (6.0, 4.0))
+        walls = material("glass_wall",
+                         office_facade(GLASS_WALL, 0.8, 3.2, 2.0, zlib.crc32(name.encode())), 1,
+                         (24.0, 4.0))
     elif facade == "office":
-        walls = material("office_wall", office_facade(WALL), 1, (6.0, 4.0))
+        walls = material("office_wall", office_facade(WALL, seed=zlib.crc32(name.encode())), 1,
+                         (24.0, 4.0))
     else:
         walls = material("cargo_wall", metal_wall(shade(roof, 0.9), h, h + 1.0, 4.5, "dock"), 2,
                          (4.5, h + 1.0))
     top = material("roof", membrane(roof, zlib.crc32(name.encode())), 1, (8.0, 8.0))
-    unit = material("plant", corrugated((150, 152, 150)), 2, (4.0, 4.0))
+    casing = shade(roof, 0.9)
+    unit_side = material("ac_side", louvres(casing), 2, (2.0, 1.4))
+    unit_top = material("ac_top", ac_top(casing), 2, (1.0, 1.0))
     coping = material("coping", plain(shade(WALL if facade != "cargo" else roof, 0.85)), 1,
                       (1.0, 1.0))
     m = Model(name)
     m.box(walls, top, 0, 0, w, d, 0, h)
     m.parapet(coping, 0, 0, w, d, h)
     if plant:
-        m.rooftop_plant(unit, 0, 0, w, d, h, seed=name)
+        m.rooftop_plant(unit_side, unit_top, 0, 0, w, d, h, seed=name)
     return m
 
 
@@ -346,7 +420,9 @@ def hangar(name, w, d, eave):
     height = eave + rise + 1.0  # to the gables' tops
     walls = material("hangar_wall", metal_wall(shade(roof, 0.92), eave, height, 6.0, "window"),
                      2, (6.0, height))
-    door = material("hangar_door", hangar_door(shade(roof, 0.92)), 2, (8.0, 4.0))
+    door = material("hangar_door",
+                    hangar_door(shade(roof, 0.92), height, zlib.crc32(name.encode())), 2,
+                    (16.0, height))
     top = material("hangar_roof", standing_seam(roof), 2, (4.8, 4.8))
     m = Model(name)
     m.arched_hangar(walls, door, top, w, d, eave, rise)
