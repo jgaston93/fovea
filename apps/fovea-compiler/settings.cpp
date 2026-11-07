@@ -1,6 +1,7 @@
 #include "settings.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -143,10 +144,15 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
     // that none names are listed, as they may be new data left out.
     std::set<fs::path> taken;
     std::set<fs::path> dirs;
-    const auto* patterns = elevation["sources"].as_array();
-    if (patterns == nullptr || patterns->empty()) {
-        error(root.source(), "[elevation] needs sources = [\"dir/pattern\", ...]");
-    } else {
+    // A group of files per pattern (files an earlier pattern took aside).
+    const auto resolve = [&](const toml::array* patterns, const fs::path& from,
+                             const char* section) {
+        std::vector<std::vector<fs::path>> groups;
+        if (patterns == nullptr || patterns->empty()) {
+            error(root.source(),
+                  std::string("[") + section + "] needs sources = [\"dir/pattern\", ...]");
+            return groups;
+        }
         for (const auto& node : *patterns) {
             const auto p = node.value<std::string>();
             const fs::path rel = p.value_or(std::string{});
@@ -155,7 +161,7 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
                 continue;
             }
             // Normal paths, so two spellings of a directory or file are one.
-            const fs::path dir = (cache / rel.parent_path()).lexically_normal();
+            const fs::path dir = (from / rel.parent_path()).lexically_normal();
             std::vector<fs::path> found;
             std::error_code ec;
             for (const auto& entry : fs::directory_iterator(dir, ec)) {
@@ -175,18 +181,46 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
             }
             dirs.insert(dir);
             std::sort(found.begin(), found.end());
+            auto& group = groups.emplace_back();
             for (auto& f : found) {
                 if (taken.insert(f).second) {
-                    s.elevation.push_back(std::move(f));
+                    group.push_back(std::move(f));
                 }
             }
         }
+        return groups;
+    };
+    for (auto& group : resolve(elevation["sources"].as_array(), cache, "elevation")) {
+        for (auto& f : group) {
+            s.elevation.push_back(std::move(f));
+        }
     }
+
+    if (const auto imagery = root["imagery"]; imagery.is_table()) {
+        CompileSettings::Imagery im;
+        const auto format = imagery_format_from_name(imagery["format"].value_or(std::string{}));
+        if (!format) {
+            error(imagery.node()->source(), R"([imagery] needs format = "bc7", "bc1" or "rgba8")");
+        } else {
+            im.format = *format;
+        }
+        const auto texels = imagery["texels"].value<std::int64_t>();
+        if (!texels || *texels < 4 || *texels > 4096 ||
+            !std::has_single_bit(static_cast<std::uint64_t>(*texels))) {
+            error(imagery.node()->source(), "[imagery] needs texels a power of two from 4 to 4096");
+        } else {
+            im.texels = static_cast<std::uint32_t>(*texels);
+        }
+        const fs::path from = path(imagery["cache"], "imagery.cache");
+        im.sources = resolve(imagery["sources"].as_array(), from, "imagery");
+        s.imagery = std::move(im);
+    }
+
     for (const auto& dir : dirs) {
         std::error_code ec;
         for (const auto& entry : fs::directory_iterator(dir, ec)) {
             if (entry.is_regular_file() && !taken.contains(entry.path().lexically_normal())) {
-                r.warnings.push_back(entry.path().string() + ": not in any elevation source");
+                r.warnings.push_back(entry.path().string() + ": not in any source");
             }
         }
     }

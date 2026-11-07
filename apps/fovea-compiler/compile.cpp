@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -13,6 +14,8 @@
 
 #include "elevation.hpp"
 #include "fovea/terrain/tile_file.hpp"
+#include "imagery.hpp"
+#include "texture.hpp"
 
 namespace fovea::compiler {
 
@@ -198,6 +201,167 @@ std::optional<float> error_from_children(ChildLevel& below, const TileKey& key,
     return static_cast<float>(worst);
 }
 
+// Runs a job per index on `jobs` threads, each thread's job made by
+// `worker` (which can fail, setting `why`); stops at the first failure.
+using Job = std::function<bool(std::size_t, std::string&)>;
+bool run_parallel(std::size_t count, unsigned jobs, std::vector<std::string>& errors,
+                  const std::function<Job(std::string&)>& worker) {
+    std::atomic<std::size_t> next{0};
+    std::atomic<bool> failed{false};
+    std::mutex mutex;
+    const auto run = [&] {
+        std::string why;
+        const Job job = worker(why);
+        while (why.empty() && !failed) {
+            const std::size_t i = next++;
+            if (i >= count || !job(i, why)) {
+                break;
+            }
+        }
+        if (!why.empty()) {
+            failed = true;
+            const std::lock_guard lock(mutex);
+            errors.push_back(why);
+        }
+    };
+    std::vector<std::jthread> workers;
+    for (unsigned j = 0; j < std::min<std::size_t>(jobs, count); ++j) {
+        workers.emplace_back(run);
+    }
+    workers.clear();  // joins
+    return !failed;
+}
+
+// The imagery pass: adds the layer to tiles the elevation pass wrote.
+class ImageryBuild {
+public:
+    ImageryBuild(const CompileSettings& s, fs::path part)
+        : s_(s), im_(*s.imagery), part_(std::move(part)) {}
+
+    // Encodes a tile's image with its mips into its file; returns its half,
+    // for its parent.
+    std::optional<Rgba8Image> finish(const TileKey& key, Rgba8Image image, std::string& why) {
+        std::vector<Rgba8Image> mips = mip_chain(std::move(image));
+        const fs::path file = part_ / tile_path(key);
+        TileResult read = read_tile(file, key);
+        if (!read.tile) {
+            why = file.string() + ": can't read it back: " + read.detail;
+            return std::nullopt;
+        }
+        read.tile->layers.push_back(encode_imagery(encode_texture(mips, im_.format)));
+        bytes_ += read.tile->layers.back().data.size();
+        if (!write_tile(file, *read.tile)) {
+            why = file.string() + ": cannot write";
+            return std::nullopt;
+        }
+        ++tiles_;
+        return std::move(mips[1]);
+    }
+
+    // A tile and all below it, depth first, so only a few images per level
+    // are held at once.
+    std::optional<Rgba8Image> subtree(const ImagerySources& sources, const TileKey& key,
+                                      std::string& why) {
+        if (key.level == s_.finest_level) {
+            Rgba8Image image;
+            if (!sources.texture(key, im_.texels, image, why)) {
+                return std::nullopt;
+            }
+            return finish(key, std::move(image), why);
+        }
+        std::array<Rgba8Image, 4> halves;
+        const auto kids = children(key);
+        for (std::size_t i = 0; i < kids.size(); ++i) {
+            auto half = subtree(sources, kids[i], why);
+            if (!half) {
+                return std::nullopt;
+            }
+            halves[i] = std::move(*half);
+        }
+        return finish(key, from_children(halves[0], halves[1], halves[2], halves[3]), why);
+    }
+
+    std::size_t tiles() const { return tiles_; }
+    std::size_t bytes() const { return bytes_; }
+
+private:
+    const CompileSettings& s_;
+    const CompileSettings::Imagery& im_;
+    fs::path part_;
+    std::atomic<std::size_t> tiles_{0};
+    std::atomic<std::size_t> bytes_{0};
+};
+
+bool build_imagery(const CompileSettings& s, const fs::path& part, const LevelTiles& roots,
+                   unsigned jobs, CompileResult& result) {
+    const auto start = std::chrono::steady_clock::now();
+    ImageryBuild build(s, part);
+    // Subtrees from one level below the roots (more of them than threads),
+    // then the levels above from their halves.
+    const auto top = static_cast<std::uint8_t>(std::min<int>(s.finest_level, s.root_level + 1));
+    std::mutex mutex;
+    std::unordered_map<TileKey, Rgba8Image> halves;
+    const auto level_tiles = [&](std::uint8_t lv) {
+        return descendants(roots, static_cast<std::uint8_t>(lv - s.root_level));
+    };
+    const auto key_at = [](const LevelTiles& t, std::size_t i) {
+        const std::uint32_t columns = t.x1 - t.x0 + 1;
+        return TileKey{t.level, t.x0 + static_cast<std::uint32_t>(i % columns),
+                       t.y0 + static_cast<std::uint32_t>(i / columns)};
+    };
+    const auto count = [](const LevelTiles& t) {
+        return std::size_t{t.x1 - t.x0 + 1} * (t.y1 - t.y0 + 1);
+    };
+    const LevelTiles tops = level_tiles(top);
+    const bool ok = run_parallel(count(tops), jobs, result.errors, [&](std::string& why) -> Job {
+        std::shared_ptr<ImagerySources> sources = ImagerySources::open(s.imagery->sources, why);
+        return [&, sources](std::size_t i, std::string& err) {
+            const TileKey key = key_at(tops, i);
+            auto half = build.subtree(*sources, key, err);
+            if (!half) {
+                return false;
+            }
+            const std::lock_guard lock(mutex);
+            halves.emplace(key, std::move(*half));
+            return true;
+        };
+    });
+    if (!ok) {
+        return false;
+    }
+    for (int lv = top - 1; lv >= s.root_level; --lv) {
+        const LevelTiles tiles = level_tiles(static_cast<std::uint8_t>(lv));
+        std::unordered_map<TileKey, Rgba8Image> above;
+        const bool level_ok =
+            run_parallel(count(tiles), jobs, result.errors, [&](std::string&) -> Job {
+                return [&](std::size_t i, std::string& err) {
+                    const TileKey key = key_at(tiles, i);
+                    const auto kids = children(key);
+                    // `halves` is only read until the level is done.
+                    auto half = build.finish(key,
+                                             from_children(halves.at(kids[0]), halves.at(kids[1]),
+                                                           halves.at(kids[2]), halves.at(kids[3])),
+                                             err);
+                    if (!half) {
+                        return false;
+                    }
+                    const std::lock_guard lock(mutex);
+                    above.emplace(key, std::move(*half));
+                    return true;
+                };
+            });
+        if (!level_ok) {
+            return false;
+        }
+        halves = std::move(above);
+    }
+    result.imagery = ImageryReport{
+        build.tiles(),
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
+        build.bytes()};
+    return true;
+}
+
 }  // namespace
 
 CompileResult compile(const CompileSettings& s, unsigned jobs,
@@ -353,6 +517,13 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
         }
     }
 
+    if (s.imagery) {
+        if (!build_imagery(s, part, roots, jobs, result)) {
+            fs::remove_all(part, ec);
+            return result;
+        }
+        m.imagery = DatabaseManifest::Imagery{s.imagery->format, s.imagery->texels};
+    }
     if (!write_manifest(part, m)) {
         return fail((part / "manifest.toml").string() + ": cannot write");
     }

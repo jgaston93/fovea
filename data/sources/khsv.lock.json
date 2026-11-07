@@ -269,6 +269,51 @@
    "sha256": "fa9a407ac7ee3f5a3694008e4bcd09ce9cc250452f0c3b11700a4960340abce2"
   },
   {
+   "name": "m_3408609_se_16_060_20230525_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408609_se_16_060_20230525_20231127.tif",
+   "published": "2023-05-25T16:00:00Z",
+   "title": "al_m_3408609_se_16_060_20230525_20231127",
+   "layer": "imagery",
+   "size": 421337299,
+   "sha256": "2c53f0fb9807a2a53f2c7b26d8d38cf4ac59697208ce968ad45e98fadb2cadef"
+  },
+  {
+   "name": "m_3408610_se_16_060_20230801_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408610_se_16_060_20230801_20231127.tif",
+   "published": "2023-08-01T16:00:00Z",
+   "title": "al_m_3408610_se_16_060_20230801_20231127",
+   "layer": "imagery",
+   "size": 437210550,
+   "sha256": "d7ae13b647b63a8a0c75537d2072ae8c28a392382281d646c4a3f5972785f360"
+  },
+  {
+   "name": "m_3408610_sw_16_060_20230525_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408610_sw_16_060_20230525_20231127.tif",
+   "published": "2023-05-25T16:00:00Z",
+   "title": "al_m_3408610_sw_16_060_20230525_20231127",
+   "layer": "imagery",
+   "size": 418415226,
+   "sha256": "783437d897f45a73525d492fec29e0a3e81cb817238f056615cd45840caca602"
+  },
+  {
+   "name": "m_3408611_se_16_060_20230607_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408611_se_16_060_20230607_20231127.tif",
+   "published": "2023-06-07T16:00:00Z",
+   "title": "al_m_3408611_se_16_060_20230607_20231127",
+   "layer": "imagery",
+   "size": 450632423,
+   "sha256": "615d5bf97c0a3cd1d97aa1c3aa5573180969b4749dd91ba81d78b31109031467"
+  },
+  {
+   "name": "m_3408611_sw_16_060_20230607_20231127.tif",
+   "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408611_sw_16_060_20230607_20231127.tif",
+   "published": "2023-06-07T16:00:00Z",
+   "title": "al_m_3408611_sw_16_060_20230607_20231127",
+   "layer": "imagery",
+   "size": 443051841,
+   "sha256": "16e50ea63fb76f535a564850261582441b6bad892194372ea1a76cfc3dd06eaf"
+  },
+  {
    "name": "m_3408617_ne_16_060_20230525_20231127.tif",
    "url": "https://naipeuwest.blob.core.windows.net/naip/v002/al/2023/al_060cm_2023/34086/m_3408617_ne_16_060_20230525_20231127.tif",
    "published": "2023-05-25T16:00:00Z",

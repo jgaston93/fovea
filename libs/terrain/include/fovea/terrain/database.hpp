@@ -47,15 +47,23 @@ struct SourceInfo {
 //   schema = 1, name = "..."
 //   [area] south, north, west, east
 //   [layers.elevation] format = "float32", samples = 257
+//   [layers.imagery] format = "bc7", texels = 512  (if the database has imagery)
 //   [[source]] layer, name, credit          (any number)
 //   [[level]] level, x = [first, last], y = [first, last]
-// Further layers (imagery, D-017; the geoid, D-020) add [layers.<name>]
-// tables; a reader skips layers it doesn't know.
+// Further layers (the geoid, D-020) add [layers.<name>] tables; a reader
+// skips layers it doesn't know.
 struct DatabaseManifest {
     std::uint32_t schema = kDatabaseSchema;
     std::string name;
     GeoBounds area;
     std::uint32_t elevation_samples = 257;
+    // The format the compiler wrote and the texture size; each tile's layer
+    // records its own format (D-017).
+    struct Imagery {
+        ImageryFormat format = ImageryFormat::bc7_srgb;
+        std::uint32_t texels = 512;
+    };
+    std::optional<Imagery> imagery;
     std::vector<SourceInfo> sources;
     std::vector<LevelTiles> levels;  // coarsest first
 

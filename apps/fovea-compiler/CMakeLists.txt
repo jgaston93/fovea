@@ -19,10 +19,12 @@ endif()
 add_library(fovea_compiler_lib STATIC
     compile.cpp
     elevation.cpp
-    settings.cpp)
+    imagery.cpp
+    settings.cpp
+    texture.cpp)
 target_include_directories(fovea_compiler_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(fovea_compiler_lib PUBLIC fovea::core fovea::terrain
-    PRIVATE GDAL::GDAL fovea_tomlplusplus)
+    PRIVATE GDAL::GDAL fovea_tomlplusplus fovea_bc7enc)
 fovea_target_defaults(fovea_compiler_lib)
 
 add_executable(fovea-compiler main.cpp)

@@ -1,7 +1,8 @@
-// fovea-compiler on synthetic sources (milestone 3 step 3): GeoTIFFs whose
-// heights are planes in their own coordinates, so bilinear sampling is exact
-// and every compiled height has a known answer. The real KHSV database is
-// checked against its sources by tools/check-elevation.py.
+// fovea-compiler on synthetic sources (milestone 3 steps 3 and 4): GeoTIFFs
+// whose heights are planes in their own coordinates, so bilinear sampling is
+// exact and every compiled height has a known answer, and imagery of solid
+// colours and linear gradients, likewise. The real KHSV database is checked
+// against its sources by tools/check-elevation.py and check-imagery.py.
 
 #include <cmath>
 #include <filesystem>
@@ -22,6 +23,7 @@
 #include "fovea/terrain/database.hpp"
 #include "fovea/terrain/tile_file.hpp"
 #include "settings.hpp"
+#include "texture.hpp"
 
 namespace fovea::compiler {
 namespace {
@@ -570,6 +572,355 @@ TEST(CompilerSources, TheGeoidMustBeGeographicAndAreasMayNotCrossItsEdge) {
 
 // --- Settings ---
 
+// --- Imagery (step 4) ---
+
+// A three-band 8-bit RGB GeoTIFF in UTM 16N: `rgb(column, row)` per pixel.
+void write_rgb(const fs::path& file, double x0, double y0, double pixel, int width, int height,
+               const std::function<std::array<std::uint8_t, 3>(int, int)>& rgb) {
+    GDALDriverH gtiff = GDALGetDriverByName("GTiff");
+    GDALDatasetH ds = GDALCreate(gtiff, file.c_str(), width, height, 3, GDT_Byte, nullptr);
+    ASSERT_NE(ds, nullptr);
+    double gt[6] = {x0, pixel, 0.0, y0, 0.0, -pixel};
+    GDALSetGeoTransform(ds, gt);
+    OGRSpatialReferenceH srs = OSRNewSpatialReference(nullptr);
+    OSRImportFromEPSG(srs, 26916);
+    GDALSetSpatialRef(ds, srs);
+    OSRDestroySpatialReference(srs);
+    const std::array<GDALColorInterp, 3> interp = {GCI_RedBand, GCI_GreenBand, GCI_BlueBand};
+    for (int b = 0; b < 3; ++b) {
+        GDALRasterBandH band = GDALGetRasterBand(ds, b + 1);
+        GDALSetRasterColorInterpretation(band, interp[static_cast<std::size_t>(b)]);
+        std::vector<std::uint8_t> row(static_cast<std::size_t>(width));
+        for (int r = 0; r < height; ++r) {
+            for (int c = 0; c < width; ++c) {
+                row[static_cast<std::size_t>(c)] = rgb(c, r)[static_cast<std::size_t>(b)];
+            }
+            ASSERT_EQ(
+                GDALRasterIO(band, GF_Write, 0, r, width, 1, row.data(), width, 1, GDT_Byte, 0, 0),
+                CE_None);
+        }
+    }
+    GDALClose(ds);
+}
+
+// Imagery over the Scene, 4 m pixels (a level-16 tile of 64 texels has
+// them about 4.8 x 3.9 m apart):
+//   old (blue): everything; the lowest priority
+//   new_a (red): the west, to 100 m past the middle
+//   new_b (green): from 100 m before the middle to 300 m past it; new_a and
+//     new_b are one pattern, so the middle of their overlap divides them
+//     (all share their north and south edges, so that holds there too)
+//   patch: a 400 m square in the west, the highest priority, red = 50 +
+//     column and green = 50 + row (rows from the north): bilinear is exact
+struct ImageryScene : Scene {
+    static constexpr double kPixel = 4.0;
+    static constexpr std::array<std::uint8_t, 3> kRed = {200, 0, 0};
+    static constexpr std::array<std::uint8_t, 3> kGreen = {0, 200, 0};
+    static constexpr std::array<std::uint8_t, 3> kBlue = {0, 0, 200};
+    double e_mid = 0;
+    double patch_e = 0;
+    double patch_n = 0;  // its north-west corner
+
+    explicit ImageryScene(const std::string& name) : Scene(name) {
+        fs::create_directories(dir / "cache" / "img");
+        e_mid = std::floor((e_min + e_max) / 2 / kPixel) * kPixel;
+        patch_e = std::floor((e_min + 200) / kPixel) * kPixel;
+        patch_n = std::floor((n_min + n_max) / 2 / kPixel) * kPixel;
+        const auto px = [](double from, double to) {
+            return static_cast<int>(std::lround((to - from) / kPixel));
+        };
+        const auto solid = [](std::array<std::uint8_t, 3> c) {
+            return [c](int, int) { return c; };
+        };
+        const int rows = px(n_min, n_max);
+        write_rgb(dir / "cache/img/old.tif", e_min, n_max, kPixel, px(e_min, e_max), rows,
+                  solid(kBlue));
+        write_rgb(dir / "cache/img/new_a.tif", e_min, n_max, kPixel, px(e_min, e_mid + 100), rows,
+                  solid(kRed));
+        write_rgb(dir / "cache/img/new_b.tif", e_mid - 100, n_max, kPixel,
+                  px(e_mid - 100, e_mid + 300), rows, solid(kGreen));
+        write_rgb(dir / "cache/img/patch.tif", patch_e, patch_n, kPixel, 100, 100,
+                  [](int c, int r) {
+                      return std::array<std::uint8_t, 3>{static_cast<std::uint8_t>(50 + c),
+                                                         static_cast<std::uint8_t>(50 + r), 128};
+                  });
+    }
+
+    std::string imagery_settings(
+        const std::string& format = "rgba8", int texels = 64,
+        const std::string& sources = R"("img/patch.tif", "img/new_*.tif", "img/old.tif")") const {
+        return settings() + "[imagery]\nformat = \"" + format +
+               "\"\ntexels = " + std::to_string(texels) + "\ncache = \"cache\"\nsources = [" +
+               sources + "]\n";
+    }
+
+    // The colour at a point (as doubles: the patch's gradient is exact
+    // between whole values), and whether it is `margin` metres clear of
+    // every source's edge.
+    std::pair<std::array<double, 3>, bool> expected(double lat, double lon, double margin) const {
+        const auto [e, n] = utm(lat, lon);
+        const auto near = [margin](double v, double edge) { return std::abs(v - edge) < margin; };
+        const double pe = patch_e + 100 * kPixel;
+        const double ps = patch_n - 100 * kPixel;
+        const bool in_patch = e > patch_e && e < pe && n > ps && n < patch_n;
+        bool clear = !near(e, e_mid) && !near(e, e_mid + 300) && !near(e, patch_e) &&
+                     !near(e, pe) && !near(n, patch_n) && !near(n, ps);
+        const auto rgb = [](std::array<std::uint8_t, 3> c) {
+            return std::array<double, 3>{static_cast<double>(c[0]), static_cast<double>(c[1]),
+                                         static_cast<double>(c[2])};
+        };
+        if (in_patch) {
+            // Pixel coordinates, centres at whole numbers.
+            const double x = (e - patch_e) / kPixel - 0.5;
+            const double y = (patch_n - n) / kPixel - 0.5;
+            clear = clear && x > 0.0 && y > 0.0 && x < 99.0 && y < 99.0;
+            return {{50.0 + x, 50.0 + y, 128.0}, clear};
+        }
+        if (e < e_mid) {
+            return {rgb(kRed), clear};
+        }
+        if (e < e_mid + 300) {
+            return {rgb(kGreen), clear};
+        }
+        return {rgb(kBlue), clear};
+    }
+};
+
+ImageryImage read_imagery(const fs::path& db, const TileKey& key) {
+    const TileResult r = read_tile(db / tile_path(key), key);
+    EXPECT_TRUE(r.tile.has_value()) << to_string(key) << ": " << r.detail;
+    const TileLayer* layer = r.tile ? r.tile->find(kImageryLayer) : nullptr;
+    EXPECT_NE(layer, nullptr) << to_string(key);
+    EXPECT_TRUE(r.tile && r.tile->find(kElevationLayer) != nullptr) << to_string(key);
+    auto image = layer != nullptr ? decode_imagery(*layer) : std::nullopt;
+    EXPECT_TRUE(image.has_value()) << to_string(key);
+    return image.value_or(ImageryImage{});
+}
+
+double psnr(const Rgba8Image& a, const Rgba8Image& b) {
+    double sum = 0.0;
+    std::size_t n = 0;
+    for (std::size_t i = 0; i < a.texels.size(); ++i) {
+        if (i % 4 != 3) {
+            const double d = static_cast<double>(a.texels[i]) - static_cast<double>(b.texels[i]);
+            sum += d * d;
+            ++n;
+        }
+    }
+    return sum == 0.0 ? 1e9 : 10.0 * std::log10(255.0 * 255.0 * static_cast<double>(n) / sum);
+}
+
+class CompilerImagery : public ::testing::Test {
+protected:
+    static void SetUpTestSuite() {
+        GDALAllRegister();
+        scene_ = std::make_unique<ImageryScene>("imagery");
+        result_ = std::make_unique<CompileResult>(scene_->build(scene_->imagery_settings()));
+    }
+    static void TearDownTestSuite() {
+        result_.reset();
+        scene_.reset();
+    }
+    static fs::path db() { return scene_->dir / "db"; }
+    static std::unique_ptr<ImageryScene> scene_;
+    static std::unique_ptr<CompileResult> result_;
+};
+std::unique_ptr<ImageryScene> CompilerImagery::scene_;
+std::unique_ptr<CompileResult> CompilerImagery::result_;
+
+TEST_F(CompilerImagery, EveryTileHasItsTextureAndTheManifestSaysSo) {
+    ASSERT_TRUE(result_->ok) << (result_->errors.empty() ? "" : result_->errors[0]);
+    ASSERT_TRUE(result_->imagery.has_value());
+    EXPECT_EQ(result_->imagery->tiles, 2U + 8U);
+    std::unique_ptr<TerrainDatabase> opened;
+    const auto r = TerrainDatabase::open(db(), opened);
+    ASSERT_TRUE(r.manifest.has_value());
+    ASSERT_TRUE(r.manifest->imagery.has_value());
+    EXPECT_EQ(r.manifest->imagery->format, ImageryFormat::rgba8_srgb);
+    EXPECT_EQ(r.manifest->imagery->texels, 64U);
+    for (const LevelTiles& level : r.manifest->levels) {
+        for (std::uint32_t x = level.x0; x <= level.x1; ++x) {
+            for (std::uint32_t y = level.y0; y <= level.y1; ++y) {
+                const ImageryImage image = read_imagery(db(), {level.level, x, y});
+                EXPECT_EQ(image.size, 64U);
+                EXPECT_EQ(image.mips.size(), 7U);
+            }
+        }
+    }
+}
+
+// Each finest texel is its centre's colour: the patch's gradient to within
+// rounding (so texel centres and row order are right), the group order, and
+// within a group the file the point is deepest inside.
+TEST_F(CompilerImagery, FinestTexelsAreTheSourcesAtTheirCentres) {
+    ASSERT_TRUE(result_->ok);
+    const LevelTiles& fine = result_->manifest.levels[1];
+    std::array<int, 4> seen{};  // patch, red, green, blue
+    int wrong = 0;
+    for (std::uint32_t x = fine.x0; x <= fine.x1; ++x) {
+        for (std::uint32_t y = fine.y0; y <= fine.y1; ++y) {
+            const TileKey key{16, x, y};
+            const Rgba8Image got = decode_mip(read_imagery(db(), key), 0);
+            const GeoBounds b = tile_bounds(key);
+            const double step = (b.east_deg - b.west_deg) / got.size;
+            for (std::uint32_t r = 0; r < got.size; ++r) {
+                for (std::uint32_t c = 0; c < got.size; ++c) {
+                    const auto [want, clear] = scene_->expected(b.south_deg + (r + 0.5) * step,
+                                                                b.west_deg + (c + 0.5) * step, 9.0);
+                    if (!clear) {
+                        continue;
+                    }
+                    const std::uint8_t* t = got.at(r, c);
+                    bool ok = true;
+                    for (std::size_t ch = 0; ch < 3; ++ch) {
+                        ok = ok && std::abs(static_cast<double>(t[ch]) - want[ch]) <= 0.5 + 1e-9;
+                    }
+                    wrong += ok ? 0 : 1;
+                    if (!ok && wrong < 5) {
+                        ADD_FAILURE() << to_string(key) << " texel " << r << ", " << c << ": "
+                                      << int{t[0]} << " " << int{t[1]} << " " << int{t[2]}
+                                      << ", want " << want[0] << " " << want[1] << " " << want[2];
+                    }
+                    const std::size_t kind = want[2] == 128.0   ? 0
+                                             : want[0] == 200.0 ? 1
+                                             : want[1] == 200.0 ? 2
+                                                                : 3;
+                    ++seen[kind];
+                }
+            }
+        }
+    }
+    EXPECT_EQ(wrong, 0);
+    for (const int n : seen) {
+        EXPECT_GT(n, 50);  // every source shows
+    }
+}
+
+// A coarser tile is its children's halves: each child's colours in its
+// quarter (south-west first, rows from the south), averaged in linear light.
+TEST_F(CompilerImagery, CoarseTilesAreTheirChildrenHalved) {
+    ASSERT_TRUE(result_->ok);
+    const LevelTiles& roots = result_->manifest.levels[0];
+    for (std::uint32_t x = roots.x0; x <= roots.x1; ++x) {
+        const TileKey key{15, x, roots.y0};
+        const Rgba8Image got = decode_mip(read_imagery(db(), key), 0);
+        const auto kids = children(key);
+        std::array<Rgba8Image, 4> halves;
+        for (std::size_t i = 0; i < kids.size(); ++i) {
+            halves[i] = decode_mip(read_imagery(db(), kids[i]), 1);
+        }
+        const std::uint32_t h = got.size / 2;
+        for (std::uint32_t r = 0; r < got.size; ++r) {
+            for (std::uint32_t c = 0; c < got.size; ++c) {
+                const Rgba8Image& q = halves[(r >= h ? 2U : 0U) + (c >= h ? 1U : 0U)];
+                const std::uint8_t* want = q.at(r % h, c % h);
+                const std::uint8_t* t = got.at(r, c);
+                ASSERT_TRUE(std::equal(t, t + 4, want)) << to_string(key) << " " << r << ", " << c;
+            }
+        }
+        // And a child's half is its own mip 1: the four texels averaged in
+        // linear light (black and white make 188, not 128).
+        Rgba8Image bw(2);
+        bw.at(0, 0)[0] = bw.at(0, 0)[1] = bw.at(0, 0)[2] = 0;
+        bw.at(1, 1)[0] = bw.at(1, 1)[1] = bw.at(1, 1)[2] = 0;
+        EXPECT_EQ(int{half(bw).at(0, 0)[0]}, 188);
+    }
+    // Solid colours stay exact all the way up: the roots' far east is blue.
+    const Rgba8Image east = decode_mip(read_imagery(db(), {15, roots.x1, roots.y0}), 0);
+    EXPECT_EQ(int{east.at(32, 63)[2]}, 200);
+    EXPECT_EQ(int{east.at(32, 63)[0]}, 0);
+}
+
+TEST_F(CompilerImagery, CompressedFormatsStayCloseToTheExactOne) {
+    ASSERT_TRUE(result_->ok);
+    for (const auto& [format, least_db] : {std::pair<const char*, double>{"bc7", 38.0},
+                                           std::pair<const char*, double>{"bc1", 26.0}}) {
+        const ImageryScene scene(std::string("imagery_") + format);
+        const auto r = scene.build(scene.imagery_settings(format));
+        ASSERT_TRUE(r.ok) << (r.errors.empty() ? "" : r.errors[0]);
+        for (const LevelTiles& level : r.manifest.levels) {
+            for (std::uint32_t x = level.x0; x <= level.x1; ++x) {
+                for (std::uint32_t y = level.y0; y <= level.y1; ++y) {
+                    const TileKey key{level.level, x, y};
+                    const ImageryImage exact = read_imagery(db(), key);
+                    const ImageryImage packed = read_imagery(scene.dir / "db", key);
+                    EXPECT_EQ(packed.format, *imagery_format_from_name(format));
+                    // Small mips put the scene's hard colour edges into a
+                    // few blocks, more than one BC block can hold: looser.
+                    for (std::size_t m = 0; m < packed.mips.size(); ++m) {
+                        EXPECT_GE(psnr(decode_mip(packed, m), decode_mip(exact, m)),
+                                  m < 3 ? least_db : 20.0)
+                            << format << " " << to_string(key) << " mip " << m;
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST(CompilerImageryFailures, AreasTheImageryDoesNotCoverFailAndWriteNothing) {
+    GDALAllRegister();
+    const ImageryScene scene("imagery_short");
+    const auto r = scene.build(scene.imagery_settings("bc7", 64, R"("img/new_a.tif")"));
+    ASSERT_FALSE(r.ok);
+    ASSERT_FALSE(r.errors.empty());
+    EXPECT_NE(r.errors[0].find("imagery samples have no source"), std::string::npos) << r.errors[0];
+    EXPECT_FALSE(fs::exists(scene.dir / "db"));
+    EXPECT_FALSE(fs::exists(scene.dir / "db.part"));
+}
+
+TEST(CompilerImageryFailures, TexelsCoarserThanTheSourcesAreRefused) {
+    GDALAllRegister();
+    const ImageryScene scene("imagery_coarse");
+    const auto r = scene.build(scene.imagery_settings("bc7", 16));
+    ASSERT_FALSE(r.ok);
+    ASSERT_FALSE(r.errors.empty());
+    EXPECT_NE(r.errors[0].find("raise texels"), std::string::npos) << r.errors[0];
+}
+
+TEST(CompilerImageryFailures, SourcesMustBeRgbBytes) {
+    GDALAllRegister();
+    const ImageryScene scene("imagery_not_rgb");
+    // A DEM as imagery: one Float32 band.
+    fs::copy_file(scene.dir / "cache/dem/old.tif", scene.dir / "cache/img/dem.tif");
+    const auto r = scene.build(scene.imagery_settings("bc7", 64, R"("img/dem.tif")"));
+    ASSERT_FALSE(r.ok);
+    ASSERT_FALSE(r.errors.empty());
+    EXPECT_NE(r.errors[0].find("red, green and blue"), std::string::npos) << r.errors[0];
+}
+
+TEST(CompilerTexture, MipChainsAndFormatsRoundTrip) {
+    Rgba8Image image(16);
+    for (std::uint32_t r = 0; r < 16; ++r) {
+        for (std::uint32_t c = 0; c < 16; ++c) {
+            std::uint8_t* t = image.at(r, c);
+            // Colours along a line, as one BC block can hold.
+            t[0] = static_cast<std::uint8_t>(40 + c * 8 + r * 4);
+            t[1] = static_cast<std::uint8_t>(20 + c * 4 + r * 2);
+            t[2] = 90;
+        }
+    }
+    const auto mips = mip_chain(image);
+    ASSERT_EQ(mips.size(), 5U);
+    EXPECT_EQ(mips.back().size, 1U);
+    const ImageryImage exact = encode_texture(mips, ImageryFormat::rgba8_srgb);
+    for (std::size_t m = 0; m < mips.size(); ++m) {
+        EXPECT_EQ(decode_mip(exact, m).texels, mips[m].texels) << m;
+    }
+    const ImageryImage bc7 = encode_texture(mips, ImageryFormat::bc7_srgb);
+    const ImageryImage bc1 = encode_texture(mips, ImageryFormat::bc1_srgb);
+    EXPECT_EQ(bc7.mips.back().size(), 16U);  // the 1 x 1 mip is one block
+    EXPECT_EQ(bc1.mips.back().size(), 8U);
+    for (std::size_t m = 0; m < mips.size(); ++m) {
+        EXPECT_GE(psnr(decode_mip(bc7, m), mips[m]), 40.0) << m;
+        EXPECT_GE(psnr(decode_mip(bc1, m), mips[m]), 30.0) << m;
+    }
+    // A layer encoded in the tile format and back gives the same texels.
+    const auto back = decode_imagery(encode_imagery(bc7));
+    ASSERT_TRUE(back.has_value());
+    EXPECT_EQ(decode_mip(*back, 0).texels, decode_mip(bc7, 0).texels);
+}
+
 TEST(CompilerSettings, WildcardsMatchRunsOfCharacters) {
     EXPECT_TRUE(wildcard_match("*.tif", "a.tif"));
     EXPECT_TRUE(wildcard_match("USGS_*_B24.tif", "USGS_1M_16_x51y383_AL_19County_B24.tif"));
@@ -653,6 +1004,29 @@ TEST(CompilerSettings, RejectsMistakes) {
     EXPECT_FALSE(with("south = 1.0", "south = 2.5").empty());            // south above north
     EXPECT_FALSE(with("area = {", "area = \"missing.toml\"\nx = {").empty());
     EXPECT_FALSE(with("name = \"t\"\n", "").empty());
+
+    fs::create_directories(dir / "cache" / "img");
+    std::ofstream(dir / "cache" / "img" / "i.tif") << "x";
+    const std::string imagery =
+        "[imagery]\nformat = \"bc7\"\ntexels = 512\ncache = \"cache\"\nsources = [\"img/*.tif\"]\n";
+    const auto im = parse_settings(good + imagery, "s.toml", dir);
+    ASSERT_TRUE(im.settings.has_value()) << (im.errors.empty() ? "" : im.errors[0]);
+    ASSERT_TRUE(im.settings->imagery.has_value());
+    EXPECT_EQ(im.settings->imagery->format, ImageryFormat::bc7_srgb);
+    EXPECT_EQ(im.settings->imagery->texels, 512U);
+    ASSERT_EQ(im.settings->imagery->sources.size(), 1U);
+    EXPECT_EQ(im.settings->imagery->sources[0].size(), 1U);
+    EXPECT_FALSE(parse_settings(good, "s.toml", dir).settings->imagery.has_value());
+    const auto imagery_with = [&](const std::string& from, const std::string& to) {
+        std::string t = imagery;
+        t.replace(t.find(from), from.size(), to);
+        return errors(good + t);
+    };
+    EXPECT_FALSE(imagery_with("\"bc7\"", "\"bc3\"").empty());
+    EXPECT_FALSE(imagery_with("512", "500").empty());   // not a power of two
+    EXPECT_FALSE(imagery_with("512", "8192").empty());  // past 4096
+    EXPECT_FALSE(imagery_with("img/*.tif", "img/none*.tif").empty());
+    EXPECT_FALSE(imagery_with("cache = \"cache\"\n", "").empty());
 }
 
 }  // namespace

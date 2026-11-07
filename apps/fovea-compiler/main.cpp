@@ -79,6 +79,13 @@ int main(int argc, char** argv) {
             }
             return 1;
         }
+        if (result.imagery && result.manifest.imagery) {
+            const auto& im = *result.manifest.imagery;
+            std::printf("imagery (%s, %u texels a side): %zu tiles in %.1f s, %.2f GB\n",
+                        std::string(imagery_format_name(im.format)).c_str(), im.texels,
+                        result.imagery->tiles, result.imagery->seconds,
+                        static_cast<double>(result.imagery->bytes) / 1e9);
+        }
         std::printf("wrote %s\n", s.output.string().c_str());
     } catch (const std::exception& e) {
         (void)std::fprintf(stderr, "fovea-compiler: %s\n", e.what());

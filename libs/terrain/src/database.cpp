@@ -1,6 +1,7 @@
 #include "fovea/terrain/database.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <fstream>
 #include <numbers>
@@ -68,6 +69,10 @@ std::string manifest_text(const DatabaseManifest& m) {
       << "[area]\nsouth = " << m.area.south_deg << "\nnorth = " << m.area.north_deg
       << "\nwest = " << m.area.west_deg << "\neast = " << m.area.east_deg << "\n\n"
       << "[layers.elevation]\nformat = \"float32\"\nsamples = " << m.elevation_samples << "\n";
+    if (m.imagery) {
+        s << "\n[layers.imagery]\nformat = \"" << imagery_format_name(m.imagery->format)
+          << "\"\ntexels = " << m.imagery->texels << "\n";
+    }
     for (const SourceInfo& src : m.sources) {
         s << "\n[[source]]\nlayer = " << toml_string(src.layer)
           << "\nname = " << toml_string(src.name) << "\ncredit = " << toml_string(src.credit)
@@ -128,6 +133,18 @@ ManifestResult parse_manifest(const std::string& text, const std::string& source
         error(root.source(), "[layers.elevation] needs samples from 2 to 8193");
     } else {
         m.elevation_samples = static_cast<std::uint32_t>(*samples);
+    }
+    if (const auto* imagery = root["layers"]["imagery"].as_table()) {
+        const auto format = imagery_format_from_name((*imagery)["format"].value_or(std::string{}));
+        const auto texels = (*imagery)["texels"].value<std::int64_t>();
+        if (!format || !texels || *texels < 4 || *texels > 4096 ||
+            !std::has_single_bit(static_cast<std::uint64_t>(*texels))) {
+            error(imagery->source(),
+                  "[layers.imagery] needs format = \"bc7\", \"bc1\" or \"rgba8\" and texels a "
+                  "power of two from 4 to 4096");
+        } else {
+            m.imagery = DatabaseManifest::Imagery{*format, static_cast<std::uint32_t>(*texels)};
+        }
     }
     if (const auto* list = root["source"].as_array()) {
         for (const auto& node : *list) {

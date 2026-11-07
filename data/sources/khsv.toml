@@ -37,6 +37,9 @@ endpoint = "https://planetarycomputer.microsoft.com/api/stac/v1"
 collection = "naip"
 year = 2023
 asset = "image"
+# The database's whole extent (the 30 level-12 tiles touching the area,
+# docs/milestone-3.md step 4), not just the area: imagery has no backdrop.
+extent = { south = 34.541015625, north = 34.7607421875, west = -86.923828125, east = -86.66015625 }
 sign = "https://planetarycomputer.microsoft.com/api/sas/v1/token/naip"
 
 # NOAA GEOID18 (NAVD88 to NAD83(2011) ellipsoid heights), from PROJ's data

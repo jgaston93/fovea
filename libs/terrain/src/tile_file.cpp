@@ -258,4 +258,90 @@ std::optional<ElevationGrid> decode_elevation(const TileLayer& l) {
     return g;
 }
 
+std::string_view imagery_format_name(ImageryFormat f) {
+    switch (f) {
+        case ImageryFormat::bc7_srgb:
+            return "bc7";
+        case ImageryFormat::bc1_srgb:
+            return "bc1";
+        case ImageryFormat::rgba8_srgb:
+            return "rgba8";
+    }
+    return "?";
+}
+
+std::optional<ImageryFormat> imagery_format_from_name(std::string_view name) {
+    for (const ImageryFormat f :
+         {ImageryFormat::bc7_srgb, ImageryFormat::bc1_srgb, ImageryFormat::rgba8_srgb}) {
+        if (name == imagery_format_name(f)) {
+            return f;
+        }
+    }
+    return std::nullopt;
+}
+
+std::size_t imagery_mip_bytes(ImageryFormat f, std::uint32_t size) {
+    const std::size_t blocks = (std::size_t{size} + 3) / 4;
+    switch (f) {
+        case ImageryFormat::bc7_srgb:
+            return blocks * blocks * 16;
+        case ImageryFormat::bc1_srgb:
+            return blocks * blocks * 8;
+        case ImageryFormat::rgba8_srgb:
+            return std::size_t{size} * size * 4;
+    }
+    return 0;
+}
+
+std::uint32_t imagery_mip_count(std::uint32_t size) {
+    return static_cast<std::uint32_t>(std::bit_width(size));
+}
+
+TileLayer encode_imagery(const ImageryImage& image) {
+    TileLayer l;
+    l.name = std::string(kImageryLayer);
+    l.format = static_cast<std::uint32_t>(image.format);
+    std::size_t bytes = 8;
+    for (const auto& mip : image.mips) {
+        bytes += mip.size();
+    }
+    l.data.assign(8, 0);
+    l.data.reserve(bytes);
+    put(l.data, 0, image.size);
+    put(l.data, 4, static_cast<std::uint32_t>(image.mips.size()));
+    for (const auto& mip : image.mips) {
+        l.data.insert(l.data.end(), mip.begin(), mip.end());
+    }
+    return l;
+}
+
+std::optional<ImageryImage> decode_imagery(const TileLayer& l) {
+    const auto format = static_cast<ImageryFormat>(static_cast<std::uint8_t>(l.format));
+    if (l.format > 255 || imagery_format_name(format) == "?" || l.data.size() < 8) {
+        return std::nullopt;
+    }
+    const std::span<const std::uint8_t> in(l.data);
+    ImageryImage image;
+    image.format = format;
+    image.size = get<std::uint32_t>(in, 0);
+    if (image.size < 4 || image.size > 4096 || !std::has_single_bit(image.size) ||
+        get<std::uint32_t>(in, 4) != imagery_mip_count(image.size)) {
+        return std::nullopt;
+    }
+    std::size_t at = 8;
+    for (std::uint32_t s = image.size; s >= 1; s /= 2) {
+        const std::size_t n = imagery_mip_bytes(format, s);
+        if (l.data.size() - at < n) {
+            return std::nullopt;
+        }
+        image.mips.emplace_back(l.data.begin() + static_cast<std::ptrdiff_t>(at),
+                                l.data.begin() + static_cast<std::ptrdiff_t>(at + n));
+        at += n;
+    }
+    if (at != l.data.size()) {
+        return std::nullopt;
+    }
+    return image;
+}
+
 }  // namespace fovea

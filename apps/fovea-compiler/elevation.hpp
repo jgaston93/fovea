@@ -1,7 +1,8 @@
 #pragma once
 
-// Reading elevation sources through GDAL (D-019): the only file in Fovea
-// that sees GDAL's API, so the rest of the compiler stays plain C++.
+// Reading elevation sources through GDAL (D-019): with imagery.cpp, the
+// only files in Fovea that see GDAL's API, so the rest of the compiler
+// stays plain C++.
 //
 // Sources are DEMs in any CRS GDAL reads, with orthometric heights (NAVD88
 // for 3DEP); the geoid grid turns those into ellipsoid heights (D-020):

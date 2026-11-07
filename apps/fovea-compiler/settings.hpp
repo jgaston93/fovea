@@ -14,6 +14,11 @@
 //   cache = "../cache/khsv"         # where tools/fetch-sources.py put the files
 //   sources = ["elevation_1m/*_B24.tif", "elevation_10m/*.tif"]  # newest first
 //   geoid = "geoid/us_noaa_g2018u0.tif"
+//   [imagery]                       # optional: no imagery layer without it
+//   format = "bc7"                  # or "bc1", "rgba8" (D-017)
+//   texels = 512                    # per tile side, a power of two from 4 to 4096
+//   cache = "../cache/khsv"
+//   sources = ["imagery/m_*.tif"]   # RGB(+), 8 bits; highest priority first
 //   [[credit]]                      # the manifest's [[source]] entries
 //   layer = "elevation"
 //   name = "USGS 3DEP 1 m DEM"
@@ -21,7 +26,9 @@
 //
 // A source pattern is a directory under the cache and a file name with
 // '*' wildcards. Where several sources cover a point, the one listed first
-// wins; a file matched by two patterns belongs to the first.
+// wins; a file matched by two patterns belongs to the first. For imagery,
+// files of one pattern are equals (one year's tiles): the file a point is
+// deepest inside wins, so the seams fall midway through their overlaps.
 
 #include <cstdint>
 #include <filesystem>
@@ -45,6 +52,14 @@ struct CompileSettings {
     std::vector<std::filesystem::path> elevation;  // files, highest priority first
     std::filesystem::path geoid;
     std::vector<SourceInfo> credits;
+
+    struct Imagery {
+        ImageryFormat format = ImageryFormat::bc7_srgb;
+        std::uint32_t texels = 512;
+        // A group per pattern, highest priority first.
+        std::vector<std::vector<std::filesystem::path>> sources;
+    };
+    std::optional<Imagery> imagery;
 };
 
 struct SettingsResult {
