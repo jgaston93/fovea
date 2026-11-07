@@ -144,3 +144,33 @@ The compiler converts the sources' NAVD88 heights to WGS-84 ellipsoid heights wi
 
 The plan has the paging thread upload tiles "through a transfer queue". Milestone 3 step 6 does everything but the hand-over on the paging thread (reading, decoding, making images, recording the copies) and has the render thread submit those command buffers ahead of its own frame, in the same submit, on its one queue. The render thread waits for nothing; a timeline semaphore every frame signals tells the paging thread when staging memory can be reused. This needs no queue-ownership transfers, and works where there is one queue (lavapipe). On the desk the uploads cost too little to show (GPU time at most 1.8 ms an output while paging a 150 m/s flight). A dedicated transfer queue follows if a heavier load shows the need: the paging thread would then submit itself, with ownership transfers to the render queue.
 
+## D-022 Runways are smoothed in the compiler, from the elevation itself
+
+**Status:** Proposed (2026-11-07)
+
+The plan asks for flattened runways. The compiler takes each runway's rectangle from a committed airport file (the FAA's surveyed ends and the runway's width) and, inside it, replaces the heights with a smooth profile fitted along the centreline to the 1 m lidar, level across the runway, blended into the surrounding ground over the shoulders, at every level. That removes the lidar's noise and anything that stood on the runway when it was flown, without moving the surface off the survey. A straight line between the surveyed ends would not: runways have grade changes, so mid-runway it could sit off the real surface. Taxiways and aprons follow later.
+
+## D-023 Models are glTF binary, read by a CPU-only library with cgltf
+
+**Status:** Accepted (2026-11-07)
+
+Models are glTF 2.0 binary files (`.glb`), as Blender exports them. `libs/models` reads them with no Vulkan dependency, like `libs/terrain`, so parsing is tested without a GPU and a host can use it too. The reader is cgltf (MIT): one file, no dependencies, and it writes glTF too, which tests use. fastgltf is faster but needs simdjson, and parsing is a small part of loading a model, which happens once per model on the paging thread.
+
+## D-024 Model textures are uncompressed, for now
+
+**Status:** Accepted (2026-11-07)
+
+The paging thread decodes a model's PNG or JPEG textures with stb_image and builds their mips, and the GPU holds them as RGBA8. Model files stay plain glTF, straight from Blender, with no conversion step, and a few dozen landmarks take little of the memory budget. The cost is four times BC7's memory and upload, and the decode on the paging thread. Compressed textures (BC7 made offline, as terrain imagery is, or the standard `KHR_texture_basisu`) are revisited in milestone 5, when vegetation and many models make memory and uploads matter.
+
+## D-025 Models are Fovea's own and generic, built by committed scripts
+
+**Status:** Accepted (2026-11-07)
+
+Each model is a Blender Python script in `data/models/` that builds it and exports a `.glb`. The scripts and the small `.glb` files are committed (own work, under the repository's licence), so models are reproducible and nothing proprietary enters the repository. Landmarks are massing models: the right footprint, height and colour, not detail. Each glTF material names its Fovea material ID in `extras`, checked when a model loads, so material IDs exist on models from the start, as the plan requires (Sensor views).
+
+## D-026 Placements are a tile layer
+
+**Status:** Proposed (2026-11-07)
+
+The plan bakes hand-placed landmarks into tiles. A committed placement file per database lists each one (model, latitude, longitude, heading). The compiler writes them into a `placements` layer (D-018) of the tile containing each, at a level the compiler settings choose and the manifest records, with the terrain's height at the spot. For KHSV that level is 12, the pinned roots, so placements are always resident; databases with more can place them finer, where they page with their tiles.
+
