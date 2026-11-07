@@ -282,6 +282,45 @@ std::unique_ptr<TerrainDatabase> open_db(const TestDb& t) {
     return db;
 }
 
+TEST(TileFile, PlacementsLayerRoundTripsAndRefusesNonsense) {
+    const std::vector<Placement> placed = {
+        {"tower", 34.6372, -86.7751, 190.25, 12.5F},
+        {"hangar_a-2", -12.0, 179.9999, -3.0, 359.75F},
+    };
+    const TileLayer layer = encode_placements(placed);
+    EXPECT_EQ(layer.name, "placements");
+    const auto back = decode_placements(layer);
+    ASSERT_TRUE(back.has_value());
+    ASSERT_EQ(back->size(), 2U);
+    EXPECT_EQ((*back)[1].model, "hangar_a-2");
+    EXPECT_EQ((*back)[0].lat_deg, 34.6372);
+    EXPECT_EQ((*back)[0].lon_deg, -86.7751);
+    EXPECT_EQ((*back)[0].height_m, 190.25);
+    EXPECT_EQ((*back)[1].heading_deg, 359.75F);
+    EXPECT_TRUE(decode_placements(encode_placements({}))->empty());
+    EXPECT_EQ(model_path("tower"), std::filesystem::path("models") / "tower.glb");
+
+    // Every truncation, extra bytes, and bad values are refused.
+    for (std::size_t n = 0; n < layer.data.size(); ++n) {
+        TileLayer cut = layer;
+        cut.data.resize(n);
+        EXPECT_FALSE(decode_placements(cut).has_value()) << n;
+    }
+    TileLayer extra = layer;
+    extra.data.push_back(0);
+    EXPECT_FALSE(decode_placements(extra).has_value());
+    for (const Placement& bad :
+         {Placement{"../etc", 0, 0, 0, 0}, Placement{"", 0, 0, 0, 0}, Placement{"a b", 0, 0, 0, 0},
+          Placement{"ok", 91, 0, 0, 0}, Placement{"ok", 0, -181, 0, 0},
+          Placement{"ok", 0, 0, 0, 360}, Placement{"ok", 0, 0, 0, -1},
+          Placement{"ok", 0, 0, std::nan(""), 0}, Placement{std::string(65, 'a'), 0, 0, 0, 0}}) {
+        EXPECT_FALSE(decode_placements(encode_placements({&bad, 1})).has_value()) << bad.model;
+    }
+    TileLayer v2 = layer;
+    v2.format = 2;
+    EXPECT_FALSE(decode_placements(v2).has_value());
+}
+
 TEST(TerrainDatabase, ManifestRoundTripsAndIsChecked) {
     DatabaseManifest m;
     m.name = "test";
@@ -310,6 +349,15 @@ TEST(TerrainDatabase, ManifestRoundTripsAndIsChecked) {
         text.replace(at, std::string_view("format = \"bc1\"\ntexels = 256").size(), bad);
         EXPECT_FALSE(parse_manifest(text, "m.toml").manifest.has_value()) << bad;
     }
+    EXPECT_FALSE(with.manifest->placements.has_value());
+    m.placements = DatabaseManifest::Placements{10};
+    const ManifestResult placed = parse_manifest(manifest_text(m), "m.toml");
+    ASSERT_TRUE(placed.manifest.has_value()) << placed.errors[0];
+    ASSERT_TRUE(placed.manifest->placements.has_value());
+    EXPECT_EQ(placed.manifest->placements->level, 10);
+    std::string text = manifest_text(m);
+    text.replace(text.find("level = 10\n\n[[level]]"), 10, "level = 31");
+    EXPECT_FALSE(parse_manifest(text, "m.toml").manifest.has_value());
 
     EXPECT_FALSE(parse_manifest("schema = 2\n[layers.elevation]\nformat = \"float32\"\nsamples = "
                                 "17\n[[level]]\nlevel = 1\nx = [0, 0]\ny = [0, 0]\n",

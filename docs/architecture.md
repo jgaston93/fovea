@@ -34,7 +34,7 @@ terrain   ← core
 models    ← core            (+ cgltf, private)
 platform  ← core            (+ SDL3, private)
 net       ← core
-render    ← core, platform, terrain  (+ volk, VMA, vk-bootstrap, Dear ImGui, private; the terrain paging thread)
+render    ← core, platform, terrain, models  (+ volk, VMA, vk-bootstrap, Dear ImGui, private; the terrain paging thread, which loads models too)
 
 apps/fovea           ← core, terrain, platform, net, render
 apps/fovea-compiler  ← core, terrain      (+ GDAL)

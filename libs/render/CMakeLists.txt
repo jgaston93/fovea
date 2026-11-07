@@ -8,6 +8,7 @@ add_library(fovea_render STATIC
     src/terrain_cache.cpp
     src/terrain_lod.cpp
     src/view.cpp
+    src/vk/models.cpp
     src/vk/overlay_ui.cpp
     src/vk/renderer.cpp
     src/vk/terrain.cpp
@@ -15,7 +16,7 @@ add_library(fovea_render STATIC
 add_library(fovea::render ALIAS fovea_render)
 target_include_directories(fovea_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(fovea_render
-    PUBLIC fovea::core fovea::platform fovea::terrain
+    PUBLIC fovea::core fovea::platform fovea::terrain fovea::models
     PRIVATE Vulkan::Headers volk::volk vk-bootstrap::vk-bootstrap GPUOpen::VulkanMemoryAllocator
             fovea_imgui)
 # Vulkan functions come from volk (no prototypes, no static linking to the
@@ -40,5 +41,9 @@ fovea_add_shader(fovea_render "${terrain_shader}" vs_terrain vertex kVsTerrain
                  ${terrain_capabilities})
 fovea_add_shader(fovea_render "${terrain_shader}" fs_terrain fragment kFsTerrain
                  ${terrain_capabilities})
+# Models (milestone 4 step 3).
+set(model_shader "${PROJECT_SOURCE_DIR}/shaders/model.slang")
+fovea_add_shader(fovea_render "${model_shader}" vs_model vertex kVsModel ${terrain_capabilities})
+fovea_add_shader(fovea_render "${model_shader}" fs_model fragment kFsModel ${terrain_capabilities})
 # Just the generated shader headers: what clang-tidy needs from a build.
 add_custom_target(fovea_shaders DEPENDS ${FOVEA_SHADER_HEADERS})

@@ -55,6 +55,8 @@ struct SourceInfo {
 //   [area] south, north, west, east
 //   [layers.elevation] format = "float32", samples = 257
 //   [layers.imagery] format = "bc7", texels = 512  (if the database has imagery)
+//   [layers.placements] level = 12   (if it has placements: in that level's
+//                                     tiles; their models in models/)
 //   [[source]] layer, name, credit          (any number)
 //   [[level]] level, x = [first, last], y = [first, last]
 // Further layers (the geoid, D-020) add [layers.<name>] tables; a reader
@@ -71,6 +73,11 @@ struct DatabaseManifest {
         std::uint32_t texels = 512;
     };
     std::optional<Imagery> imagery;
+    // The level whose tiles hold the placements (D-026).
+    struct Placements {
+        std::uint8_t level = 0;
+    };
+    std::optional<Placements> placements;
     std::vector<SourceInfo> sources;
     std::vector<LevelTiles> levels;  // coarsest first
 
@@ -89,6 +96,8 @@ ManifestResult parse_manifest(const std::string& text, const std::string& source
 
 // Where a tile's file lives, relative to the database directory.
 std::filesystem::path tile_path(const TileKey& key);
+// Where a placed model's file lives, likewise (its name is valid_model_name).
+std::filesystem::path model_path(std::string_view name);
 
 class TerrainDatabase {
 public:

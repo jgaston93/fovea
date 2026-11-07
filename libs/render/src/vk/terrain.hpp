@@ -26,24 +26,14 @@
 #include "fovea/render/terrain_cache.hpp"
 #include "fovea/render/terrain_lod.hpp"
 #include "fovea/terrain/database.hpp"
+#include "gpu_context.hpp"
+#include "models.hpp"
 
 namespace fovea {
 
-struct GpuContext {
-    VkPhysicalDevice physical = VK_NULL_HANDLE;
-    VkDevice device = VK_NULL_HANDLE;
-    VmaAllocator allocator = nullptr;
-    VkQueue queue = VK_NULL_HANDLE;
-    std::uint32_t queue_family = 0;
-    bool bc_textures = false;     // textureCompressionBC enabled
-    float max_anisotropy = 0.0F;  // 0: samplerAnisotropy not enabled
-    // Signalled by every frame's submit with the frame's number plus one:
-    // the paging thread reads it to reuse what a frame's uploads used.
-    VkSemaphore timeline = VK_NULL_HANDLE;
-};
-
 // Most uploads submitted with one frame: bounds the render thread's work.
 inline constexpr std::uint32_t kMaxUploadsPerFrame = 16;
+inline constexpr std::uint32_t kMaxModelUploadsPerFrame = 4;
 
 class Pager;
 
@@ -57,7 +47,8 @@ public:
                                             std::unique_ptr<TerrainDatabase> db,
                                             const TerrainOptions& options, std::uint32_t slots,
                                             std::uint32_t outputs, VkShaderModule vertex,
-                                            VkShaderModule fragment, VkFormat colour,
+                                            VkShaderModule fragment, VkShaderModule model_vertex,
+                                            VkShaderModule model_fragment, VkFormat colour,
                                             VkFormat depth, TerrainLoad& report);
     ~TerrainGpu();  // stops the paging thread; the GPU must be idle
     TerrainGpu(const TerrainGpu&) = delete;
@@ -136,8 +127,9 @@ private:
     std::vector<std::uint32_t> split_;
     std::vector<double> want_priority_;
     std::vector<std::uint32_t> want_order_;
-    std::array<VkCommandBufferSubmitInfo, kMaxUploadsPerFrame> upload_infos_{};
-    std::array<std::uint32_t, kMaxUploadsPerFrame> upload_batches_{};
+    std::array<VkCommandBufferSubmitInfo, kMaxUploadsPerFrame + kMaxModelUploadsPerFrame>
+        upload_infos_{};
+    std::array<std::uint32_t, kMaxUploadsPerFrame + kMaxModelUploadsPerFrame> upload_batches_{};
     std::uint32_t upload_count_ = 0;
     // Per output: the eye last frame and when, for where it's heading.
     std::vector<DVec3> last_eye_;
@@ -145,7 +137,8 @@ private:
     std::vector<bool> has_last_eye_;
 
     TerrainStats stats_;
-    std::unique_ptr<Pager> pager_;
+    std::unique_ptr<ModelGpu> models_;  // with placements (milestone 4 step 3)
+    std::unique_ptr<Pager> pager_;      // after models_: stopped before it goes
 
     VkSampler sampler_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
