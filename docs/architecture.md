@@ -32,7 +32,7 @@ core      ← (nothing; std, glm, toml++ and stb_image only)
 terrain   ← core
 platform  ← core            (+ SDL3, private)
 net       ← core
-render    ← core, platform, terrain  (+ volk, VMA, vk-bootstrap, Dear ImGui, private)
+render    ← core, platform, terrain  (+ volk, VMA, vk-bootstrap, Dear ImGui, private; the terrain paging thread)
 
 apps/fovea           ← core, terrain, platform, net, render
 apps/fovea-compiler  ← core, terrain      (+ GDAL)
@@ -64,7 +64,7 @@ Rules:
 
 - **SceneState handoff** uses a wait-free triple buffer of a fixed-size snapshot. The writer publishes complete snapshots, and the render thread takes the latest one at the start of each frame. Neither side ever waits on the other.
 - **Snapshot contents:** a fixed-capacity entity table (D-011: no entity is special; views attach their viewpoints to entities or fix them in the world), and environment state (time of day, and later weather). Every sample carries two timestamps: host time from the protocol and local receive time from a monotonic clock. Each entity keeps its last two samples, so the renderer can interpolate or extrapolate without the network thread knowing about frames.
-- **Paging** (milestone 3 and later): the render thread pushes visibility and prediction hints into an SPSC ring. The paging thread does the file I/O, decoding and staging, and submits copies on a dedicated transfer queue. Completions come back through another SPSC ring, along with the timeline semaphore value. The render thread uses a resource only after checking (not waiting on) that its semaphore has reached that value.
+- **Paging** (milestone 3 step 6): the render thread pushes tile requests (from each view's tile selection, and where its eye is heading) into an SPSC ring, having reserved each a slot in a fixed-size tile cache. The paging thread does the file I/O, decoding, image creation and staging, and records the copies. Completions come back through another SPSC ring with their command buffers, which the render thread submits ahead of its own frame, in the same submit (no transfer queue yet: the render thread waits for nothing, and no queue-ownership transfers are needed); a timeline semaphore that every frame signals tells the paging thread when staging memory and command buffers are free again. Evicted slots are reused only once the frames that drew them have finished.
 - **Control and stats:** stats are written into a separate SPSC ring that a stats or control thread drains. Milestone 1 writes them to a log file. A later milestone exposes them, together with control commands, over a local socket for the external control UI. That traffic stays separate from CIGI.
 
 ## Render path rules

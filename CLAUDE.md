@@ -34,7 +34,7 @@ python3 tools/check-elevation.py data/compile/khsv.toml # check it against the s
 python3 tools/check-imagery.py data/compile/khsv.toml   # its imagery against the sources (PSNR, seams)
 ./build/debug/apps/fovea/fovea --headless --dump out config/<file>.toml    # any config headless, out/<channel>.png
 ./build/release/apps/fovea/fovea --overlay config/khsv.toml                # the KHSV database on the desk, then:
-./build/release/tools/cigi-test-host/cigi-test-host tools/cigi-test-host/scripts/khsv-approach.toml
+./build/release/tools/cigi-test-host/cigi-test-host tools/cigi-test-host/scripts/khsv-approach.toml  # or khsv-survey.toml (paging)
 FOVEA_UPDATE_GOLDEN=1 ctest --preset debug -R Golden                       # rewrite tests/data/golden (on lavapipe)
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json FOVEA_REQUIRE_VULKAN=1 ctest --preset debug  # GPU tests on lavapipe
 CC=clang CXX=clang++ cmake --preset debug -B build/clang-debug --fresh     # Clang build
