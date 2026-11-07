@@ -9,7 +9,7 @@
 //
 // A model is flattened: every mesh of its scene, through its nodes'
 // transforms, in the model's own frame, glTF's: metres, +Y up, +Z the
-// model's front, its ground line at y = 0. Articulated parts (milestone 7)
+// model's front, its ground line at y = 0. Articulated parts (milestone 9)
 // will keep their nodes.
 //
 // Each material names its Fovea material in its extras (in Blender, a custom
@@ -22,7 +22,7 @@
 // materials' base colour factor and texture (PNG or JPEG in the file),
 // alpha mode, double-sidedness. Refused, with a reason: anything else a file
 // requires (extensions it lists as required, other primitive modes,
-// external files), skinned meshes (milestone 7), and limits past those
+// external files), skinned meshes (milestone 9), and limits past those
 // below.
 
 #include <array>

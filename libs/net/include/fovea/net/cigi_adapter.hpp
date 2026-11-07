@@ -19,7 +19,7 @@
 // - Entity Control (4.1.2) for a top-level entity sets its geodetic
 //   position (altitude above mean sea level) and yaw, pitch, roll. An entity
 //   is created by its first Entity Control and destroyed by Entity State
-//   Destroyed. Attached (child) entities come with milestone 7: they're
+//   Destroyed. Attached (child) entities come with milestone 9: they're
 //   counted, and a top-level entity that becomes attached is made inactive
 //   (not drawn, not ridden) until then; Destroyed still removes it.
 // - Timestamps are 10 us ticks that roll over after about 12 hours (p. 44);
@@ -76,7 +76,7 @@ struct CigiAdapterStats {
     std::uint64_t entity_updates = 0;
     std::uint64_t rejected_packets = 0;   // known packets that didn't decode
     std::uint64_t skipped_packets = 0;    // packets this adapter doesn't handle
-    std::uint64_t attached_entities = 0;  // child Entity Controls (milestone 7)
+    std::uint64_t attached_entities = 0;  // child Entity Controls (milestone 9)
     std::uint64_t entity_table_full = 0;  // new entities beyond kMaxEntities
     std::uint64_t frames_reported = 0;    // Start of Frame messages sent
     std::uint64_t frames_unreported = 0;  // frame starts with no host to send to

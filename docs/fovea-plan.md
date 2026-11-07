@@ -1,6 +1,6 @@
 # Fovea — Image Generator Plan
 
-Fovea is an independent, open-source, cross-platform Vulkan image generator (IG) for real-time flight simulation. It works with any compatible host through the public Common Image Generator Interface (CIGI). This document is the handoff for a Claude Code session to begin implementation.
+Fovea is an independent, open-source, cross-platform Vulkan image generator (IG) for real-time geographic scenes, driven by a host program. Flight simulation over the public Common Image Generator Interface (CIGI) is its first application, not its definition (D-011): ground vehicles, drones, maritime and people on the ground are as much its use, and anything specific to one of them belongs in a module or an adapter. This document began as the handoff for the first Claude Code session; it is kept as the plan.
 
 ## Goals and constraints
 
@@ -41,7 +41,7 @@ One executable, three borderless fullscreen windows (one per monitor), each with
 Threads:
 
 1. Network thread: receives CIGI packets and writes the latest eyepoint and entity state into a lock-free buffer.
-2. Paging thread: predicts aircraft motion, loads tiles and models from disk, uploads to GPU via a transfer queue.
+2. Paging thread: predicts the views' motion, loads tiles and models from disk, uploads to GPU via a transfer queue.
 3. Render thread: fixed 60 Hz frame clock; consumes only prepared data; never blocks on I/O or allocation.
 
 Key rules:
@@ -60,8 +60,8 @@ A view is the general rendering unit: pose source, projection, render mode, post
 Use compiled-in modules behind stable interfaces, enabled through config. Do not build a runtime DLL plugin system at this stage.
 
 - Rule: if a feature changes the main render path or the data format, it is core. If it only uses core services, it is a module.
-- Core: time of day and atmosphere, lighting, shadows, spatial queries (collision, height of terrain, line of sight), and the particle system.
-- Modules: rotor downwash, brownout and whiteout, cloud and precipitation visuals, PAPI behavior, and sensor modes.
+- Core: time of day and atmosphere, lighting, shadows, anti-aliasing, spatial queries (collision, height of terrain, line of sight), and the particle system.
+- Modules: domain behaviour on top of core, such as, for flight simulation, rotor downwash, brownout and whiteout, and PAPI behaviour; cloud and precipitation visuals; and sensor modes. Other domains (ground, maritime) add their own.
 - Lifecycle: each module implements init, update, record, and shutdown.
 - Budget: each module declares a GPU time budget and reports actual cost through the stats feed.
 
@@ -91,8 +91,8 @@ Lock these in before milestone 1 is complete, because they are expensive to retr
 
 ## Display channels
 
-- Each channel uses an asymmetric (off-axis) frustum matched to the physical screen position relative to the pilot eye point, so the horizon stays continuous across bezels.
-- Curved displays: start with flat-screen frustums; add mild warp correction only if needed.
+- Each channel uses an asymmetric (off-axis) frustum matched to the physical screen position relative to the viewer's eye point, so the horizon stays continuous across bezels.
+- Curved displays and projectors: start with flat-screen frustums; then warping (distortion correction) and edge blending, as domes and multi-projector setups need (milestone 14).
 - TVs used as displays should run in game mode with motion smoothing and image processing disabled to minimize and equalize latency.
 
 Display sync is not guaranteed just because one GPU renders all three views. Presenting the same frame does not by itself lock the outputs or remove differences in display processing delay. Test this in milestone 1 with a high-speed camera or similar measurement, and treat GPU driver features such as display spanning or sync as options to evaluate.
@@ -103,25 +103,49 @@ Display sync is not guaranteed just because one GPU renders all three views. Pre
 - Unique landmarks (KHSV tower, hangars, terminal) are hand-placed via a placement file (lat, lon, heading, model ID) and baked into tiles by the compiler.
 - Vegetation and clutter are scattered procedurally from NLCD land cover and drawn with GPU instancing, with impostor billboards at distance.
 - Models load on the paging thread only.
-- Close-range detail (procedural detail textures, ground clutter) is a priority for hover and low-level flight cues; it follows the environment (milestone 5), as haze and a moving sun change every view already drawn.
+- Close-range detail (procedural detail textures, ground clutter) for any viewer near the ground: low flight and hover, drones, ground vehicles, people on foot. It follows the environment (milestone 6), as haze and a moving sun change every view already drawn.
 
 ## Dynamic entities
 
 - Other aircraft, UAVs, and vehicles come from the host via CIGI entity control packets; never baked into terrain.
-- Entity table: ID, model type, position, orientation, articulated parts (e.g., rotors).
+- Entity table: ID, model type, position, orientation, articulated parts (rotors, gear, turrets, wheels).
 - Interpolation/extrapolation to smooth host update rate vs. 60 Hz frame rate.
 - Height-of-terrain query support so ground vehicles sit on terrain.
 - Entity layer kept protocol-neutral so a future DIS bridge can feed the same table.
+- Entity lights: navigation, landing and search lights, landing and search lights lighting the ground they fall on.
+- Terrain queries for the host: hosts ask the IG for height of terrain and line of sight over CIGI (request and response packets, from the ICD), answered from the same CPU-only library a host can link (foundational decision 1).
 
 ## Environment
 
 Added 2026-11-07, at the owner's asking: the sky, the light and the weather, which the first milestones left as a fixed placeholder (a gradient sky and a sun fixed in the south-east). Linear HDR rendering with tone mapping per view (foundational decision 3) is what they build on.
 
+- Shadows: the sun's and moon's, on terrain and models (cascaded shadow maps or an equivalent).
 - Atmosphere and aerial perspective: a physically based sky (atmospheric scattering), and distant terrain and models fading into haze with distance, which also softens where terrain levels of detail change.
 - Time of day: the sun and moon placed from the date, time and location; the sky and the lighting following them through dawn, dusk and night; stars.
 - Night lighting: airport and approach lights, drawn with the clustered lighting reserved for them (foundational decision 4), from a lights layer in the tiles (D-018 names it) that the compiler builds from the runways' FAA geometry and a placement file of lights; lit windows, which need emissive materials in `libs/models` and the model scripts.
 - Weather: visibility (the haze above, set by the host or config) and fog, cloud layers (2D layers first; volumetric clouds if the frame allows), precipitation; wet or snow-covered ground later.
-- Host control: the environment set over CIGI (time of day, atmosphere, weather), from the ICD, as every packet: milestone 5's plan extends D-014's packets to them. And in config without a host.
+- Host control: the environment set over CIGI (time of day, atmosphere, weather), from the ICD, as every packet: milestone 6's plan extends D-014's packets to them. And in config without a host.
+
+## Image quality
+
+- Anti-aliasing from early on (milestone 5): runway edges, thin roads, wires and building edges crawl without it, on every display. Which method (MSAA, temporal, or both, as the frame allows) is decided in its plan.
+
+## Cultural features
+
+- Roads (OpenStreetMap, with their markings where the imagery doesn't show them), buildings generally (extruded from footprints with generic detail, as the landmarks are, D-025), and water (rivers, lakes and shorelines, lit and reflecting the sky). The compiler builds them as tile layers; this is what makes ground-level and urban views work.
+- The sea, later: its surface and sea state set by the host, and wakes, for maritime use.
+
+## Effects
+
+- A particle system (core): smoke, dust, fire, explosions, spray; set over CIGI's effect packets (from the ICD) or by modules (rotor downwash, brownout).
+
+## Wide-area coverage
+
+- The counterpart to close-range detail: coarser global sources beyond the local high-resolution areas (Copernicus 30 m elevation, Sentinel-2 imagery), several databases or areas, and scaling from 20 km to regions and continents, the terrain paging and the database format as they are.
+
+## Control plane
+
+- Foundational decision 7 delivered: start, stop, database selection, module toggles, health and stats, over an interface of their own (not CIGI), with a minimal UI.
 
 ## Sensor views (future)
 
@@ -133,7 +157,7 @@ Added 2026-11-07, at the owner's asking: the sky, the light and the weather, whi
 
 - 60 cm imagery is roughly 2–4 MB per km² after GPU compression and mips.
 - A 100 × 100 km area around Huntsville is roughly 20–40 GB of imagery, with elevation adding a similar amount before compression.
-- Use high resolution only near airfields and low-level routes; coarser data elsewhere.
+- Use high resolution only near each deployment's areas of interest (airfields, routes, training areas); coarser data elsewhere.
 
 ## Suggested tech stack
 
@@ -149,13 +173,20 @@ Added 2026-11-07, at the owner's asking: the sky, the light and the weather, whi
 2. CIGI eyepoint: build a small scripted CIGI test host, receive its eyepoint over CIGI, and fly a camera over a test grid; log end-to-end latency.
 3. First terrain: compiler builds a small KHSV database (3DEP elevation + NAIP imagery + LOD); runtime streams it at a locked 60 Hz.
 4. Airport and models: flattened runways, glTF model library, hand-placed KHSV landmarks.
-5. Environment: atmosphere and aerial perspective, time of day with the sun, moon and stars, night lighting (airport lights), weather (visibility, cloud layers, precipitation), set over CIGI or by config.
-6. Low-level cues: procedural detail textures, scattered vegetation with instancing and impostors.
-7. Entities: CIGI entity control, interpolation, articulated rotors, height-of-terrain queries.
-8. Evaluation: fly scripted hover and low-level routes and compare frame timing and visual cues against written acceptance criteria.
-9. Later: material maps and IR, lidar, DIS bridge, multi-machine channels.
+5. Anti-aliasing: on every view, chosen and measured against the frame budget.
+6. Environment: shadows, atmosphere and aerial perspective, time of day with the sun, moon and stars, night lighting (airport lights), weather (visibility, cloud layers, precipitation), set over CIGI or by config.
+7. Close-range detail: procedural detail textures, scattered vegetation with instancing and impostors, for any viewer near the ground.
+8. Cultural features: roads, buildings from footprints, water.
+9. Entities: CIGI entity control, interpolation, articulated parts, entity lights, height-of-terrain queries, and terrain queries answered over CIGI.
+10. Effects: the particle system, set over CIGI or by modules.
+11. Wide-area coverage: global coarse sources, several databases or areas, regional scale.
+12. Control plane: start, stop, database selection, module toggles, health and stats, a minimal UI.
+13. Evaluation: scripted routes for each kind of use (low and high flight, hover, ground vehicles, a viewer on foot), frame timing and visual cues against written acceptance criteria.
+14. Later: material maps and IR, lidar, the sea, projector warping and edge blending, DIS bridge, multi-machine channels.
 
 ## First Claude Code session tasks
+
+Done in milestone 1 (kept as the record):
 
 1. Create the repository layout: apps/fovea (runtime), apps/fovea-compiler (offline), libs/core, libs/render, libs/platform, libs/net, tools/cigi-test-host, config/, docs/.
 2. Set up CMake with Windows and Linux builds, warnings as errors, and dependency fetching for volk, VMA, vk-bootstrap, and GLFW or SDL.
@@ -166,8 +197,7 @@ Added 2026-11-07, at the owner's asking: the sky, the light and the weather, whi
 
 ## Open questions
 
-- Which CIGI version to implement first, and which packets are required for milestones 2, 5 and 7.
-- Target GPU model and display resolution for development.
-- Physical screen geometry and eye point measurements for the example frustum config.
-- Model sources and licenses for KHSV landmarks and aircraft entities.
-- Repository license.
+- Answered: CIGI 3.3 first (D-013), with packets added as milestones need them (milestones 2, 6 and 9 so far); the development GPU is an RTX 5070 Ti; KHSV's landmarks are Fovea's own generic models (D-025).
+- Physical screen geometry and eye point measurements for the example frustum config (#22).
+- Model sources and licenses for aircraft and vehicle entities.
+- Repository license (#23).
