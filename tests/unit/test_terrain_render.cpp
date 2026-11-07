@@ -334,11 +334,13 @@ TEST(TerrainRender, HillsMatchTheGoldenImage) {
         const double e = (lon - clon) * 91000.0;
         return 150.0 + 30.0 * std::sin(n / 45.0) * std::cos(e / 35.0) + 0.05 * n;
     };
+    // Smooth (waves dozens of texels long): GPUs filter textures
+    // differently (anisotropic or not), which hard edges would turn into
+    // large differences; texel placement is pinned by the tests above.
     s.colour = [](double lat, double lon) {
-        const bool a = static_cast<long>(std::floor(lat / 0.0004)) % 2 == 0;
-        const bool c = static_cast<long>(std::floor(lon / 0.0004)) % 2 == 0;
-        const auto shade = static_cast<std::uint8_t>(120 + 100 * std::abs(std::sin(lon * 3000.0)));
-        return a == c ? Rgb{shade, 170, 80} : Rgb{90, 120, shade};
+        const auto wave = [](double v) { return static_cast<std::uint8_t>(127.5 + 100.0 * v); };
+        return Rgb{wave(std::sin(lat * 9000.0)), wave(std::cos(lon * 7000.0)),
+                   wave(std::sin((lat + lon) * 5000.0))};
     };
     const auto db = open_db(write_db("hills", s));
     constexpr std::uint32_t kW = 320;
