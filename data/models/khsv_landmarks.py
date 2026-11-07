@@ -25,6 +25,7 @@ import math
 import os
 import random
 import sys
+import zlib
 
 import bmesh
 import bpy
@@ -63,20 +64,22 @@ def office_facade(wall, glass_from=1.0, glass_to=2.6, bay=1.5):
     return img
 
 
-def corrugated(wall):
-    """Vertical ribs every 0.25 m."""
-    img = blank(4.0, 4.0, wall)
-    for x in range(img.shape[1]):
-        img[:, x, :3] *= 0.86 + 0.14 * (0.5 + 0.5 * math.cos(2 * math.pi * x / (0.25 * PX)))
+def corrugated(wall, w_m=4.0, h_m=4.0, depth=0.14):
+    """Vertical ribs every 0.25 m, `depth` their shading."""
+    img = blank(w_m, h_m, wall)
+    x = np.arange(img.shape[1])
+    img[:, :, :3] *= (1.0 - depth + depth * (0.5 + 0.5 * np.cos(2 * np.pi * x / (0.25 * PX))))[
+        None, :, None]
     return img
 
 
-def metal_wall(wall, eave, bay, feature):
-    """A metal-clad wall, one bay wide and the wall's full height (texture
-    coordinates run from the ground up, so it doesn't repeat upwards): ribs,
-    a darker band along the base, a trim under the eaves, and per bay
-    either a small window ("window") or a loading-dock door ("dock")."""
-    img = corrugated_texels(wall, bay, eave + 1.0)
+def metal_wall(wall, eave, height, bay, feature):
+    """A metal-clad wall, one bay wide and `height` tall, the wall's full
+    height, gables included (texture coordinates run from the ground up, so
+    it doesn't repeat upwards): ribs, a darker band along the base, a trim
+    under the eaves, and per bay either a small window ("window") or a
+    loading-dock door ("dock")."""
+    img = corrugated(wall, bay, height, depth=0.2)
     img[0:int(1.2 * PX), :, :3] *= 0.72  # base band
     t0 = int((eave - 0.5) * PX)
     img[t0:int(eave * PX), :, :3] = srgb(shade(wall, 0.6))  # eave trim
@@ -89,13 +92,6 @@ def metal_wall(wall, eave, bay, feature):
         img[y0:y1, mid - half:mid + half, :3] = srgb(shade(wall, 0.62))
         for y in range(y0, y1, int(0.5 * PX)):
             img[y:y + 1, mid - half:mid + half, :3] *= 0.85
-    return img
-
-
-def corrugated_texels(wall, w_m, h_m):
-    img = blank(w_m, h_m, wall)
-    for x in range(img.shape[1]):
-        img[:, x, :3] *= 0.8 + 0.2 * (0.5 + 0.5 * math.cos(2 * math.pi * x / (0.25 * PX)))
     return img
 
 
@@ -173,10 +169,11 @@ class Model:
 
     def __init__(self, name):
         self.name = name
-        self.faces = {}  # material: [(points, projection)]
+        self.faces = {}  # material: [(points, projection, texture coordinates)]
 
-    def face(self, mat, points, projection=None):
-        self.faces.setdefault(mat, []).append((points, projection))
+    def face(self, mat, points, projection=None, uvs=None):
+        """A face; its texture coordinates from its positions, unless given."""
+        self.faces.setdefault(mat, []).append((points, projection, uvs))
 
     def quad_strip(self, mat, ring_lo, ring_hi, closed=True):
         """Walls between two rings of points (anticlockwise from above)."""
@@ -198,21 +195,31 @@ class Model:
         self.face(roof, hi, "top")
         self.face(roof, list(reversed(lo)), "top")
 
-    def prism(self, wall, roof, cx, cy, r0, r1, z0, z1, sides, top=True, bottom=False):
-        """An upright prism (cylinder or frustum): radius r0 at z0, r1 at z1."""
+    def prism(self, wall, roof, cx, cy, r0, r1, z0, z1, sides, top=True, bottom=False,
+              one_image_a_facet=False):
+        """An upright prism (cylinder or frustum): radius r0 at z0, r1 at z1;
+        with `one_image_a_facet`, each side shows its texture once, edge to
+        edge (a tower cab's framed panes)."""
         z0 = -PLINTH if z0 <= 0.0 else z0
         ring = lambda r, z: [(cx + r * math.cos(2 * math.pi * k / sides + math.pi / sides),
                               cy + r * math.sin(2 * math.pi * k / sides + math.pi / sides), z)
                              for k in range(sides)]
         lo, hi = ring(r0, z0), ring(r1, z1)
-        self.quad_strip(wall, lo, hi)
+        if one_image_a_facet:
+            for i in range(sides):
+                j = (i + 1) % sides
+                self.face(wall, [lo[i], lo[j], hi[j], hi[i]], uvs=[(0, 0), (1, 0), (1, 1), (0, 1)])
+        else:
+            self.quad_strip(wall, lo, hi)
         if top:
             self.face(roof, hi, "top")
         if bottom:
             self.face(roof, list(reversed(lo)), "top")
 
     def parapet(self, wall, cx, cy, w, d, z, height=0.8, thick=0.4):
-        """A low wall round a flat roof's edge (its outside flush with the walls)."""
+        """A low wall round a flat roof's edge (its outside flush with the
+        walls), in a plain material of its own: a facade's would show its
+        windows on it."""
         for (px, py, pw, pd) in [(cx, cy - d / 2 + thick / 2, w, thick),
                                  (cx, cy + d / 2 - thick / 2, w, thick),
                                  (cx - w / 2 + thick / 2, cy, thick, d - 2 * thick),
@@ -250,10 +257,14 @@ class Model:
             su, sv = mat["size_m"]
             bm = bmesh.new()
             uv = bm.loops.layers.uv.new("UVMap")
-            for points, projection in faces:
+            for points, projection, given in faces:
                 verts = [bm.verts.new(p) for p in points]
                 f = bm.faces.new(verts)
                 f.normal_update()
+                if given:
+                    for loop, coords in zip(f.loops, given):
+                        loop[uv].uv = coords
+                    continue
                 n = f.normal
                 top = projection == "top" or abs(n.z) > 0.7
                 if not top:
@@ -262,7 +273,10 @@ class Model:
                     t = (t[0] / tl, t[1] / tl)
                 for loop in f.loops:
                     p = loop.vert.co
-                    loop[uv].uv = (p.x / su, p.y / sv) if top else ((p.x * t[0] + p.y * t[1]) / su, p.z / sv)
+                    # Below the ground line (the plinth) a wall shows its
+                    # texture's bottom row, not the top wrapped round.
+                    loop[uv].uv = ((p.x / su, p.y / sv) if top else
+                                   ((p.x * t[0] + p.y * t[1]) / su, max(p.z, 0.0) / sv))
             mesh = bpy.data.meshes.new(f"{self.name}_{mat.name}")
             bm.to_mesh(mesh)
             bm.free()
@@ -312,13 +326,15 @@ def flat_roofed(name, w, d, h, facade="office", plant=True):
     elif facade == "office":
         walls = material("office_wall", office_facade(WALL), 1, (6.0, 4.0))
     else:
-        walls = material("cargo_wall", metal_wall(shade(roof, 0.9), h, 4.5, "dock"), 2,
+        walls = material("cargo_wall", metal_wall(shade(roof, 0.9), h, h + 1.0, 4.5, "dock"), 2,
                          (4.5, h + 1.0))
-    top = material("roof", membrane(roof, len(name)), 1, (8.0, 8.0))
+    top = material("roof", membrane(roof, zlib.crc32(name.encode())), 1, (8.0, 8.0))
     unit = material("plant", corrugated((150, 152, 150)), 2, (4.0, 4.0))
+    coping = material("coping", plain(shade(WALL if facade != "cargo" else roof, 0.85)), 1,
+                      (1.0, 1.0))
     m = Model(name)
     m.box(walls, top, 0, 0, w, d, 0, h)
-    m.parapet(walls, 0, 0, w, d, h)
+    m.parapet(coping, 0, 0, w, d, h)
     if plant:
         m.rooftop_plant(unit, 0, 0, w, d, h, seed=name)
     return m
@@ -326,23 +342,26 @@ def flat_roofed(name, w, d, h, facade="office", plant=True):
 
 def hangar(name, w, d, eave):
     roof = roof_colour(ROOF[name])
-    walls = material("hangar_wall", metal_wall(shade(roof, 0.92), eave, 6.0, "window"), 2,
-                     (6.0, eave + 1.0))
+    rise = min(w * 0.12, 6.0)
+    height = eave + rise + 1.0  # to the gables' tops
+    walls = material("hangar_wall", metal_wall(shade(roof, 0.92), eave, height, 6.0, "window"),
+                     2, (6.0, height))
     door = material("hangar_door", hangar_door(shade(roof, 0.92)), 2, (8.0, 4.0))
     top = material("hangar_roof", standing_seam(roof), 2, (4.8, 4.8))
     m = Model(name)
-    m.arched_hangar(walls, door, top, w, d, eave, rise=min(w * 0.12, 6.0))
+    m.arched_hangar(walls, door, top, w, d, eave, rise)
     return m
 
 
 def tower(name):
     concrete = material("concrete", plain((176, 172, 164)), 1, (1.0, 1.0))
-    glass = material("cab_glass", cab_glass(), 3, (2.0 * math.pi * 6.5 / 8, 5.0))
+    glass = material("cab_glass", cab_glass(), 3, (1.0, 1.0))  # one image a facet
     dark = material("roof_dark", plain((70, 72, 74)), 2, (1.0, 1.0))
     m = Model(name)
     m.prism(concrete, concrete, 0, 0, 3.5, 3.5, 0, 38.0, 16)        # the shaft
     m.prism(concrete, concrete, 0, 0, 6.5, 6.5, 38.0, 40.0, 8, bottom=True)  # the deck
-    m.prism(glass, dark, 0, 0, 6.0, 7.0, 40.0, 45.0, 8, top=False)  # the cab, leaning out
+    m.prism(glass, dark, 0, 0, 6.0, 7.0, 40.0, 45.0, 8, top=False,
+            one_image_a_facet=True)  # the cab, leaning out
     m.prism(dark, dark, 0, 0, 7.6, 7.6, 45.0, 46.0, 8, bottom=True)  # its roof
     m.box(dark, dark, 0, 0, 0.3, 0.3, 46.0, 52.0)                   # an antenna
     return m

@@ -168,7 +168,7 @@ The paging thread decodes a model's PNG or JPEG textures with stb_image (built u
 
 **Status:** Accepted (2026-11-07)
 
-Each model is a Blender Python script in `data/models/` that builds it and exports a `.glb`. The scripts and the small `.glb` files are committed (own work, under the repository's licence), so models are reproducible and nothing proprietary enters the repository. Landmarks are massing models: the right footprint, height and colour, not detail. Each glTF material names its Fovea material ID in `extras`, checked when a model loads, so material IDs exist on models from the start, as the plan requires (Sensor views).
+Each model is a Blender Python script in `data/models/` that builds it and exports a `.glb`. The scripts and the small `.glb` files are committed (own work, under the repository's licence), so models are reproducible and nothing proprietary enters the repository. Landmarks are generic: the right footprint, height and colour, and generic detail made by the script (window bands, doors, metal cladding, roof membranes and plant, hangars' arched roofs), not any building's own. Their roof colours are the imagery's over each footprint, measured once and written into the script, so they sit in the photograph round them; not the photograph itself on the roofs, which against generic walls would jar (decided in milestone 4 step 5). Each glTF material names its Fovea material ID in `extras`, checked when a model loads, so material IDs exist on models from the start, as the plan requires (Sensor views).
 
 ## D-026 Placements are a tile layer
 

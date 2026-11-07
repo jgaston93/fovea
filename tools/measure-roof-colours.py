@@ -58,10 +58,11 @@ def main():
     with open(args.settings, "rb") as f:
         s = tomllib.load(f)
     cache = base / s["imagery"]["cache"]
-    files = []
+    files = []  # each once, as the compiler takes them
     for pattern in s["imagery"]["sources"]:
         p = Path(pattern)
-        files += [f for f in sorted((cache / p.parent).iterdir()) if fnmatch.fnmatchcase(f.name, p.name)]
+        files += [f for f in sorted((cache / p.parent).iterdir())
+                  if fnmatch.fnmatchcase(f.name, p.name) and f not in files]
     vrt = gdal.BuildVRT("/vsimem/roofs.vrt", [str(f) for f in files])
     srs = osr.SpatialReference(vrt.GetProjection())
     srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
