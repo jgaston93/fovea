@@ -336,7 +336,14 @@ void parse_terrain(Parser& p, const toml::table& t, TerrainConfig& out) {
             if (v->empty()) {
                 p.error(n->source(), "'terrain.database' must name a directory");
             }
-            out.database = std::filesystem::path(std::u8string(v->begin(), v->end()));
+            // UTF-8, as TOML is: a char8_t path, so Windows reads it as UTF-8
+            // and not the ANSI code page.
+            std::u8string utf8;
+            utf8.reserve(v->size());
+            for (const char c : *v) {
+                utf8.push_back(static_cast<char8_t>(c));
+            }
+            out.database = std::filesystem::path(utf8);
         }
     }
     if (const auto* n = t.get("max_level")) {
