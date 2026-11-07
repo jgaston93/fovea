@@ -103,7 +103,7 @@ Display sync is not guaranteed just because one GPU renders all three views. Pre
 - Unique landmarks (KHSV tower, hangars, terminal) are hand-placed via a placement file (lat, lon, heading, model ID) and baked into tiles by the compiler.
 - Vegetation and clutter are scattered procedurally from NLCD land cover and drawn with GPU instancing, with impostor billboards at distance.
 - Models load on the paging thread only.
-- Close-range detail (procedural detail textures, ground clutter) is a priority for hover and low-level flight cues.
+- Close-range detail (procedural detail textures, ground clutter) is a priority for hover and low-level flight cues; it follows the environment (milestone 5), as haze and a moving sun change every view already drawn.
 
 ## Dynamic entities
 
@@ -117,11 +117,11 @@ Display sync is not guaranteed just because one GPU renders all three views. Pre
 
 Added 2026-11-07, at the owner's asking: the sky, the light and the weather, which the first milestones left as a fixed placeholder (a gradient sky and a sun fixed in the south-east). Linear HDR rendering with tone mapping per view (foundational decision 3) is what they build on.
 
-- Atmosphere and aerial perspective: a physically based sky (atmospheric scattering), and distant terrain and models fading into haze with distance, which also softens where terrain levels of detail change; visibility set by the host or config.
+- Atmosphere and aerial perspective: a physically based sky (atmospheric scattering), and distant terrain and models fading into haze with distance, which also softens where terrain levels of detail change.
 - Time of day: the sun and moon placed from the date, time and location; the sky and the lighting following them through dawn, dusk and night; stars.
-- Night lighting: airport and approach lights and lit windows, drawn with the clustered lighting reserved for them (foundational decision 4).
-- Weather: visibility and fog, cloud layers (2D layers first; volumetric clouds if the frame allows), precipitation; wet or snow-covered ground later.
-- Host control: the environment set over CIGI (time of day, atmosphere, weather), from the ICD, as every packet; and in config without a host.
+- Night lighting: airport and approach lights, drawn with the clustered lighting reserved for them (foundational decision 4), from a lights layer in the tiles (D-018 names it) that the compiler builds from the runways' FAA geometry and a placement file of lights; lit windows, which need emissive materials in `libs/models` and the model scripts.
+- Weather: visibility (the haze above, set by the host or config) and fog, cloud layers (2D layers first; volumetric clouds if the frame allows), precipitation; wet or snow-covered ground later.
+- Host control: the environment set over CIGI (time of day, atmosphere, weather), from the ICD, as every packet: milestone 5's plan extends D-014's packets to them. And in config without a host.
 
 ## Sensor views (future)
 
@@ -166,7 +166,7 @@ Added 2026-11-07, at the owner's asking: the sky, the light and the weather, whi
 
 ## Open questions
 
-- Which CIGI version to implement first, and which packets are required for milestones 2 and 6.
+- Which CIGI version to implement first, and which packets are required for milestones 2, 5 and 7.
 - Target GPU model and display resolution for development.
 - Physical screen geometry and eye point measurements for the example frustum config.
 - Model sources and licenses for KHSV landmarks and aircraft entities.
