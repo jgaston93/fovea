@@ -34,6 +34,13 @@ struct LevelTiles {
     bool contains(const TileKey& k) const {
         return k.level == level && k.x >= x0 && k.x <= x1 && k.y >= y0 && k.y <= y1;
     }
+    std::size_t count() const { return std::size_t{x1 - x0 + 1} * (y1 - y0 + 1); }
+    // The i-th tile, along rows from the south-west.
+    TileKey at(std::size_t i) const {
+        const std::size_t columns = x1 - x0 + 1;
+        return {level, x0 + static_cast<std::uint32_t>(i % columns),
+                y0 + static_cast<std::uint32_t>(i / columns)};
+    }
 };
 
 // Where a layer's data came from (D-018), for the record and for credits.

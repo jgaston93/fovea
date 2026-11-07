@@ -150,10 +150,10 @@ bool ElevationSources::heights(const TileKey& key, std::uint32_t samples, std::v
             xs[i] = b.west_deg + static_cast<double>(col) * step;
             ys[i] = b.south_deg + static_cast<double>(row) * step;
         }
-        if (OCTTransformEx(src.to_source, static_cast<int>(todo.size()), xs.data(), ys.data(),
-                           nullptr, ok.data()) == 0) {
-            continue;  // none transforms: the source is elsewhere
-        }
+        // False when any point fails (GDAL 3.8), not only all: each point's
+        // `ok` decides.
+        (void)OCTTransformEx(src.to_source, static_cast<int>(todo.size()), xs.data(), ys.data(),
+                             nullptr, ok.data());
         // Pixel coordinates, centres at whole numbers.
         int c0 = std::numeric_limits<int>::max();
         int c1 = std::numeric_limits<int>::min();

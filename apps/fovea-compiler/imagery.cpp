@@ -122,17 +122,7 @@ bool ImagerySources::texture(const TileKey& key, std::uint32_t texels, Rgba8Imag
         return src.bounds.west_deg < b.east_deg && src.bounds.east_deg > b.west_deg &&
                src.bounds.south_deg < b.north_deg && src.bounds.north_deg > b.south_deg;
     };
-    // Texels no further apart than about the sources' pixels: coarser
-    // texels would need each to average its area, or they alias.
     const double texel_deg = (b.east_deg - b.west_deg) / texels;
-    for (const Source& src : sources_) {
-        if (overlaps(src) &&
-            (texel_deg > 1.5 * src.pixel_lon_deg || texel_deg > 1.5 * src.pixel_lat_deg)) {
-            error = src.file.string() + ": pixels finer than the finest level's texels (" +
-                    std::to_string(texel_deg) + " degrees); raise texels or the finest level";
-            return false;
-        }
-    }
     const std::uint32_t side = texels;
     const std::size_t count = std::size_t{side} * side;
     const double step = texel_deg;
@@ -161,10 +151,10 @@ bool ImagerySources::texture(const TileKey& key, std::uint32_t texels, Rgba8Imag
             xs[i] = b.west_deg + (static_cast<double>(i % side) + 0.5) * step;
             ys[i] = b.south_deg + (static_cast<double>(std::size_t{i / side}) + 0.5) * step;
         }
-        if (OCTTransformEx(src.to_source, static_cast<int>(count), xs.data(), ys.data(), nullptr,
-                           ok.data()) == 0) {
-            continue;
-        }
+        // False when any point fails (GDAL 3.8), not only all: each point's
+        // `ok` decides.
+        (void)OCTTransformEx(src.to_source, static_cast<int>(count), xs.data(), ys.data(), nullptr,
+                             ok.data());
         for (std::size_t i = 0; i < count; ++i) {
             if (pick[i] != kNone && sources_[pick[i]].group < src.group) {
                 continue;  // a higher-priority group has it
@@ -180,6 +170,28 @@ bool ImagerySources::texture(const TileKey& key, std::uint32_t texels, Rgba8Imag
                 px[i] = x;
                 py[i] = y;
             }
+        }
+    }
+
+    const auto missing = static_cast<std::size_t>(std::count(pick.begin(), pick.end(), kNone));
+    if (missing != 0) {
+        error = "tile " + to_string(key) + ": " + std::to_string(missing) + " of " +
+                std::to_string(count) + " imagery samples have no source";
+        return false;
+    }
+    // Texels no further apart than about the chosen sources' pixels:
+    // coarser texels would need each to average its area, or they alias.
+    std::vector<bool> used(sources_.size(), false);
+    for (const std::size_t si : pick) {
+        used[si] = true;
+    }
+    for (std::size_t si = 0; si < sources_.size(); ++si) {
+        const Source& src = sources_[si];
+        if (used[si] &&
+            (texel_deg > 1.5 * src.pixel_lon_deg || texel_deg > 1.5 * src.pixel_lat_deg)) {
+            error = src.file.string() + ": pixels finer than the finest level's texels (" +
+                    std::to_string(texel_deg) + " degrees); raise texels or the finest level";
+            return false;
         }
     }
 
@@ -244,13 +256,6 @@ bool ImagerySources::texture(const TileKey& key, std::uint32_t texels, Rgba8Imag
             }
         }
     }
-    const auto missing = static_cast<std::size_t>(std::count(pick.begin(), pick.end(), kNone));
-    if (missing != 0) {
-        error = "tile " + to_string(key) + ": " + std::to_string(missing) + " of " +
-                std::to_string(count) + " imagery samples have no source";
-        return false;
-    }
-
     return true;
 }
 

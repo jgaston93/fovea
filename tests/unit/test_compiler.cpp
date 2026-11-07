@@ -878,6 +878,19 @@ TEST(CompilerImageryFailures, TexelsCoarserThanTheSourcesAreRefused) {
     EXPECT_NE(r.errors[0].find("raise texels"), std::string::npos) << r.errors[0];
 }
 
+TEST(CompilerImageryFailures, FinerSourcesNoTexelTakesDoNotCount) {
+    GDALAllRegister();
+    const ImageryScene scene("imagery_hidden_fine");
+    // 1 m imagery everywhere, but last: nothing samples it.
+    write_rgb(scene.dir / "cache/img/fine.tif", scene.e_min, scene.n_max, 1.0,
+              static_cast<int>(scene.e_max - scene.e_min),
+              static_cast<int>(scene.n_max - scene.n_min),
+              [](int, int) { return std::array<std::uint8_t, 3>{9, 9, 9}; });
+    const auto r = scene.build(scene.imagery_settings(
+        "rgba8", 64, R"("img/patch.tif", "img/new_*.tif", "img/old.tif", "img/fine.tif")"));
+    EXPECT_TRUE(r.ok) << (r.errors.empty() ? "" : r.errors[0]);
+}
+
 TEST(CompilerImageryFailures, SourcesMustBeRgbBytes) {
     GDALAllRegister();
     const ImageryScene scene("imagery_not_rgb");
@@ -887,6 +900,7 @@ TEST(CompilerImageryFailures, SourcesMustBeRgbBytes) {
     ASSERT_FALSE(r.ok);
     ASSERT_FALSE(r.errors.empty());
     EXPECT_NE(r.errors[0].find("red, green and blue"), std::string::npos) << r.errors[0];
+    EXPECT_EQ(r.errors.size(), 1U);  // once, though every thread found it
 }
 
 TEST(CompilerTexture, MipChainsAndFormatsRoundTrip) {
@@ -1027,6 +1041,16 @@ TEST(CompilerSettings, RejectsMistakes) {
     EXPECT_FALSE(imagery_with("512", "8192").empty());  // past 4096
     EXPECT_FALSE(imagery_with("img/*.tif", "img/none*.tif").empty());
     EXPECT_FALSE(imagery_with("cache = \"cache\"\n", "").empty());
+
+    // Layers don't take files from each other: a file both name is in both.
+    std::string both = good + imagery;
+    const std::string one = "sources = [\"dem/a.tif\"]";
+    both.replace(both.find(one), one.size(), "sources = [\"dem/a.tif\", \"img/*.tif\"]");
+    const auto shared = parse_settings(both, "s.toml", dir);
+    ASSERT_TRUE(shared.settings.has_value()) << (shared.errors.empty() ? "" : shared.errors[0]);
+    EXPECT_EQ(shared.settings->elevation.size(), 2U);
+    ASSERT_EQ(shared.settings->imagery->sources.size(), 1U);
+    EXPECT_EQ(shared.settings->imagery->sources[0].size(), 1U);
 }
 
 }  // namespace

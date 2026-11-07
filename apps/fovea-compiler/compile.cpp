@@ -220,8 +220,11 @@ bool run_parallel(std::size_t count, unsigned jobs, std::vector<std::string>& er
         }
         if (!why.empty()) {
             failed = true;
+            // Once: every thread opening the same bad source says the same.
             const std::lock_guard lock(mutex);
-            errors.push_back(why);
+            if (std::find(errors.begin(), errors.end(), why) == errors.end()) {
+                errors.push_back(why);
+            }
         }
     };
     std::vector<std::jthread> workers;
@@ -296,33 +299,31 @@ bool build_imagery(const CompileSettings& s, const fs::path& part, const LevelTi
                    unsigned jobs, CompileResult& result) {
     const auto start = std::chrono::steady_clock::now();
     ImageryBuild build(s, part);
-    // Subtrees from one level below the roots (more of them than threads),
-    // then the levels above from their halves.
-    const auto top = static_cast<std::uint8_t>(std::min<int>(s.finest_level, s.root_level + 1));
-    std::mutex mutex;
-    std::unordered_map<TileKey, Rgba8Image> halves;
-    const auto level_tiles = [&](std::uint8_t lv) {
+    const auto level_tiles = [&](int lv) {
         return descendants(roots, static_cast<std::uint8_t>(lv - s.root_level));
     };
-    const auto key_at = [](const LevelTiles& t, std::size_t i) {
-        const std::uint32_t columns = t.x1 - t.x0 + 1;
-        return TileKey{t.level, t.x0 + static_cast<std::uint32_t>(i % columns),
-                       t.y0 + static_cast<std::uint32_t>(i / columns)};
-    };
-    const auto count = [](const LevelTiles& t) {
-        return std::size_t{t.x1 - t.x0 + 1} * (t.y1 - t.y0 + 1);
-    };
+    // Subtrees, depth first, from the first level with a few per thread;
+    // then the levels above from their halves, held until then (at most
+    // about 16 per thread, or none: the roots' halves aren't kept).
+    int top = s.root_level;
+    while (top < s.finest_level && level_tiles(top).count() < std::size_t{4} * jobs) {
+        ++top;
+    }
+    std::mutex mutex;
+    std::unordered_map<TileKey, Rgba8Image> halves;
     const LevelTiles tops = level_tiles(top);
-    const bool ok = run_parallel(count(tops), jobs, result.errors, [&](std::string& why) -> Job {
+    const bool ok = run_parallel(tops.count(), jobs, result.errors, [&](std::string& why) -> Job {
         std::shared_ptr<ImagerySources> sources = ImagerySources::open(s.imagery->sources, why);
         return [&, sources](std::size_t i, std::string& err) {
-            const TileKey key = key_at(tops, i);
+            const TileKey key = tops.at(i);
             auto half = build.subtree(*sources, key, err);
             if (!half) {
                 return false;
             }
-            const std::lock_guard lock(mutex);
-            halves.emplace(key, std::move(*half));
+            if (top > s.root_level) {
+                const std::lock_guard lock(mutex);
+                halves.emplace(key, std::move(*half));
+            }
             return true;
         };
     });
@@ -330,12 +331,12 @@ bool build_imagery(const CompileSettings& s, const fs::path& part, const LevelTi
         return false;
     }
     for (int lv = top - 1; lv >= s.root_level; --lv) {
-        const LevelTiles tiles = level_tiles(static_cast<std::uint8_t>(lv));
+        const LevelTiles tiles = level_tiles(lv);
         std::unordered_map<TileKey, Rgba8Image> above;
         const bool level_ok =
-            run_parallel(count(tiles), jobs, result.errors, [&](std::string&) -> Job {
+            run_parallel(tiles.count(), jobs, result.errors, [&](std::string&) -> Job {
                 return [&](std::size_t i, std::string& err) {
-                    const TileKey key = key_at(tiles, i);
+                    const TileKey key = tiles.at(i);
                     const auto kids = children(key);
                     // `halves` is only read until the level is done.
                     auto half = build.finish(key,
@@ -345,8 +346,10 @@ bool build_imagery(const CompileSettings& s, const fs::path& part, const LevelTi
                     if (!half) {
                         return false;
                     }
-                    const std::lock_guard lock(mutex);
-                    above.emplace(key, std::move(*half));
+                    if (lv > s.root_level) {
+                        const std::lock_guard lock(mutex);
+                        above.emplace(key, std::move(*half));
+                    }
                     return true;
                 };
             });
@@ -424,87 +427,76 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
     for (int lv = s.finest_level; lv >= s.root_level; --lv) {
         const auto start = std::chrono::steady_clock::now();
         const LevelTiles tiles = descendants(roots, static_cast<std::uint8_t>(lv - s.root_level));
-        const std::uint32_t columns = tiles.x1 - tiles.x0 + 1;
-        const std::size_t count = std::size_t{columns} * (tiles.y1 - tiles.y0 + 1);
         const bool finest = lv == s.finest_level;
 
-        std::atomic<std::size_t> next{0};
-        std::atomic<bool> failed{false};
         std::mutex mutex;
         LevelReport report{static_cast<std::uint8_t>(lv),
-                           count,
+                           tiles.count(),
                            0.0,
                            0.0F,
                            std::numeric_limits<float>::max(),
                            std::numeric_limits<float>::lowest()};
-        const auto work = [&] {
-            std::string why;
-            // The finest level from the sources, the others from the level
-            // below.
-            const auto sources = finest ? ElevationSources::open(s.elevation, why) : nullptr;
-            ChildLevel below(part,
-                             descendants(roots, static_cast<std::uint8_t>(lv + 1 - s.root_level)));
+        // Each thread's own: the sources (the finest level) or the level
+        // below (the others).
+        struct State {
+            std::unique_ptr<ElevationSources> sources;
+            ChildLevel below;
             std::vector<float> heights;
-            while (why.empty() && !failed) {
-                const std::size_t i = next++;
-                if (i >= count) {
-                    return;
-                }
-                const TileKey key{static_cast<std::uint8_t>(lv),
-                                  tiles.x0 + static_cast<std::uint32_t>(i % columns),
-                                  tiles.y0 + static_cast<std::uint32_t>(i / columns)};
-                ElevationGrid grid;
-                if (finest) {
-                    if (!sources->heights(key, s.samples, heights, why)) {
-                        break;
-                    }
-                    const GeoBounds b = tile_bounds(key);
-                    const double step = (b.east_deg - b.west_deg) / (s.samples - 1);
-                    grid.size = s.samples;
-                    grid.heights.resize(heights.size());
-                    for (std::uint32_t r = 0; r < s.samples; ++r) {
-                        for (std::uint32_t c = 0; c < s.samples; ++c) {
-                            const std::size_t at = std::size_t{r} * s.samples + c;
-                            grid.heights[at] = static_cast<float>(
-                                static_cast<double>(heights[at]) +
-                                geoid->at(b.south_deg + r * step, b.west_deg + c * step));
-                        }
-                    }
-                } else {
-                    auto filtered = filter_children(below, key, s.samples, why);
-                    const auto e =
-                        filtered ? error_from_children(below, key, *filtered, why) : std::nullopt;
-                    below.trim();
-                    if (!e) {
-                        break;
-                    }
-                    grid = std::move(*filtered);
-                    grid.error_m = *e;
-                }
-                const auto [lo, hi] = std::minmax_element(grid.heights.begin(), grid.heights.end());
-                grid.min_m = *lo;
-                grid.max_m = *hi;
-                if (!write_tile(part / tile_path(key), {key, {encode_elevation(grid)}})) {
-                    why = (part / tile_path(key)).string() + ": cannot write";
-                    break;
-                }
-                const std::lock_guard lock(mutex);
-                report.max_error_m = std::max(report.max_error_m, grid.error_m);
-                report.min_m = std::min(report.min_m, grid.min_m);
-                report.max_m = std::max(report.max_m, grid.max_m);
-            }
-            if (!why.empty()) {
-                failed = true;
-                const std::lock_guard lock(mutex);
-                result.errors.push_back(why);
-            }
         };
-        std::vector<std::jthread> workers;
-        for (unsigned j = 0; j < std::min<std::size_t>(jobs, count); ++j) {
-            workers.emplace_back(work);
-        }
-        workers.clear();  // joins
-        if (failed) {
+        const bool ok =
+            run_parallel(tiles.count(), jobs, result.errors, [&](std::string& why) -> Job {
+                auto st = std::make_shared<State>(State{
+                    finest ? ElevationSources::open(s.elevation, why) : nullptr,
+                    ChildLevel(
+                        part, descendants(roots, static_cast<std::uint8_t>(lv + 1 - s.root_level))),
+                    {}});
+                return [&, st](std::size_t i, std::string& err) {
+                    const TileKey key = tiles.at(i);
+                    ElevationGrid grid;
+                    if (finest) {
+                        if (!st->sources->heights(key, s.samples, st->heights, err)) {
+                            return false;
+                        }
+                        const GeoBounds b = tile_bounds(key);
+                        const double step = (b.east_deg - b.west_deg) / (s.samples - 1);
+                        grid.size = s.samples;
+                        grid.heights.resize(st->heights.size());
+                        for (std::uint32_t r = 0; r < s.samples; ++r) {
+                            for (std::uint32_t c = 0; c < s.samples; ++c) {
+                                const std::size_t at = std::size_t{r} * s.samples + c;
+                                grid.heights[at] = static_cast<float>(
+                                    static_cast<double>(st->heights[at]) +
+                                    geoid->at(b.south_deg + r * step, b.west_deg + c * step));
+                            }
+                        }
+                    } else {
+                        auto filtered = filter_children(st->below, key, s.samples, err);
+                        const auto e = filtered
+                                           ? error_from_children(st->below, key, *filtered, err)
+                                           : std::nullopt;
+                        st->below.trim();
+                        if (!e) {
+                            return false;
+                        }
+                        grid = std::move(*filtered);
+                        grid.error_m = *e;
+                    }
+                    const auto [lo, hi] =
+                        std::minmax_element(grid.heights.begin(), grid.heights.end());
+                    grid.min_m = *lo;
+                    grid.max_m = *hi;
+                    if (!write_tile(part / tile_path(key), {key, {encode_elevation(grid)}})) {
+                        err = (part / tile_path(key)).string() + ": cannot write";
+                        return false;
+                    }
+                    const std::lock_guard lock(mutex);
+                    report.max_error_m = std::max(report.max_error_m, grid.error_m);
+                    report.min_m = std::min(report.min_m, grid.min_m);
+                    report.max_m = std::max(report.max_m, grid.max_m);
+                    return true;
+                };
+            });
+        if (!ok) {
             fs::remove_all(part, ec);
             return result;
         }

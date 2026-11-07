@@ -142,11 +142,13 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
 
     // Each pattern names at least one file; files in the same directories
     // that none names are listed, as they may be new data left out.
-    std::set<fs::path> taken;
+    std::set<fs::path> named;  // by any layer
     std::set<fs::path> dirs;
-    // A group of files per pattern (files an earlier pattern took aside).
+    // A group of files per pattern (files an earlier pattern of the same
+    // layer took aside; layers don't take from each other).
     const auto resolve = [&](const toml::array* patterns, const fs::path& from,
                              const char* section) {
+        std::set<fs::path> taken;
         std::vector<std::vector<fs::path>> groups;
         if (patterns == nullptr || patterns->empty()) {
             error(root.source(),
@@ -183,6 +185,7 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
             std::sort(found.begin(), found.end());
             auto& group = groups.emplace_back();
             for (auto& f : found) {
+                named.insert(f);
                 if (taken.insert(f).second) {
                     group.push_back(std::move(f));
                 }
@@ -219,7 +222,7 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
     for (const auto& dir : dirs) {
         std::error_code ec;
         for (const auto& entry : fs::directory_iterator(dir, ec)) {
-            if (entry.is_regular_file() && !taken.contains(entry.path().lexically_normal())) {
+            if (entry.is_regular_file() && !named.contains(entry.path().lexically_normal())) {
                 r.warnings.push_back(entry.path().string() + ": not in any source");
             }
         }

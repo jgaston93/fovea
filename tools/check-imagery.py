@@ -26,10 +26,11 @@ Needs python3-gdal, python3-numpy and python3-pil (Ubuntu packages).
 """
 
 import argparse
-import fnmatch
 import io
 import math
+import os
 import random
+import re
 import struct
 import sys
 import tomllib
@@ -179,12 +180,16 @@ class Reference:
         geographic = osr.SpatialReference()
         geographic.ImportFromEPSG(4269)
         geographic.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        # As the compiler lists them: '*' the only wildcard, paths normalized
+        # (not resolved), a file to the first imagery pattern naming it.
         self.sources, taken = [], set()
         for g, pattern in enumerate(im["sources"]):
-            d = (cache / pattern).parent
-            for f in sorted(d.iterdir()):
-                if fnmatch.fnmatchcase(f.name, Path(pattern).name) and f.resolve() not in taken:
-                    taken.add(f.resolve())
+            d = Path(os.path.normpath(cache / Path(pattern).parent))
+            name = re.compile("".join(".*" if ch == "*" else re.escape(ch)
+                                      for ch in Path(pattern).name))
+            for f in sorted(p for p in d.iterdir() if p.is_file()):
+                if name.fullmatch(f.name) and f not in taken:
+                    taken.add(f)
                     self.sources.append(Source(f, g, geographic))
         self.output = base / s["output"]
         self.cache = {}
