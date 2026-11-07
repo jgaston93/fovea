@@ -5,12 +5,14 @@
 // against its sources by tools/check-elevation.py and check-imagery.py.
 
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <memory>
 #include <random>
 #include <ranges>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -22,6 +24,7 @@
 #include "elevation.hpp"
 #include "fovea/terrain/database.hpp"
 #include "fovea/terrain/tile_file.hpp"
+#include "runways.hpp"
 #include "settings.hpp"
 #include "texture.hpp"
 
@@ -901,6 +904,347 @@ TEST(CompilerImageryFailures, SourcesMustBeRgbBytes) {
     ASSERT_FALSE(r.errors.empty());
     EXPECT_NE(r.errors[0].find("red, green and blue"), std::string::npos) << r.errors[0];
     EXPECT_EQ(r.errors.size(), 1U);  // once, though every thread found it
+}
+
+// Runways (milestone 4 step 1, D-022), fitted to made-up ground given as a
+// function of metres along and across a north-south runway (from its south
+// end, positive east), so the smooth surface under the noise is known.
+constexpr double kRunwayLat = 34.62;
+constexpr double kRunwayLon = -86.78;
+constexpr double kRunwayLength = 1000.0;
+constexpr double kRunwayWidth = 45.72;          // 150 ft
+constexpr double kMetresPerDegLat = 110'923.0;  // near 34.6 degrees (WGS-84)
+const double kMetresPerDegLon = 91'616.0;       // likewise, at 34.62 degrees
+
+Runway test_runway() {
+    Runway r;
+    r.name = "36/18";
+    r.width_m = kRunwayWidth;
+    r.ends[0] = {"36", kRunwayLat, kRunwayLon, 0.0};
+    r.ends[1] = {"18", kRunwayLat + kRunwayLength / kMetresPerDegLat, kRunwayLon, 0.0};
+    return r;
+}
+
+struct RunwayGround {
+    // Grade changes (0.4% over the length), and a crown.
+    std::function<double(double u, double v)> crown = [](double, double v) {
+        return -0.015 * std::abs(v);
+    };
+    double noise_m = 0.03;  // ripples a few metres long, as a survey's noise
+    bool bump = true;       // 2.5 m over 20 x 15 m: what stood there in the survey
+
+    double smooth(double u, double v) const {
+        // Beyond the sides the shoulders fall away at 4%.
+        const double off = std::max(0.0, std::abs(v) - kRunwayWidth / 2);
+        return 180.0 + 0.004 * u + 2e-6 * (u - 500.0) * (u - 500.0) +
+               crown(u, std::clamp(v, -kRunwayWidth / 2, kRunwayWidth / 2)) - 0.04 * off;
+    }
+    double ground(double u, double v) const {
+        return smooth(u, v) + noise_m * std::sin(0.9 * u + 1.3) * std::sin(1.1 * v + 0.4);
+    }
+    static double along(double lat) { return (lat - kRunwayLat) * kMetresPerDegLat; }
+    static double across(double lon) { return (lon - kRunwayLon) * kMetresPerDegLon; }
+    PointHeights heights() const {
+        return [this](std::span<const double> lat, std::span<const double> lon,
+                      std::vector<float>& out, std::string&) {
+            out.resize(lat.size());
+            for (std::size_t i = 0; i < lat.size(); ++i) {
+                const double u = along(lat[i]);
+                const double v = across(lon[i]);
+                const bool on_bump = bump && u > 400.0 && u < 420.0 && v > -5.0 && v < 10.0;
+                out[i] = static_cast<float>(ground(u, v) + (on_bump ? 2.5 : 0.0));
+            }
+            return true;
+        };
+    }
+};
+
+// The largest distance from the fit to the smooth ground, over the runway.
+double runway_fit_error(const RunwaySurface& s, const RunwayGround& g) {
+    double worst = 0.0;
+    for (double u = 0.0; u <= kRunwayLength; u += 2.5) {
+        for (double v = -kRunwayWidth / 2; v <= kRunwayWidth / 2; v += 1.5) {
+            const double lat = kRunwayLat + u / kMetresPerDegLat;
+            const double lon = kRunwayLon + v / kMetresPerDegLon;
+            const RunwayPoint p = s.to_runway(lat, lon);
+            worst = std::max(worst, std::abs(s.surface(p.along_m, p.across_m) - g.smooth(u, v)));
+        }
+    }
+    return worst;
+}
+
+TEST(CompilerRunways, ReadsTheFaasDegreesAndMinutes) {
+    EXPECT_NEAR(*parse_degrees_minutes("34-39.167130N", true), 34.0 + 39.167130 / 60.0, 1e-12);
+    EXPECT_NEAR(*parse_degrees_minutes("086-46.926028W", false), -(86.0 + 46.926028 / 60.0), 1e-12);
+    EXPECT_NEAR(*parse_degrees_minutes("12-00.5S", true), -(12.0 + 0.5 / 60.0), 1e-12);
+    EXPECT_NEAR(*parse_degrees_minutes("001-30E", false), 1.5, 1e-12);
+    for (const char* bad : {"34-39.1N ", "34.5N", "34-61.0N", "91-00.0N", "34-39.1W", "-39.1N",
+                            "34-39.1", "34-x.1N", ""}) {
+        EXPECT_FALSE(parse_degrees_minutes(bad, true).has_value()) << bad;
+    }
+    for (const char* bad : {"086-46.9N", "181-00W", "180-00.1W", "086-46.9"}) {
+        EXPECT_FALSE(parse_degrees_minutes(bad, false).has_value()) << bad;
+    }
+}
+
+TEST(CompilerRunways, TheFitFollowsTheGradeAndTheCrownThroughNoiseAndBumps) {
+    const RunwayGround tent;
+    std::string error;
+    const auto s = RunwaySurface::fit(test_runway(), 20.0, tent.heights(), error);
+    ASSERT_TRUE(s.has_value()) << error;
+    EXPECT_NEAR(s->length_m(), kRunwayLength, 0.5);
+    // Within 2 cm of the ground under 3 cm of noise and the bump, which
+    // the fit leaves out (2.5 m from it at its worst).
+    EXPECT_LT(runway_fit_error(*s, tent), 0.02);
+    EXPECT_GT(s->max_abs_m(), 2.3);
+    // A rounded crown (edges 0.3 m down) with a cross slope fits as well.
+    RunwayGround rounded;
+    rounded.crown = [](double, double v) { return -0.0006 * v * v + 0.005 * v; };
+    const auto r = RunwaySurface::fit(test_runway(), 20.0, rounded.heights(), error);
+    ASSERT_TRUE(r.has_value()) << error;
+    EXPECT_LT(runway_fit_error(*r, rounded), 0.02);
+    // Without noise or bumps, exactly (to float rounding of the heights).
+    RunwayGround clean;
+    clean.noise_m = 0.0;
+    clean.bump = false;
+    const auto c = RunwaySurface::fit(test_runway(), 20.0, clean.heights(), error);
+    ASSERT_TRUE(c.has_value()) << error;
+    EXPECT_LT(runway_fit_error(*c, clean), 0.002);
+}
+
+TEST(CompilerRunways, BlendsIntoTheGroundWithNoStep) {
+    const RunwayGround g;
+    std::string error;
+    const auto s = RunwaySurface::fit(test_runway(), 20.0, g.heights(), error);
+    ASSERT_TRUE(s.has_value()) << error;
+    // Out across the east side (falling away at 4%) and off the south end,
+    // in 10 cm steps: the height starts at the runway's surface, keeps the
+    // ground's own slope (a correction of centimetres at most, fading out)
+    // and is the ground's past the blend.
+    const auto line = [&](double u0, double v0, double du, double dv) {
+        double last = 0.0;
+        double largest_change = 0.0;
+        double largest = 0.0;
+        for (int i = 1; i <= 250; ++i) {
+            const double u = u0 + du * i / 10.0;
+            const double v = v0 + dv * i / 10.0;
+            const double lat = kRunwayLat + u / kMetresPerDegLat;
+            const double lon = kRunwayLon + v / kMetresPerDegLon;
+            const double raw = g.ground(u, v);
+            const double h = s->blended(lat, lon, raw);
+            if (i == 1) {
+                const RunwayPoint p = s->to_runway(lat, lon);
+                // 10 cm out: the surface, and the ground's own fall and ripple over
+                // those 10 cm (4 mm and 3 mm at most).
+                EXPECT_NEAR(h, s->surface(p.along_m, p.across_m), 0.01);
+            } else {
+                largest_change = std::max(largest_change, std::abs((h - raw) - last));
+            }
+            last = h - raw;
+            largest = std::max(largest, std::abs(h - raw));
+            if (i == 250) {
+                EXPECT_EQ(h, raw);  // 25 m out: past the blend
+            }
+        }
+        EXPECT_LT(largest, 0.04);  // never the edge's height held flat over a falling shoulder
+        return largest_change;
+    };
+    EXPECT_LT(line(500.0, kRunwayWidth / 2, 0.0, 1.0), 0.001);
+    EXPECT_LT(line(0.0, 3.0, -1.0, 0.0), 0.001);
+}
+
+TEST(CompilerRunways, NeighbouringTilesAgreeAndOthersAreUntouched) {
+    const RunwayGround g;
+    std::string error;
+    const auto s = RunwaySurface::fit(test_runway(), 20.0, g.heights(), error);
+    ASSERT_TRUE(s.has_value()) << error;
+    const std::vector<RunwaySurface> runways{*s};
+    constexpr std::uint32_t n = 33;
+    // The level-16 tile under the runway's middle and the one east of it
+    // (the runway's east edge and blend cross into it or lie near).
+    const TileKey mid = tile_at(kRunwayLat + 500.0 / kMetresPerDegLat, kRunwayLon, 16);
+    const TileKey east{16, mid.x + 1, mid.y};
+    const TileKey far{16, mid.x + 40, mid.y};
+    const auto ground = [&](const TileKey& k) {
+        const GeoBounds b = tile_bounds(k);
+        const double step = (b.east_deg - b.west_deg) / (n - 1);
+        std::vector<float> h(n * n);
+        for (std::uint32_t r = 0; r < n; ++r) {
+            for (std::uint32_t c = 0; c < n; ++c) {
+                h[r * n + c] =
+                    static_cast<float>(g.smooth(RunwayGround::along(b.south_deg + r * step),
+                                                RunwayGround::across(b.west_deg + c * step)) +
+                                       3.0);
+            }
+        }
+        return h;
+    };
+    std::vector<float> a = ground(mid);
+    std::vector<float> b = ground(east);
+    const std::vector<float> f0 = ground(far);
+    std::vector<float> f = f0;
+    const std::vector<float> a0 = a;
+    apply_runways(runways, mid, n, a);
+    apply_runways(runways, east, n, b);
+    apply_runways(runways, far, n, f);
+    EXPECT_NE(a, a0);
+    for (std::uint32_t r = 0; r < n; ++r) {
+        EXPECT_EQ(a[r * n + n - 1], b[r * n]) << "row " << r;
+    }
+    EXPECT_EQ(f, f0);
+}
+
+TEST(CompilerRunways, RefusesBadRunwaysAndMissingHeights) {
+    std::string error;
+    const RunwayGround g;
+    Runway shortest = test_runway();
+    shortest.ends[1] = shortest.ends[0];
+    EXPECT_FALSE(RunwaySurface::fit(shortest, 20.0, g.heights(), error).has_value());
+    EXPECT_NE(error.find("36/18"), std::string::npos) << error;
+    const PointHeights none = [](std::span<const double>, std::span<const double>,
+                                 std::vector<float>&, std::string& why) {
+        why = "no source";
+        return false;
+    };
+    Runway mistyped = test_runway();
+    mistyped.length_m = kRunwayLength * 1.01;
+    EXPECT_FALSE(RunwaySurface::fit(mistyped, 20.0, g.heights(), error).has_value());
+    EXPECT_NE(error.find("apart"), std::string::npos) << error;
+    mistyped.length_m = kRunwayLength;
+    EXPECT_TRUE(RunwaySurface::fit(mistyped, 20.0, g.heights(), error).has_value()) << error;
+    EXPECT_FALSE(RunwaySurface::fit(test_runway(), 20.0, none, error).has_value());
+    EXPECT_NE(error.find("no source"), std::string::npos) << error;
+}
+
+// Through the compiler, on rough ground: the runway's tiles change, the
+// rest don't, neighbours still share their edges and the coarser tiles'
+// errors still bound their children.
+TEST(CompilerRunways, TheCompilerSmoothsTheFinestLevelOnly) {
+    GDALAllRegister();
+    const Scene scene("runways", true);
+    const double lat0 = scene.extent.south_deg + 0.001;
+    const double lat1 = scene.extent.north_deg - 0.001;
+    const double lon = scene.extent.west_deg + 0.0008;  // over the new DEM, clear of its hole
+    const auto dm = [](double deg, bool latitude) {
+        const double a = std::abs(deg);
+        char text[32];
+        (void)std::snprintf(text, sizeof text, latitude ? "%02d-%09.6f%c" : "%03d-%09.6f%c",
+                            static_cast<int>(a), (a - std::floor(a)) * 60.0,
+                            latitude ? (deg < 0 ? 'S' : 'N') : (deg < 0 ? 'W' : 'E'));
+        return std::string(text);
+    };
+    {
+        std::ofstream(scene.dir / "airport.toml")
+            << "[[runway]]\nname = \"36/18\"\nwidth_ft = 100.0\n"
+            << "[[runway.end]]\nid = \"36\"\nlat = \"" << dm(lat0, true) << "\"\nlon = \""
+            << dm(lon, false) << "\"\nelevation_ft = 0.0\n"
+            << "[[runway.end]]\nid = \"18\"\nlat = \"" << dm(lat1, true) << "\"\nlon = \""
+            << dm(lon, false) << "\"\nelevation_ft = 0.0\n";
+    }
+    std::string plain = scene.settings();
+    plain.replace(plain.find("output = \"db\""), 13, "output = \"plain\"");
+    const auto p = scene.build(plain);
+    ASSERT_TRUE(p.ok) << (p.errors.empty() ? "" : p.errors[0]);
+    const auto r =
+        scene.build(scene.settings() + "[runways]\nairport = \"airport.toml\"\nblend_m = 10.0\n");
+    ASSERT_TRUE(r.ok) << (r.errors.empty() ? "" : r.errors[0]);
+    ASSERT_EQ(r.runways.size(), 1U);
+    EXPECT_GT(r.runways[0].rms_m, 0.2);  // the rough ground, smoothed away
+    const LevelTiles& fine = r.manifest.levels[1];
+    int changed = 0;
+    int same = 0;
+    for (std::uint32_t x = fine.x0; x <= fine.x1; ++x) {
+        for (std::uint32_t y = fine.y0; y <= fine.y1; ++y) {
+            const ElevationGrid a = read_grid(scene.dir / "db", {16, x, y});
+            const ElevationGrid b = read_grid(scene.dir / "plain", {16, x, y});
+            const GeoBounds bounds = tile_bounds({16, x, y});
+            const double step = (bounds.east_deg - bounds.west_deg) / (a.size - 1);
+            for (std::uint32_t row = 0; row < a.size; ++row) {
+                for (std::uint32_t c = 0; c < a.size; ++c) {
+                    const double metres_off =
+                        std::abs(bounds.west_deg + c * step - lon) * kMetresPerDegLon;
+                    const bool near = metres_off < 15.24 + 10.0 + 1.0;
+                    if (a.at(row, c) != b.at(row, c)) {
+                        ++changed;
+                        EXPECT_TRUE(near) << "changed " << metres_off << " m from the centreline";
+                    } else if (!near) {
+                        ++same;
+                    }
+                }
+            }
+        }
+    }
+    EXPECT_GT(changed, 100);
+    EXPECT_GT(same, 1000);
+    expect_shared_edges(scene.dir / "db", r.manifest);
+    // Each root is within its recorded error of its children.
+    const LevelTiles& roots = r.manifest.levels[0];
+    for (std::uint32_t x = roots.x0; x <= roots.x1; ++x) {
+        const TileKey key{15, x, roots.y0};
+        const ElevationGrid g = read_grid(scene.dir / "db", key);
+        const GeoBounds b = tile_bounds(key);
+        double largest = 0.0;
+        for (const TileKey& ck : children(key)) {
+            const ElevationGrid child = read_grid(scene.dir / "db", ck);
+            const GeoBounds cb = tile_bounds(ck);
+            const double step = (cb.east_deg - cb.west_deg) / (child.size - 1);
+            for (std::uint32_t row = 0; row < child.size; ++row) {
+                for (std::uint32_t c = 0; c < child.size; ++c) {
+                    const double la = cb.south_deg + row * step;
+                    const double lo = cb.west_deg + c * step;
+                    largest = std::max(largest, std::abs(static_cast<double>(child.at(row, c)) -
+                                                         g.sample(b, la, lo)));
+                }
+            }
+        }
+        EXPECT_LE(largest, static_cast<double>(g.error_m) + 1e-3) << to_string(key);
+    }
+}
+
+TEST(CompilerRunways, AirportFileMistakesAreRefused) {
+    const fs::path dir = test_root() / "airport_bad";
+    fs::create_directories(dir / "cache" / "dem");
+    std::ofstream(dir / "cache" / "dem" / "a.tif") << "x";
+    const std::string good =
+        "name = \"t\"\narea = { south = 1.0, north = 2.0, west = 3.0, east = 4.0 }\n"
+        "output = \"db\"\n[levels]\nroot = 3\nfinest = 5\n"
+        "[elevation]\nsamples = 65\ncache = \"cache\"\n"
+        "sources = [\"dem/a.tif\"]\ngeoid = \"geoid/g.tif\"\n"
+        "[runways]\nairport = \"airport.toml\"\n";
+    const std::string airport =
+        "[[runway]]\nname = \"18R/36L\"\nwidth_ft = 150.0\n"
+        "[[runway.end]]\nid = \"18R\"\nlat = \"34-39.167130N\"\nlon = \"086-46.926028W\"\n"
+        "elevation_ft = 628.4\n"
+        "[[runway.end]]\nid = \"36L\"\nlat = \"34-37.090260N\"\nlon = \"086-46.967450W\"\n"
+        "elevation_ft = 611.2\n";
+    const auto with = [&](const std::string& from, const std::string& to) {
+        std::string t = airport;
+        if (!from.empty()) {
+            t.replace(t.find(from), from.size(), to);
+        }
+        std::ofstream(dir / "airport.toml") << t;
+        return parse_settings(good, "s.toml", dir);
+    };
+    const auto ok = with("", "");
+    ASSERT_TRUE(ok.settings.has_value()) << (ok.errors.empty() ? "" : ok.errors[0]);
+    ASSERT_EQ(ok.settings->runways.size(), 1U);
+    const Runway& rw = ok.settings->runways[0];
+    EXPECT_EQ(rw.name, "18R/36L");
+    EXPECT_NEAR(rw.width_m, 45.72, 1e-9);
+    EXPECT_EQ(rw.ends[1].id, "36L");
+    EXPECT_NEAR(rw.ends[1].lat_deg, 34.0 + 37.090260 / 60.0, 1e-12);
+    EXPECT_NEAR(rw.ends[0].elevation_m, 628.4 * 0.3048, 1e-9);
+    EXPECT_DOUBLE_EQ(ok.settings->runway_blend_m, 20.0);
+    EXPECT_FALSE(with("34-39.167130N", "34.65N").errors.empty());
+    EXPECT_FALSE(with("width_ft = 150.0\n", "").errors.empty());
+    EXPECT_FALSE(with("elevation_ft = 611.2\n", "").errors.empty());
+    EXPECT_FALSE(with(airport, "").errors.empty());  // no runways
+    EXPECT_FALSE(with("[[runway.end]]\nid = \"36L\"", "[[runway.x]]\nid = \"36L\"").errors.empty());
+    std::ofstream(dir / "airport.toml") << airport;
+    std::string bad_blend = good + "blend_m = -1.0\n";
+    EXPECT_FALSE(parse_settings(bad_blend, "s.toml", dir).errors.empty());
+    fs::remove(dir / "airport.toml");
+    EXPECT_FALSE(parse_settings(good, "s.toml", dir).errors.empty());  // unreadable
 }
 
 TEST(CompilerTexture, MipChainsAndFormatsRoundTrip) {

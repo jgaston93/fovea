@@ -47,6 +47,17 @@ layer = "elevation"
 name = "NOAA GEOID18"
 credit = "GEOID18: NOAA National Geodetic Survey"
 
+# The runways smoothed in the elevation (D-022), from the FAA's data,
+# blending into the ground over 20 m beyond them.
+[runways]
+airport = "../airports/khsv.toml"
+blend_m = 20.0
+
+[[credit]]
+layer = "elevation"
+name = "FAA airport data (KHSV runways)"
+credit = "Runways: Federal Aviation Administration"
+
 [[credit]]
 layer = "imagery"
 name = "USDA NAIP 2023"

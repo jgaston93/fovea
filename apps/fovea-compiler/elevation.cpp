@@ -120,8 +120,32 @@ bool ElevationSources::heights(const TileKey& key, std::uint32_t samples, std::v
     const GeoBounds b = tile_bounds(key);
     const double step = (b.east_deg - b.west_deg) / (samples - 1);
     const std::size_t count = std::size_t{samples} * samples;
-    out.assign(count, std::numeric_limits<float>::quiet_NaN());
+    std::vector<double> lat(count);
+    std::vector<double> lon(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::size_t row = i / samples;
+        const std::size_t col = i % samples;
+        lat[i] = b.south_deg + static_cast<double>(row) * step;
+        lon[i] = b.west_deg + static_cast<double>(col) * step;
+    }
+    if (!at_points(lat, lon, out, error)) {
+        error = "tile " + to_string(key) + ": " + error;
+        return false;
+    }
+    return true;
+}
 
+bool ElevationSources::at_points(std::span<const double> lat_deg, std::span<const double> lon_deg,
+                                 std::vector<float>& out, std::string& error) const {
+    const std::size_t count = lat_deg.size();
+    out.assign(count, std::numeric_limits<float>::quiet_NaN());
+    GeoBounds b{90.0, -90.0, 180.0, -180.0};
+    for (std::size_t i = 0; i < count; ++i) {
+        b.south_deg = std::min(b.south_deg, lat_deg[i]);
+        b.north_deg = std::max(b.north_deg, lat_deg[i]);
+        b.west_deg = std::min(b.west_deg, lon_deg[i]);
+        b.east_deg = std::max(b.east_deg, lon_deg[i]);
+    }
     // Each sample from the highest-priority source with all four pixels
     // around it: a sample depends on its point alone, so a tile and its
     // neighbour agree on their shared edge.
@@ -145,10 +169,8 @@ bool ElevationSources::heights(const TileKey& key, std::uint32_t samples, std::v
         ys.resize(todo.size());
         ok.assign(todo.size(), 0);
         for (std::size_t i = 0; i < todo.size(); ++i) {
-            const std::size_t row = todo[i] / samples;
-            const std::size_t col = todo[i] % samples;
-            xs[i] = b.west_deg + static_cast<double>(col) * step;
-            ys[i] = b.south_deg + static_cast<double>(row) * step;
+            xs[i] = lon_deg[todo[i]];
+            ys[i] = lat_deg[todo[i]];
         }
         // False when any point fails (GDAL 3.8), not only all: each point's
         // `ok` decides.
@@ -217,8 +239,8 @@ bool ElevationSources::heights(const TileKey& key, std::uint32_t samples, std::v
         todo.resize(kept);
     }
     if (!todo.empty()) {
-        error = "tile " + to_string(key) + ": " + std::to_string(todo.size()) + " of " +
-                std::to_string(count) + " samples have no elevation source";
+        error = std::to_string(todo.size()) + " of " + std::to_string(count) +
+                " samples have no elevation source";
         return false;
     }
     return true;

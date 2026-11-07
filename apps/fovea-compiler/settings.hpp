@@ -19,6 +19,9 @@
 //   texels = 512                    # per tile side, a power of two from 4 to 4096
 //   cache = "../cache/khsv"
 //   sources = ["imagery/m_*.tif"]   # RGB(+), 8 bits; highest priority first
+//   [runways]                       # optional: smoothed in the elevation (D-022)
+//   airport = "../airports/khsv.toml"  # its [[runway]]s (format below)
+//   blend_m = 20.0                  # the blend into the ground beyond them
 //   [[credit]]                      # the manifest's [[source]] entries
 //   layer = "elevation"
 //   name = "USGS 3DEP 1 m DEM"
@@ -29,6 +32,18 @@
 // wins; a file matched by two patterns of a layer belongs to the first. For imagery,
 // files of one pattern are equals (one year's tiles): the file a point is
 // deepest inside wins, so the seams fall midway through their overlaps.
+//
+// An airport file lists runways as the FAA publishes them:
+//
+//   [[runway]]
+//   name = "18R/36L"
+//   width_ft = 150.0
+//   length_ft = 12600.0             # optional: checked against the ends
+//   [[runway.end]]                  # two
+//   id = "18R"
+//   lat = "34-39.167130N"           # degrees-minutes and a hemisphere
+//   lon = "086-46.926028W"
+//   elevation_ft = 628.4            # surveyed, orthometric
 
 #include <cstdint>
 #include <filesystem>
@@ -39,6 +54,7 @@
 
 #include "fovea/terrain/database.hpp"
 #include "fovea/terrain/tile_key.hpp"
+#include "runways.hpp"
 
 namespace fovea::compiler {
 
@@ -60,6 +76,9 @@ struct CompileSettings {
         std::vector<std::vector<std::filesystem::path>> sources;
     };
     std::optional<Imagery> imagery;
+
+    std::vector<Runway> runways;
+    double runway_blend_m = 20.0;
 };
 
 struct SettingsResult {

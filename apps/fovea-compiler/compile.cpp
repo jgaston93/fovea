@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -15,6 +16,7 @@
 #include "elevation.hpp"
 #include "fovea/terrain/tile_file.hpp"
 #include "imagery.hpp"
+#include "runways.hpp"
 #include "texture.hpp"
 
 namespace fovea::compiler {
@@ -418,6 +420,36 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
         jobs = std::max(1U, std::thread::hardware_concurrency());
     }
 
+    // The runways (D-022), fitted once to the sources before the finest
+    // level uses them.
+    std::vector<RunwaySurface> runways;
+    if (!s.runways.empty()) {
+        const auto sources = ElevationSources::open(s.elevation, error);
+        if (!sources) {
+            return fail(error);
+        }
+        const PointHeights heights = [&](std::span<const double> lat, std::span<const double> lon,
+                                         std::vector<float>& out, std::string& err) {
+            if (!sources->at_points(lat, lon, out, err)) {
+                return false;
+            }
+            for (std::size_t i = 0; i < out.size(); ++i) {
+                out[i] =
+                    static_cast<float>(static_cast<double>(out[i]) + geoid->at(lat[i], lon[i]));
+            }
+            return true;
+        };
+        for (const Runway& r : s.runways) {
+            auto fitted = RunwaySurface::fit(r, s.runway_blend_m, heights, error);
+            if (!fitted) {
+                return fail(error);
+            }
+            result.runways.push_back(
+                {r.name, fitted->length_m(), fitted->rms_m(), fitted->max_abs_m()});
+            runways.push_back(std::move(*fitted));
+        }
+    }
+
     DatabaseManifest& m = result.manifest;
     m.name = s.name;
     m.area = s.area;
@@ -469,6 +501,7 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
                                     geoid->at(b.south_deg + r * step, b.west_deg + c * step));
                             }
                         }
+                        apply_runways(runways, key, s.samples, grid.heights);
                     } else {
                         auto filtered = filter_children(st->below, key, s.samples, err);
                         const auto e = filtered

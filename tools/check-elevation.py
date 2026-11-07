@@ -13,8 +13,12 @@ Checks, each against a stated tolerance (exit status 1 if any fails):
   - shared edges: neighbouring tiles' edge samples are the same, at every
     level;
   - each coarser tile stays within its recorded error of the finest level;
-  - KHSV: the FAA's surveyed runway-end and field elevations (NAVD88),
-    against the database's heights less the geoid.
+  - runways (with [runways] in the settings, D-022): the database within
+    10 cm of this script's own smooth fit to the sources on each runway, as
+    smooth along it, and blending into the ground with no step (the
+    runways and their blend are left out of the comparison with the sources);
+  - the FAA's surveyed runway-end and field elevations (NAVD88) from the
+    airport file, against the database's heights less the geoid.
 
 Needs python3-gdal and python3-numpy (Ubuntu packages).
 """
@@ -35,18 +39,6 @@ gdal.UseExceptions()
 
 FT = 0.3048
 
-# Huntsville International (KHSV), from the FAA's airport data as AirNav
-# publishes it (checked 2026-11-07): runway ends (lat, lon in degrees and
-# minutes) and their surveyed elevations in feet, NAVD88; the field
-# elevation is the highest point of the runways.
-KHSV_RUNWAY_ENDS = {
-    "18R": ((34, 39.167130), (86, 46.926028), 628.4),
-    "36L": ((34, 37.090260), (86, 46.967450), 611.2),
-    "18L": ((34, 39.185908), (86, 45.927885), 609.3),
-    "36R": ((34, 37.537492), (86, 45.961032), 588.6),
-}
-KHSV_RUNWAYS = [("18R", "36L"), ("18L", "36R")]
-KHSV_FIELD_FT = 628.9
 
 # Tolerances (metres).
 TOL_SOURCE_P99 = 0.05   # finest level vs bilinear in the source: 99th percentile
@@ -54,11 +46,116 @@ TOL_SOURCE_MAX = 0.50   # and the largest difference, steep ground included
 TOL_EDGE = 0.001        # neighbouring tiles' shared samples
 TOL_ERROR = 0.01        # coarse tiles beyond their recorded error (float32 rounding)
 TOL_SURVEY = 0.30       # FAA surveyed elevations vs the database
+TOL_RUNWAY_P99 = 0.05   # the database vs this script's own fit, on the runways
+TOL_RUNWAY_MAX = 0.10
+TOL_SLOPE_CHANGE = 0.003  # along a runway: between 5 m chords (0.3%), a wheel's bumps
+                          # (the sources: up to 1%; KHSV 18R's own end crest: 0.24%)
+TOL_BLEND_JUMP = 0.02   # the blend's change in (database - sources) per 0.5 m
 
 
-def dms(d_m, west=False):
-    v = d_m[0] + d_m[1] / 60.0
-    return -v if west else v
+def degrees_minutes(text):
+    """ "34-39.167130N", "086-46.926028W": as the FAA publishes them."""
+    d, m = text[:-1].split("-")
+    v = int(d) + float(m) / 60.0
+    return -v if text[-1] in "SW" else v
+
+
+# WGS-84, and positions on the ellipsoid in ECEF (this script's own, not
+# the compiler's).
+WGS84_A = 6378137.0
+WGS84_E2 = (1.0 / 298.257223563) * (2.0 - 1.0 / 298.257223563)
+
+
+def ecef(lat, lon):
+    la, lo = np.radians(lat), np.radians(lon)
+    n = WGS84_A / np.sqrt(1.0 - WGS84_E2 * np.sin(la) ** 2)
+    return np.stack([n * np.cos(la) * np.cos(lo), n * np.cos(la) * np.sin(lo),
+                     n * (1.0 - WGS84_E2) * np.sin(la)], axis=-1)
+
+
+def geodetic(p):
+    lon = np.degrees(np.arctan2(p[..., 1], p[..., 0]))
+    r = np.hypot(p[..., 0], p[..., 1])
+    lat = np.arctan2(p[..., 2], r * (1.0 - WGS84_E2))
+    for _ in range(6):
+        n = WGS84_A / np.sqrt(1.0 - WGS84_E2 * np.sin(lat) ** 2)
+        lat = np.arctan2(p[..., 2] + WGS84_E2 * n * np.sin(lat), r)
+    return np.degrees(lat), lon
+
+
+class Runway:
+    """A runway's rectangle: metres along it from its first end, and across
+    (positive to the right, looking along it), in the tangent plane at its
+    middle."""
+
+    def __init__(self, t):
+        self.name = t["name"]
+        self.width = t["width_ft"] * FT
+        self.ends = [(e["id"], degrees_minutes(e["lat"]), degrees_minutes(e["lon"]),
+                      e["elevation_ft"]) for e in t["end"]]
+        (_, la0, lo0, _), (_, la1, lo1, _) = self.ends
+        la, lo = np.radians((la0 + la1) / 2), np.radians((lo0 + lo1) / 2)
+        self.east = np.array([-np.sin(lo), np.cos(lo), 0.0])
+        self.north = np.array([-np.sin(la) * np.cos(lo), -np.sin(la) * np.sin(lo), np.cos(la)])
+        self.origin = ecef(la0, lo0)
+        d = ecef(la1, lo1) - self.origin
+        e, n = d @ self.east, d @ self.north
+        self.length = math.hypot(e, n)
+        self.along = (e * self.east + n * self.north) / self.length
+        self.right = (n * self.east - e * self.north) / self.length
+
+    def uv(self, lat, lon):
+        d = ecef(np.asarray(lat), np.asarray(lon)) - self.origin
+        return d @ self.along, d @ self.right
+
+    def latlon(self, u, v):
+        u, v = np.asarray(u, float), np.asarray(v, float)
+        return geodetic(self.origin + u[..., None] * self.along + v[..., None] * self.right)
+
+    def outside(self, lat, lon):
+        """Metres from the rectangle (0 on it)."""
+        u, v = self.uv(lat, lon)
+        return math.hypot(max(0.0, -u, u - self.length), max(0.0, abs(v) - self.width / 2))
+
+
+class RunwayFit:
+    """This script's own smooth surface for a runway, independent of the
+    compiler's: a station every 5 m, each a least-squares fit over the 25 m
+    either side (equal weights) of a + b du + c du^2 + crown(v) (v, |v|,
+    v^2), refitted three times without the samples beyond 4 robust
+    standard deviations of the whole runway's residuals."""
+
+    def __init__(self, runway, heights):
+        self.r = runway
+        u = np.arange(0.0, runway.length + 1e-9, 2.0)
+        v = np.linspace(-runway.width / 2, runway.width / 2, int(math.ceil(runway.width)) + 1)
+        uu, vv = np.meshgrid(u, v, indexing="ij")
+        lat, lon = runway.latlon(uu, vv)
+        h = np.array([heights(a, b) for a, b in zip(lat.ravel(), lon.ravel())]).reshape(uu.shape)
+        y = vv / (runway.width / 2)
+        self.stations = np.arange(0.0, runway.length + 1e-9, 5.0)
+        keep = np.ones(uu.shape, bool)
+        for _ in range(4):
+            coef = []
+            for us in self.stations:
+                w = (np.abs(uu - us) <= 25.0) & keep
+                x = (uu[w] - us) / 25.0
+                a = np.stack([np.ones_like(x), x, x * x, y[w], np.abs(y[w]), y[w] ** 2], axis=1)
+                c, *_ = np.linalg.lstsq(a, h[w], rcond=None)
+                coef.append(c[[0, 3, 4, 5]])
+            self.coef = np.array(coef)
+            res = h - self.surface(uu, vv)
+            mad = np.median(np.abs(res))
+            keep = np.abs(res) <= max(4 * 1.4826 * mad, 0.02)
+        self.residual = res
+        self.raw = h
+        self.uu, self.vv = uu, vv
+
+    def surface(self, u, v):
+        u = np.clip(u, 0.0, self.r.length)
+        y = np.clip(v, -self.r.width / 2, self.r.width / 2) / (self.r.width / 2)
+        c = np.stack([np.interp(u, self.stations, self.coef[:, i]) for i in range(4)])
+        return c[0] + c[1] * y + c[2] * np.abs(y) + c[3] * y * y
 
 
 class Tiles:
@@ -186,6 +283,22 @@ class Sources:
         area_file = base / s["area"]
         with open(area_file, "rb") as f:
             self.area = tomllib.load(f)["area"]
+        self.runways, self.field_ft, self.blend = [], None, 0.0
+        if "runways" in s:
+            with open(base / s["runways"]["airport"], "rb") as f:
+                airport = tomllib.load(f)
+            self.runways = [Runway(t) for t in airport["runway"]]
+            self.field_ft = airport.get("field_elevation_ft")
+            self.blend = s["runways"].get("blend_m", 20.0)
+
+    def near_runway(self, lat, lon, margin):
+        """Whether a point is on a runway or its blend, or within `margin`
+        metres of them (where bilinear sampling reads a sample in them)."""
+        return any(r.outside(lat, lon) <= self.blend + margin for r in self.runways)
+
+    def ellipsoidal(self, lat, lon):
+        h = self.orthometric(lat, lon)
+        return None if h is None else h[0] + self.geoid.sample(lat, lon)
 
     def orthometric(self, lat, lon):
         """(H, source) from the highest-priority source with all four
@@ -229,8 +342,9 @@ def main():
     # 1. The finest level against the sources, at random points and on
     # tile edges (both tiles' values, through their own grids).
     print(f"finest level ({db.finest}) vs the sources, bilinear, plus GEOID18:")
-    diffs, edge_diffs, by_source, skipped = [], [], {}, 0
+    diffs, edge_diffs, by_source, skipped, on_runways = [], [], {}, 0, 0
     size = Tiles.size(db.finest)
+    margin = math.sqrt(2) * size / 256 * 111_000  # a sample's diagonal, at most
     for i in range(args.points):
         lat = rng.uniform(a["south"], a["north"] - 1e-9)
         lon = rng.uniform(a["west"], a["east"] - 1e-9)
@@ -240,6 +354,9 @@ def main():
                 lat = -90.0 + round((lat + 90.0) / size) * size
             else:
                 lon = -180.0 + round((lon + 180.0) / size) * size
+        if src.near_runway(lat, lon, margin):
+            on_runways += 1  # smoothed: checked below
+            continue
         h = src.orthometric(lat, lon)
         if h is None:
             skipped += 1
@@ -258,6 +375,8 @@ def main():
     if skipped:
         ok = False
         print(f"  {skipped} points have no source: FAIL")
+    if on_runways:
+        print(f"  {on_runways} points on the runways or their blend left out")
     ok &= report("inside tiles", diffs, TOL_SOURCE_P99, TOL_SOURCE_MAX)
     ok &= report("on tile edges, from both tiles", edge_diffs, TOL_SOURCE_P99, TOL_SOURCE_MAX)
     for name, d in sorted(by_source.items()):
@@ -303,28 +422,83 @@ def main():
         print(f"  level {level}: {n} points, recorded errors up to {worst_err:.2f} m, "
               f"largest excess {max(excess, 0.0):.4f} m: {'ok' if good else 'FAIL'}")
 
-    # 4. KHSV's surveyed elevations (the database less the geoid: NAVD88).
+    # 4. Runways: against this script's own fit to the sources, along
+    # them, and across their blend.
+    for r in src.runways:
+        print(f"runway {r.name} ({r.length:.0f} m x {r.width:.1f} m), smoothed:")
+        fit = RunwayFit(r, src.ellipsoidal)
+        print(f"  the sources on it: {np.sqrt((fit.residual ** 2).mean()):.4f} m RMS from this "
+              f"script's fit, at most {np.abs(fit.residual).max():.3f} m")
+        d = []
+        for _ in range(args.points):
+            u = rng.uniform(0.5, r.length - 0.5)
+            v = rng.uniform(-r.width / 2 + 0.5, r.width / 2 - 0.5)
+            lat, lon = r.latlon(u, v)
+            d.append(db.height(db.finest, float(lat), float(lon)) - float(fit.surface(u, v)))
+        ok &= report("the database vs the fit", d, TOL_RUNWAY_P99, TOL_RUNWAY_MAX)
+        # Along the centreline and both edges, a sample every 5 m: the
+        # change of slope from one 5 m chord to the next (bumps), in the
+        # database and in the sources; and the largest change of grade
+        # between 30 m chords, the runway's own profile, kept.
+        u = np.arange(0.0, r.length + 1e-9, 5.0)
+        for v, where in ((0.0, "centreline"), (-r.width / 2 + 0.5, "left edge"),
+                         (r.width / 2 - 0.5, "right edge")):
+            lat, lon = r.latlon(u, np.full_like(u, v))
+            got = np.array([db.height(db.finest, a, b) for a, b in zip(lat, lon)])
+            raw = np.array([src.ellipsoidal(a, b) for a, b in zip(lat, lon)])
+            dg, dr = np.abs(np.diff(np.diff(got) / 5.0)), np.abs(np.diff(np.diff(raw) / 5.0))
+            g30 = np.abs(np.diff(np.diff(got[::6]) / 30.0)).max()
+            good = dg.max() <= TOL_SLOPE_CHANGE
+            ok &= good
+            print(f"  {where}: slope changes up to {dg.max() * 100:.3f}% between 5 m chords "
+                  f"(the sources: {dr.max() * 100:.3f}%) (<= {TOL_SLOPE_CHANGE * 100:.1f}%): "
+                  f"{'ok' if good else 'FAIL'}; grade changes up to {g30 * 100:.2f}% "
+                  f"between 30 m chords")
+        # Out of the rectangle, across its sides and off its ends: the
+        # database less the sources changes smoothly, and is nothing past
+        # the blend.
+        jump, beyond, largest = 0.0, [], 0.0
+        lines = [(uu, side * r.width / 2, 0.0, side) for uu in np.arange(25.0, r.length, 100.0)
+                 for side in (-1.0, 1.0)]
+        lines += [(end, vv, -1.0 if end == 0.0 else 1.0, 0.0) for end in (0.0, r.length)
+                  for vv in np.arange(-r.width / 2 + 2.0, r.width / 2, 8.0)]
+        steps = np.arange(0.0, src.blend + 5.0 + 1e-9, 0.5)
+        for u0, v0, du, dv in lines:
+            lat, lon = r.latlon(u0 + du * steps, v0 + dv * steps)
+            diff = np.array([db.height(db.finest, a, b) - src.ellipsoidal(a, b)
+                             for a, b in zip(lat, lon)])
+            jump = max(jump, np.abs(np.diff(diff)).max())
+            largest = max(largest, np.abs(diff).max())
+            beyond += list(diff[steps >= src.blend + margin])
+        good = jump <= TOL_BLEND_JUMP
+        ok &= good
+        print(f"  the blend ({src.blend:.0f} m), {len(lines)} lines out of it: the database less "
+              f"the sources at most {largest:.3f} m, changing at most {jump:.4f} m per 0.5 m "
+              f"(<= {TOL_BLEND_JUMP}): {'ok' if good else 'FAIL'}")
+        ok &= report("past the blend, the database vs the sources", beyond, TOL_SOURCE_P99,
+                     TOL_SOURCE_MAX)
+
+    # 5. The surveyed elevations (the database less the geoid: NAVD88).
     def navd88(lat, lon):
         return db.height(db.finest, lat, lon) - src.geoid.sample(lat, lon)
 
-    print("KHSV, FAA surveyed elevations (NAVD88):")
-    ends = {}
-    for name, (lat_dm, lon_dm, ft) in KHSV_RUNWAY_ENDS.items():
-        lat, lon = dms(lat_dm), dms(lon_dm, west=True)
-        ends[name] = (lat, lon)
-        got = navd88(lat, lon)
-        good = abs(got - ft * FT) <= TOL_SURVEY
+    if src.runways:
+        print("FAA surveyed elevations (NAVD88):")
+    for r in src.runways:
+        for name, lat, lon, ft in r.ends:
+            got = navd88(lat, lon)
+            good = abs(got - ft * FT) <= TOL_SURVEY
+            ok &= good
+            print(f"  runway {name} end: published {ft * FT:.2f} m ({ft} ft), database "
+                  f"{got:.2f} m, difference {got - ft * FT:+.2f} m: {'ok' if good else 'FAIL'}")
+    if src.field_ft is not None:
+        highest = max(navd88(float(a), float(b)) for r in src.runways
+                      for a, b in zip(*r.latlon(np.linspace(0.0, r.length, 2001), np.zeros(2001))))
+        good = abs(highest - src.field_ft * FT) <= TOL_SURVEY
         ok &= good
-        print(f"  runway {name} end: published {ft * FT:.2f} m ({ft} ft), database {got:.2f} m, "
-              f"difference {got - ft * FT:+.2f} m: {'ok' if good else 'FAIL'}")
-    highest = max(navd88(ends[a_][0] + t * (ends[b][0] - ends[a_][0]),
-                         ends[a_][1] + t * (ends[b][1] - ends[a_][1]))
-                  for a_, b in KHSV_RUNWAYS for t in np.linspace(0.0, 1.0, 2001))
-    good = abs(highest - KHSV_FIELD_FT * FT) <= TOL_SURVEY
-    ok &= good
-    print(f"  field elevation (highest point on the runway centrelines): published "
-          f"{KHSV_FIELD_FT * FT:.2f} m ({KHSV_FIELD_FT} ft), database {highest:.2f} m, "
-          f"difference {highest - KHSV_FIELD_FT * FT:+.2f} m: {'ok' if good else 'FAIL'}")
+        print(f"  field elevation (highest point on the runway centrelines): published "
+              f"{src.field_ft * FT:.2f} m ({src.field_ft} ft), database {highest:.2f} m, "
+              f"difference {highest - src.field_ft * FT:+.2f} m: {'ok' if good else 'FAIL'}")
 
     print("all checks pass" if ok else "SOME CHECKS FAIL")
     return 0 if ok else 1

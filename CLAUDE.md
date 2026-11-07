@@ -30,7 +30,7 @@ ctest --preset debug -R 'Toolchain\.FloatingPointIsIeeeWithoutFastMath'   # one 
 ./build/debug/tools/cigi-test-host/cigi-test-host tools/cigi-test-host/scripts/circuit.toml
 python3 tools/fetch-sources.py data/sources/khsv.toml   # terrain sources into data/cache (about 17 GB)
 ./build/release/apps/fovea-compiler/fovea-compiler data/compile/khsv.toml  # the KHSV database into data/db/khsv
-python3 tools/check-elevation.py data/compile/khsv.toml # check it against the sources and the FAA's survey
+python3 tools/check-elevation.py data/compile/khsv.toml # check it against the sources, the runways (D-022) and the FAA's survey
 python3 tools/check-imagery.py data/compile/khsv.toml   # its imagery against the sources (PSNR, seams)
 ./build/debug/apps/fovea/fovea --headless --dump out config/<file>.toml    # any config headless, out/<channel>.png
 ./build/release/apps/fovea/fovea --overlay config/khsv.toml                # the KHSV database on the desk, then:
