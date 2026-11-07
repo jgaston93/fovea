@@ -367,7 +367,8 @@ PreparedTile prepare_tile(const TerrainDatabase& db, const TileKey& key, const P
             if (auto placed = decode_placements(*pl)) {
                 p.placements = std::move(*placed);
             } else {
-                p.problem = to_string(key) + ": its placements layer doesn't decode";
+                p.problem += (p.problem.empty() ? "" : "; ") + to_string(key) +
+                             ": its placements layer doesn't decode";
             }
         }
     }
@@ -658,18 +659,23 @@ private:
         // Every placed model, once (they're few, and wanted from the start:
         // their placements are in the roots), between tiles.
         std::uint32_t next_model = 0;
+        std::uint32_t tiles_since_model = 0;
         const std::uint32_t models = t_.models_ ? t_.models_->model_count() : 0;
         while (!stop.stop_requested()) {
             while (auto r = requests_.try_pop()) {
                 pending.push_back(*r);
             }
             reclaim();
-            if (next_model < models) {
+            // A model between every few tiles, so neither waits long for
+            // the other.
+            if (next_model < models && (pending.empty() || tiles_since_model >= 4)) {
+                tiles_since_model = 0;
                 if (!load_model(next_model++, stop)) {
                     return;
                 }
                 continue;
             }
+            ++tiles_since_model;
             if (pending.empty()) {
                 idle();
                 continue;
@@ -889,7 +895,8 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
     ctx.max_level = options.max_level;
     ctx.bc7 = gpu.bc_textures && supported(VK_FORMAT_BC7_SRGB_BLOCK);
     ctx.bc1 = gpu.bc_textures && supported(VK_FORMAT_BC1_RGB_SRGB_BLOCK);
-    if (m.placements) {
+    // Placements are read from the roots only, for now (#48).
+    if (m.placements && m.placements->level == m.levels.front().level) {
         ctx.placement_level = m.placements->level;
     }
 
@@ -1177,9 +1184,15 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
     }
     if (!placements.empty()) {
         report.placements = placements.size();
-        t->models_ = std::make_unique<ModelGpu>(gpu, t->db_->dir(), placements, slots, t->outputs_,
-                                                model_vertex, model_fragment, colour, depth);
-        report.models = t->models_->model_count();
+        // Models are optional: the terrain draws without them.
+        try {
+            t->models_ =
+                std::make_unique<ModelGpu>(gpu, t->db_->dir(), placements, slots, t->outputs_,
+                                           model_vertex, model_fragment, colour, depth);
+            report.models = t->models_->model_count();
+        } catch (const std::exception& e) {
+            report.problems.push_back(std::string("models: ") + e.what() + " (none drawn)");
+        }
     }
 
     report.tiles = roots.size();
@@ -1268,8 +1281,7 @@ void TerrainGpu::begin_frame(std::uint64_t frame, std::uint64_t completed) {
             break;
         }
         if (!a->ok) {
-            models_->failed(a->model);
-            continue;
+            continue;  // reported by the paging thread
         }
         models_->arrived(a->model);
         upload_infos_[upload_count_] = {};
@@ -1330,7 +1342,6 @@ void TerrainGpu::request_children(const SceneView& view, const TileSelection& se
 
 std::uint32_t TerrainGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
                                  const SceneView& view, VkExtent2D extent) {
-    const std::uint32_t capacity = cache_->capacity();
     LodView lv;
     lv.eye_ecef = view.eye_ecef;
     lv.ecef_to_clip = view.ecef_to_clip;
@@ -1391,12 +1402,20 @@ std::uint32_t TerrainGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::u
     const DVec3 sun = sun_direction(view.eye_ecef);
     const std::array<float, 3> sun_f = {static_cast<float>(sun.x), static_cast<float>(sun.y),
                                         static_cast<float>(sun.z)};
-    if (drawn == 0) {
-        if (models_) {
-            stats_.placements_drawn += models_->record(cmd, slot, o, view, sun_f);
-        }
-        return 0;
+    if (drawn > 0) {
+        draw_tiles(cmd, slot, o, view, drawn, sun_f);
     }
+    if (models_) {
+        stats_.placements_drawn +=
+            models_->record(cmd, slot, o, view, sun_f, stats_.placements_dropped);
+    }
+    return drawn;
+}
+
+void TerrainGpu::draw_tiles(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t o,
+                            const SceneView& view, std::uint32_t drawn,
+                            const std::array<float, 3>& sun_f) {
+    const std::uint32_t capacity = cache_->capacity();
     const std::uint32_t base = (slot * outputs_ + o) * capacity;
     auto* records = static_cast<TileDraw*>(draws_.mapped) + base;
     for (std::uint32_t i = 0; i < drawn; ++i) {
@@ -1423,10 +1442,6 @@ std::uint32_t TerrainGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::u
                        sizeof(push), &push);
     // The records' region: first instance is where this view's start.
     vkCmdDrawIndexed(cmd, index_count_, drawn, 0, 0, base);
-    if (models_) {
-        stats_.placements_drawn += models_->record(cmd, slot, o, view, sun_f);
-    }
-    return drawn;
 }
 
 }  // namespace fovea

@@ -351,7 +351,18 @@ bool valid_model_name(std::string_view name) {
     });
 }
 
-TileLayer encode_placements(std::span<const Placement> placements) {
+bool valid_placement(const Placement& p) {
+    // NaNs fail every comparison: each is checked for first.
+    return valid_model_name(p.model) && !std::isnan(p.lat_deg) && std::abs(p.lat_deg) <= 90.0 &&
+           !std::isnan(p.lon_deg) && std::abs(p.lon_deg) <= 180.0 && std::isfinite(p.height_m) &&
+           std::abs(p.height_m) < 1e5 && !std::isnan(p.heading_deg) && p.heading_deg >= 0.0F &&
+           p.heading_deg < 360.0F;
+}
+
+std::optional<TileLayer> encode_placements(std::span<const Placement> placements) {
+    if (!std::all_of(placements.begin(), placements.end(), valid_placement)) {
+        return std::nullopt;
+    }
     TileLayer l;
     l.name = std::string(kPlacementsLayer);
     l.format = kPlacementsV1;
@@ -400,11 +411,7 @@ std::optional<std::vector<Placement>> decode_placements(const TileLayer& l) {
         p.lon_deg = get<double>(in, q + 8);
         p.height_m = get<double>(in, q + 16);
         p.heading_deg = get<float>(in, q + 24);
-        // NaNs fail every comparison: each is checked for first.
-        if (!valid_model_name(p.model) || std::isnan(p.lat_deg) || std::abs(p.lat_deg) > 90.0 ||
-            std::isnan(p.lon_deg) || std::abs(p.lon_deg) > 180.0 || !std::isfinite(p.height_m) ||
-            std::abs(p.height_m) >= 1e5 || std::isnan(p.heading_deg) || p.heading_deg < 0.0F ||
-            p.heading_deg >= 360.0F || get<std::uint16_t>(in, q + 28) != 0) {
+        if (!valid_placement(p) || get<std::uint16_t>(in, q + 28) != 0) {
             return std::nullopt;
         }
         out.push_back(std::move(p));

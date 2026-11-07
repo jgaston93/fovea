@@ -153,13 +153,23 @@ ModelGpu::ModelGpu(const GpuContext& gpu, std::filesystem::path database_dir,
                            placement_rotation(p)});
     }
     images_.resize(kMaxModelImages);
+    VkDeviceSize files = 0;
+    for (const Entry& e : models_) {
+        std::error_code ec;
+        const auto size = valid_model_name(e.name)
+                              ? std::filesystem::file_size(dir_ / model_path(e.name), ec)
+                              : 0;
+        files += ec ? 0 : size;
+    }
+    vertex_capacity_ = std::clamp(files * 2, kMinModelBufferBytes, kMaxModelBufferBytes);
+    index_capacity_ = vertex_capacity_;
 
     try {
         vertices_ = make_buffer(
-            kModelVertexBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            vertex_capacity_, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             false);
         indices_ =
-            make_buffer(kModelIndexBytes,
+            make_buffer(index_capacity_,
                         VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false);
         materials_ = make_buffer(
             VkDeviceSize{kMaxModelMaterials} * sizeof(GpuMaterial),
@@ -385,7 +395,7 @@ void ModelGpu::release() {
     gpu_.device = VK_NULL_HANDLE;
 }
 
-std::optional<PreparedModel> ModelGpu::prepare(std::uint32_t m, std::string& problem) {
+std::optional<Model> ModelGpu::prepare(std::uint32_t m, std::string& problem) {
     const std::string& name = models_[m].name;
     if (!valid_model_name(name)) {
         problem = "model '" + name + "': not a valid name";
@@ -399,8 +409,8 @@ std::optional<PreparedModel> ModelGpu::prepare(std::uint32_t m, std::string& pro
     const Model& model = *r.model;
     // Room in the shared buffers (never freed: a database places a fixed
     // set of models).
-    if (vertex_used_ + model.vertices.size() * sizeof(ModelVertex) > kModelVertexBytes ||
-        index_used_ + model.indices.size() * sizeof(std::uint32_t) > kModelIndexBytes ||
+    if (vertex_used_ + model.vertices.size() * sizeof(ModelVertex) > vertex_capacity_ ||
+        index_used_ + model.indices.size() * sizeof(std::uint32_t) > index_capacity_ ||
         materials_used_ + model.materials.size() > kMaxModelMaterials ||
         images_used_ + model.images.size() > kMaxModelImages) {
         problem = "model '" + name + "': no room left for it on the GPU (vertices " +
@@ -410,11 +420,10 @@ std::optional<PreparedModel> ModelGpu::prepare(std::uint32_t m, std::string& pro
                   std::to_string(model.images.size()) + ")";
         return std::nullopt;
     }
-    return PreparedModel{std::move(*r.model)};
+    return std::move(r.model);
 }
 
-VkDeviceSize ModelGpu::staged_bytes(const PreparedModel& p) {
-    const Model& m = p.model;
+VkDeviceSize ModelGpu::staged_bytes(const Model& m) {
     VkDeviceSize bytes = align16(m.vertices.size() * sizeof(ModelVertex)) +
                          align16(m.indices.size() * sizeof(std::uint32_t)) +
                          align16(m.materials.size() * sizeof(GpuMaterial));
@@ -427,8 +436,7 @@ VkDeviceSize ModelGpu::staged_bytes(const PreparedModel& p) {
 }
 
 void ModelGpu::stage_and_record(VkCommandBuffer cmd, VkBuffer staging, std::uint8_t* mapped,
-                                VkDeviceSize at, std::uint32_t mi, const PreparedModel& p) {
-    const Model& m = p.model;
+                                VkDeviceSize at, std::uint32_t mi, const Model& m) {
     Entry& e = models_[mi];
     const auto put = [&](const void* data, std::size_t bytes) {
         const VkDeviceSize here = at;
@@ -525,6 +533,17 @@ void ModelGpu::stage_and_record(VkCommandBuffer cmd, VkBuffer staging, std::uint
         g.alpha_mode = static_cast<std::uint32_t>(src.alpha_mode);
         g.alpha_cutoff = src.alpha_cutoff;
     }
+    // Earlier frames may be drawing models already in these buffers: the
+    // shaders' reads (the material buffer is bound whole) come before the
+    // copies' writes.
+    VkMemoryBarrier2 before{};
+    before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    before.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT |
+                          VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT |
+                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    before.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    before.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier(cmd, nullptr, &before);
     const std::uint32_t first_material = materials_used_;
     const auto first_index = static_cast<std::uint32_t>(index_used_ / sizeof(std::uint32_t));
     e.vertex_offset = static_cast<std::int32_t>(vertex_used_ / sizeof(ModelVertex));
@@ -537,8 +556,7 @@ void ModelGpu::stage_and_record(VkCommandBuffer cmd, VkBuffer staging, std::uint
     vertex_used_ += m.vertices.size() * sizeof(ModelVertex);
     index_used_ += m.indices.size() * sizeof(std::uint32_t);
     materials_used_ += static_cast<std::uint32_t>(mats.size());
-    // Fresh regions: nothing read them before; after the copies, they're
-    // read as vertices, indices and storage.
+    // After the copies, they're read as vertices, indices and storage.
     VkMemoryBarrier2 after{};
     after.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
     after.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
@@ -581,7 +599,8 @@ void ModelGpu::arrived(std::uint32_t m) {
 }
 
 std::uint32_t ModelGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
-                               const SceneView& view, const std::array<float, 3>& sun) {
+                               const SceneView& view, const std::array<float, 3>& sun,
+                               std::uint32_t& dropped) {
     if (loaded_ == 0) {
         return 0;
     }
@@ -593,11 +612,15 @@ std::uint32_t ModelGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uin
     std::uint32_t placements = 0;
     for (const Placed& p : placed_) {
         const Entry& e = models_[p.model];
-        if (!e.ready || n + e.primitives.size() > kMaxModelDraws) {
+        if (!e.ready) {
             continue;
         }
         const DVec3 offset = p.origin_ecef - view.eye_ecef;
         if (!sphere_visible(view.ecef_to_clip, offset + p.rotation * e.centre, e.radius_m)) {
+            continue;
+        }
+        if (n + e.primitives.size() > kMaxModelDraws) {
+            ++dropped;
             continue;
         }
         ModelDraw d;

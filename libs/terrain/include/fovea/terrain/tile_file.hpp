@@ -145,7 +145,11 @@ struct Placement {
 };
 
 bool valid_model_name(std::string_view name);
-TileLayer encode_placements(std::span<const Placement> placements);
+// A name valid_model_name takes, a point on the Earth, a finite height
+// within 100 km of the ellipsoid, a heading from 0 up to 360.
+bool valid_placement(const Placement& p);
+// Nothing if any placement isn't valid (the reader would refuse the layer).
+std::optional<TileLayer> encode_placements(std::span<const Placement> placements);
 // Nothing if malformed: a bad name, a point or heading out of range, or
 // bytes left over.
 std::optional<std::vector<Placement>> decode_placements(const TileLayer& layer);

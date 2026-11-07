@@ -35,18 +35,17 @@
 
 namespace fovea {
 
-// Room on the GPU for every model a database places.
-inline constexpr VkDeviceSize kModelVertexBytes = VkDeviceSize{64} << 20;  // 2 M vertices
-inline constexpr VkDeviceSize kModelIndexBytes = VkDeviceSize{64} << 20;   // 16 M indices
+// Room on the GPU for every model a database places: the vertex and index
+// buffers are each twice the models' files together (a model's vertices
+// and indices on the GPU take about what its file does), from 1 to 64 MB.
+inline constexpr VkDeviceSize kMinModelBufferBytes = VkDeviceSize{1} << 20;
+inline constexpr VkDeviceSize kMaxModelBufferBytes = VkDeviceSize{64} << 20;
 inline constexpr std::uint32_t kMaxModelImages = 1024;
 inline constexpr std::uint32_t kMaxModelMaterials = 4096;
 inline constexpr std::uint32_t kMaxModelDraws = 8192;  // primitives drawn per view and frame
-inline constexpr std::uint32_t kMaxPlacements = 65536;
-
-// A model read and decoded, ready to stage (paging thread).
-struct PreparedModel {
-    Model model;
-};
+// Every placement is tested against each view every frame: few enough
+// for that (a spatial structure comes with more).
+inline constexpr std::uint32_t kMaxPlacements = 4096;
 
 class ModelGpu {
 public:
@@ -66,20 +65,21 @@ public:
     // used), how much staging it takes, and stages it at `at` (that much
     // room), recording its uploads into `cmd` and filling in what the
     // render thread will need. Throws on GPU errors.
-    std::optional<PreparedModel> prepare(std::uint32_t m, std::string& problem);
-    static VkDeviceSize staged_bytes(const PreparedModel& p);
+    std::optional<Model> prepare(std::uint32_t m, std::string& problem);
+    static VkDeviceSize staged_bytes(const Model& model);
     void stage_and_record(VkCommandBuffer cmd, VkBuffer staging, std::uint8_t* mapped,
-                          VkDeviceSize at, std::uint32_t m, const PreparedModel& p);
+                          VkDeviceSize at, std::uint32_t m, const Model& model);
 
     // Render thread: a model staged and handed over (its uploads go with
-    // this frame's), or given up on.
+    // this frame's).
     void arrived(std::uint32_t m);
-    void failed(std::uint32_t m) { models_[m].failed = true; }
 
     // Draws one view's placements whose models have arrived, inside the
-    // rendering pass. No allocation. Returns the placements drawn.
+    // rendering pass. No allocation. Returns the placements drawn, and
+    // counts in `dropped` those visible but past kMaxModelDraws.
     std::uint32_t record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
-                         const SceneView& view, const std::array<float, 3>& sun);
+                         const SceneView& view, const std::array<float, 3>& sun,
+                         std::uint32_t& dropped);
     std::uint32_t loaded() const { return loaded_; }
 
 private:
@@ -108,7 +108,6 @@ private:
         double radius_m = 0.0;
         std::vector<std::uint32_t> images;  // its slots in the image array
         bool ready = false;                 // render thread: arrived
-        bool failed = false;
     };
     struct Placed {
         std::uint32_t model = 0;
@@ -129,6 +128,8 @@ private:
     std::uint32_t loaded_ = 0;
 
     // The paging thread's: where the next model's data goes.
+    VkDeviceSize vertex_capacity_ = 0;
+    VkDeviceSize index_capacity_ = 0;
     VkDeviceSize vertex_used_ = 0;
     VkDeviceSize index_used_ = 0;
     std::uint32_t images_used_ = 0;

@@ -1,4 +1,5 @@
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -287,7 +288,7 @@ TEST(TileFile, PlacementsLayerRoundTripsAndRefusesNonsense) {
         {"tower", 34.6372, -86.7751, 190.25, 12.5F},
         {"hangar_a-2", -12.0, 179.9999, -3.0, 359.75F},
     };
-    const TileLayer layer = encode_placements(placed);
+    const TileLayer layer = *encode_placements(placed);
     EXPECT_EQ(layer.name, "placements");
     const auto back = decode_placements(layer);
     ASSERT_TRUE(back.has_value());
@@ -297,7 +298,7 @@ TEST(TileFile, PlacementsLayerRoundTripsAndRefusesNonsense) {
     EXPECT_EQ((*back)[0].lon_deg, -86.7751);
     EXPECT_EQ((*back)[0].height_m, 190.25);
     EXPECT_EQ((*back)[1].heading_deg, 359.75F);
-    EXPECT_TRUE(decode_placements(encode_placements({}))->empty());
+    EXPECT_TRUE(decode_placements(*encode_placements({}))->empty());
     EXPECT_EQ(model_path("tower"), std::filesystem::path("models") / "tower.glb");
 
     // Every truncation, extra bytes, and bad values are refused.
@@ -314,8 +315,20 @@ TEST(TileFile, PlacementsLayerRoundTripsAndRefusesNonsense) {
           Placement{"ok", 91, 0, 0, 0}, Placement{"ok", 0, -181, 0, 0},
           Placement{"ok", 0, 0, 0, 360}, Placement{"ok", 0, 0, 0, -1},
           Placement{"ok", 0, 0, std::nan(""), 0}, Placement{std::string(65, 'a'), 0, 0, 0, 0}}) {
-        EXPECT_FALSE(decode_placements(encode_placements({&bad, 1})).has_value()) << bad.model;
+        EXPECT_FALSE(encode_placements({&bad, 1}).has_value()) << bad.model;  // never written
     }
+    // Nor read: a good layer changed after it was written.
+    const TileLayer one = *encode_placements(std::vector<Placement>{{"ok", 0, 0, 0, 0}});
+    TileLayer slash = one;
+    slash.data[6] = '/';  // the name's first letter
+    EXPECT_FALSE(decode_placements(slash).has_value());
+    TileLayer round = one;
+    const float full_circle = 360.0F;
+    std::memcpy(&round.data[4 + 2 + 2 + 24], &full_circle, 4);  // the heading (little-endian here)
+    EXPECT_FALSE(decode_placements(round).has_value());
+    TileLayer padded = one;
+    padded.data[4 + 2 + 2 + 28] = 1;  // the zero bytes after it
+    EXPECT_FALSE(decode_placements(padded).has_value());
     TileLayer v2 = layer;
     v2.format = 2;
     EXPECT_FALSE(decode_placements(v2).has_value());
