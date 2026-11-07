@@ -4,6 +4,7 @@
 // colours and linear gradients, likewise. The real KHSV database is checked
 // against its sources by tools/check-elevation.py and check-imagery.py.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
