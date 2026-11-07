@@ -203,10 +203,22 @@ std::optional<float> error_from_children(ChildLevel& below, const TileKey& key,
 CompileResult compile(const CompileSettings& s, unsigned jobs,
                       const std::function<void(const LevelReport&)>& progress) {
     CompileResult result;
-    const fs::path part = fs::path(s.output).concat(".part");
+    // "db/khsv/" names the same directory as "db/khsv": the build goes
+    // beside it, not inside it.
+    fs::path output = s.output.lexically_normal();
+    if (!output.has_filename()) {
+        output = output.parent_path();
+    }
+    const fs::path part = fs::path(output).concat(".part");
+    const fs::path old = fs::path(output).concat(".old");
     std::error_code ec;
-    if (fs::exists(s.output) && !fs::exists(s.output / "manifest.toml")) {
-        result.errors.push_back(s.output.string() +
+    if (fs::exists(old)) {
+        result.errors.push_back(old.string() +
+                                ": left by an interrupted build; restore or remove it first");
+        return result;
+    }
+    if (fs::exists(output) && !fs::exists(output / "manifest.toml")) {
+        result.errors.push_back(output.string() +
                                 ": exists and isn't a database; not replacing it");
         return result;
     }
@@ -344,12 +356,26 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
     if (!write_manifest(part, m)) {
         return fail((part / "manifest.toml").string() + ": cannot write");
     }
-    fs::remove_all(s.output, ec);
-    if (!ec) {
-        fs::rename(part, s.output, ec);
+    // The older database is moved aside, not deleted, until the new one is
+    // in place: interrupted at any point, one of them is left whole.
+    const bool replacing = fs::exists(output);
+    if (replacing) {
+        fs::rename(output, old, ec);
+        if (ec) {
+            return fail(output.string() +
+                        ": cannot move the older database aside: " + ec.message());
+        }
     }
+    fs::rename(part, output, ec);
     if (ec) {
-        return fail(s.output.string() + ": cannot move the database into place: " + ec.message());
+        std::error_code ignored;
+        if (replacing) {
+            fs::rename(old, output, ignored);
+        }
+        return fail(output.string() + ": cannot move the database into place: " + ec.message());
+    }
+    if (replacing) {
+        fs::remove_all(old, ec);
     }
     result.ok = true;
     return result;

@@ -10,7 +10,7 @@
 //   root = 12                       # the coarsest level: tiles touching the area
 //   finest = 16                     # every root's descendants down to here
 //   [elevation]
-//   samples = 257                   # per tile side, odd
+//   samples = 257                   # per tile side, odd, up to 1025
 //   cache = "../cache/khsv"         # where tools/fetch-sources.py put the files
 //   sources = ["elevation_1m/*_B24.tif", "elevation_10m/*.tif"]  # newest first
 //   geoid = "geoid/us_noaa_g2018u0.tif"

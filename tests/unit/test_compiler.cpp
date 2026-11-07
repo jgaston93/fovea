@@ -18,6 +18,7 @@
 #include <ogr_srs_api.h>
 
 #include "compile.hpp"
+#include "elevation.hpp"
 #include "fovea/terrain/database.hpp"
 #include "fovea/terrain/tile_file.hpp"
 #include "settings.hpp"
@@ -76,7 +77,8 @@ struct Utm {
 // A one-band Float32 GeoTIFF: `value(x, y)` at each pixel centre, in the
 // raster's own coordinates.
 void write_raster(const fs::path& file, int epsg, double x0, double y0, double pixel, int width,
-                  int height, double nodata, const std::function<double(double, double)>& value) {
+                  int height, double nodata, const std::function<double(double, double)>& value,
+                  double scale = 1.0) {
     GDALDriverH gtiff = GDALGetDriverByName("GTiff");
     GDALDatasetH ds = GDALCreate(gtiff, file.c_str(), width, height, 1, GDT_Float32, nullptr);
     ASSERT_NE(ds, nullptr);
@@ -88,6 +90,7 @@ void write_raster(const fs::path& file, int epsg, double x0, double y0, double p
     OSRDestroySpatialReference(srs);
     GDALRasterBandH band = GDALGetRasterBand(ds, 1);
     GDALSetRasterNoDataValue(band, nodata);
+    GDALSetRasterScale(band, scale);
     std::vector<float> row(static_cast<std::size_t>(width));
     for (int r = 0; r < height; ++r) {
         for (int c = 0; c < width; ++c) {
@@ -478,6 +481,93 @@ TEST(CompilerFailures, ReplacesAnOlderDatabase) {
     EXPECT_TRUE(fs::exists(scene.dir / "db" / "manifest.toml"));
 }
 
+TEST(CompilerFailures, AnOutputEndingInASlashBuildsBesideIt) {
+    GDALAllRegister();
+    const Scene scene("slash");
+    std::string text = scene.settings();
+    text.replace(text.find("output = \"db\""), 13, "output = \"db/\"");
+    for (int build = 0; build < 2; ++build) {  // the second replaces the first
+        const auto r = scene.build(text);
+        ASSERT_TRUE(r.ok) << (r.errors.empty() ? "" : r.errors[0]);
+        EXPECT_TRUE(fs::exists(scene.dir / "db" / "manifest.toml"));
+        EXPECT_FALSE(fs::exists(scene.dir / "db" / ".part"));
+        EXPECT_FALSE(fs::exists(scene.dir / "db.part"));
+        EXPECT_FALSE(fs::exists(scene.dir / "db.old"));
+    }
+}
+
+TEST(CompilerFailures, AnInterruptedReplacementIsLeftAlone) {
+    GDALAllRegister();
+    const Scene scene("interrupted");
+    fs::create_directories(scene.dir / "db.old");
+    std::ofstream(scene.dir / "db.old" / "manifest.toml") << "the older database";
+    const auto r = scene.build(scene.settings());
+    ASSERT_FALSE(r.ok);
+    EXPECT_NE(r.errors[0].find("interrupted"), std::string::npos) << r.errors[0];
+    EXPECT_TRUE(fs::exists(scene.dir / "db.old" / "manifest.toml"));
+}
+
+// --- Sources and the geoid ---
+
+TEST(CompilerSources, RejectsHeightsNotStoredInMetres) {
+    GDALAllRegister();
+    const fs::path dir = test_root() / "scaled";
+    fs::create_directories(dir);
+    write_raster(
+        dir / "scaled.tif", 4269, -86.8, 34.7, 0.001, 10, 10, kNoData,
+        [](double, double) { return 100.0; }, 0.01);
+    std::string error;
+    EXPECT_EQ(ElevationSources::open({dir / "scaled.tif"}, error), nullptr);
+    EXPECT_NE(error.find("metres"), std::string::npos) << error;
+}
+
+// A sample exactly on a source's last pixel centre (here every grid point
+// is a pixel centre, so the tile's north and east edges are the last ones)
+// comes from that source.
+TEST(CompilerSources, SamplesOnTheLastPixelCentre) {
+    GDALAllRegister();
+    const fs::path dir = test_root() / "last_pixel";
+    fs::create_directories(dir);
+    constexpr std::uint32_t kSamples = 9;
+    const TileKey key = tile_at(34.637, -86.775, 14);
+    const GeoBounds b = tile_bounds(key);
+    const double px = (b.east_deg - b.west_deg) / (kSamples - 1);
+    write_raster(dir / "exact.tif", 4269, b.west_deg - px / 2, b.north_deg + px / 2, px, kSamples,
+                 kSamples, kNoData,
+                 [](double lon, double lat) { return 100.0 + 1000.0 * (lat - 34.6 + lon + 86.8); });
+    std::string error;
+    const auto sources = ElevationSources::open({dir / "exact.tif"}, error);
+    ASSERT_NE(sources, nullptr) << error;
+    std::vector<float> h;
+    ASSERT_TRUE(sources->heights(key, kSamples, h, error)) << error;
+    const double lat = b.north_deg;
+    const double lon = b.east_deg;
+    EXPECT_NEAR(h.back(), 100.0 + 1000.0 * (lat - 34.6 + lon + 86.8), 1e-3);
+    EXPECT_NEAR(h.front(), 100.0 + 1000.0 * (b.south_deg - 34.6 + b.west_deg + 86.8), 1e-3);
+}
+
+TEST(CompilerSources, TheGeoidMustBeGeographicAndAreasMayNotCrossItsEdge) {
+    GDALAllRegister();
+    const fs::path dir = test_root() / "geoid";
+    fs::create_directories(dir);
+    write_raster(dir / "projected.tif", 26916, 500000, 3900000, 1000, 10, 10, kNoData,
+                 [](double, double) { return -29.0; });
+    std::string error;
+    EXPECT_FALSE(Geoid::load(dir / "projected.tif", {34.0, 35.0, -87.0, -86.0}, error));
+    EXPECT_NE(error.find("geographic"), std::string::npos) << error;
+
+    // 0-360 longitudes: an area west of 180 W is read at 180 E and beyond,
+    // and one across 0 E doesn't fit the grid.
+    write_raster(dir / "global.tif", 4269, 0.0, 60.0, 1.0, 360, 120, kNoData,
+                 [](double lon, double) { return lon; });
+    error.clear();
+    const auto g = Geoid::load(dir / "global.tif", {34.0, 35.0, -87.0, -86.0}, error);
+    ASSERT_TRUE(g.has_value()) << error;
+    EXPECT_NEAR(g->at(34.5, -86.5), 273.5, 1e-6);
+    EXPECT_FALSE(Geoid::load(dir / "global.tif", {34.0, 35.0, -1.0, 1.0}, error));
+    EXPECT_NE(error.find("crosses"), std::string::npos) << error;
+}
+
 // --- Settings ---
 
 TEST(CompilerSettings, WildcardsMatchRunsOfCharacters) {
@@ -514,6 +604,14 @@ TEST(CompilerSettings, ListsFilesNewestFirstAndFlagsTheRest) {
     EXPECT_EQ(files[3].filename(), "unlisted_2001.tif");
     EXPECT_TRUE(r.warnings.empty());
     EXPECT_EQ(r.settings->samples, 65U);
+
+    // Another spelling of the same directory names the same files, once.
+    std::string spelled = text;
+    spelled.replace(spelled.find("\"dem/*.tif\""), 11, "\"./dem/../dem/*.tif\"");
+    const auto sp = parse_settings(spelled, "s.toml", dir);
+    ASSERT_TRUE(sp.settings.has_value()) << (sp.errors.empty() ? "" : sp.errors[0]);
+    EXPECT_EQ(sp.settings->elevation.size(), 4U);
+    EXPECT_TRUE(sp.warnings.empty());
     EXPECT_EQ(r.settings->output, dir / "db");
 
     // Only the 2024 pattern: the others are flagged as left out.
@@ -550,6 +648,8 @@ TEST(CompilerSettings, RejectsMistakes) {
     EXPECT_FALSE(with("root = 3", "root = -1").empty());
     EXPECT_FALSE(with("finest = 5", "finest = 12").empty());             // more than 8 levels
     EXPECT_FALSE(with("samples = 65", "samples = 4294967363").empty());  // wraps if narrowed
+    EXPECT_FALSE(with("samples = 65", "samples = 64").empty());          // even
+    EXPECT_FALSE(with("samples = 65", "samples = 1027").empty());        // past 1025
     EXPECT_FALSE(with("south = 1.0", "south = 2.5").empty());            // south above north
     EXPECT_FALSE(with("area = {", "area = \"missing.toml\"\nx = {").empty());
     EXPECT_FALSE(with("name = \"t\"\n", "").empty());
