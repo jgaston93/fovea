@@ -239,6 +239,36 @@ void print_host_stats(const fovea::CigiAdapter& adapter) {
     }
 }
 
+// The config's terrain database, if any, onto the GPU (milestone 3 step 5):
+// every tile, up front. False, after saying why, if it can't be used.
+bool load_terrain(fovea::Renderer& renderer, const fovea::DisplayConfig& config) {
+    if (!config.terrain) {
+        return true;
+    }
+    const fovea::TerrainConfig& t = *config.terrain;
+    std::unique_ptr<fovea::TerrainDatabase> db;
+    const auto opened = fovea::TerrainDatabase::open(t.database, db);
+    if (!db) {
+        (void)std::fprintf(stderr, "fovea: cannot open the terrain database %s\n",
+                           t.database.string().c_str());
+        for (const auto& e : opened.errors) {
+            (void)std::fprintf(stderr, "  %s\n", e.c_str());
+        }
+        return false;
+    }
+    const fovea::TerrainLoad load = renderer.load_terrain(*db, {t.max_level, t.pixel_error});
+    std::printf("Terrain: %s, %zu tiles (%.2f GB) in %.1f s\n", t.database.string().c_str(),
+                load.tiles, static_cast<double>(load.bytes) / 1e9, load.seconds);
+    const std::size_t shown = std::min<std::size_t>(load.problems.size(), 10);
+    for (std::size_t i = 0; i < shown; ++i) {
+        std::printf("  %s\n", load.problems[i].c_str());
+    }
+    if (load.problems.size() > shown) {
+        std::printf("  ... and %zu more\n", load.problems.size() - shown);
+    }
+    return true;
+}
+
 // Headless: every channel rendered offscreen, with no windows or display
 // (the offscreen presenter, or --headless with any config). Draws the given
 // number of frames, prints the colour read back from the middle of each
@@ -269,6 +299,9 @@ int run_headless(const Options& options, const fovea::DisplayConfig& config) {
     }
     const auto renderer = fovea::Renderer::offscreen(outputs);
     print_gpu(*renderer);
+    if (!options.clear && !load_terrain(*renderer, config)) {
+        return 1;
+    }
     const auto views = fovea::reference_scene_views(config);
     for (std::uint32_t f = 0; f < options.frames; ++f) {
         if (options.clear) {
@@ -363,6 +396,9 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         }
         renderer = fovea::Renderer::for_windows(platform, outputs);
         print_gpu(*renderer);
+        if (!options.clear && !load_terrain(*renderer, config)) {
+            return 1;
+        }
         std::printf("Pacing: %s\n", renderer->has_present_wait()
                                         ? "present wait (each frame starts after a vsync)"
                                         : "FIFO blocking (no present wait support)");

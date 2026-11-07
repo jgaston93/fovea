@@ -54,6 +54,16 @@ struct ReferenceScene {
     Geodetic origin;
 };
 
+// [terrain]: a terrain database to draw (milestone 3), every tile loaded up
+// front, down to max_level. Without it, the reference scene's grid only.
+struct TerrainConfig {
+    // The database directory; a relative path is relative to the config
+    // file (load_display_config resolves it; parse_display_config leaves it).
+    std::filesystem::path database;
+    int max_level = 30;        // tiles finer than this aren't loaded
+    double pixel_error = 1.0;  // a tile splits where its error would show as more (D-016)
+};
+
 // [host]: where a host program's messages arrive. Without it, nothing
 // listens and the views stay where the config puts them.
 enum class HostProtocol : std::uint8_t { cigi };
@@ -82,6 +92,7 @@ struct DisplayConfig {
     std::vector<ChannelConfig> channels;
     ReferenceScene reference_scene;
     std::optional<HostConfig> host;
+    std::optional<TerrainConfig> terrain;
 };
 
 // One problem in a config file. Line and column are 1-based; 0 when the
