@@ -1,0 +1,45 @@
+# A low pass over KHSV (milestone 3 step 7): about 110 m over the airfield
+# at 60 m/s, north past the airport, a turn back, and south over the
+# fields to its west; once (4 minutes). For judging the terrain up close
+# and any popping between levels. Run Fovea with config/khsv.toml, then:
+#   cigi-test-host tools/cigi-test-host/scripts/khsv-low.toml
+
+[ig]
+address = "127.0.0.1"
+port = 8004
+
+[host]
+port = 8005
+rate_hz = 60.0
+
+[start]
+lat = 34.580
+lon = -86.775
+alt = 300.0      # about 110 m over the airfield (628.9 ft)
+heading = 0.0
+speed = 60.0
+
+[flight]
+loop = false
+
+[[segment]]
+kind = "straight"   # north over the airport, 5.4 km
+duration = 90.0
+speed = 60.0
+
+[[segment]]
+kind = "turn"       # left, back to the south
+duration = 30.0
+speed = 60.0
+turn_rate = -6.0
+
+[[segment]]
+kind = "straight"   # south, west of the airport
+duration = 90.0
+speed = 60.0
+
+[[segment]]
+kind = "turn"       # left again
+duration = 30.0
+speed = 60.0
+turn_rate = -6.0
