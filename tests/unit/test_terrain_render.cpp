@@ -142,7 +142,7 @@ fs::path write_db(const std::string& name, const Spec& s) {
             }
             TileFile tile{key, {encode_elevation(g), encode_imagery(im)}};
             if (lv == s.root && !s.placements.empty()) {
-                tile.layers.push_back(encode_placements(s.placements));
+                tile.layers.push_back(*encode_placements(s.placements));
             }
             EXPECT_TRUE(write_tile(dir / tile_path(key), tile));
         }
@@ -628,6 +628,28 @@ TEST(TerrainRender, AModelThatCannotLoadIsReportedAndTheRestDrawn) {
     ASSERT_EQ(problems.size(), 2U);
     EXPECT_NE(problems[0].find("broken"), std::string::npos) << problems[0];  // name order
     EXPECT_NE(problems[1].find("ghost"), std::string::npos) << problems[1];
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
+TEST(TerrainRender, ModelsThatCannotBeSetUpLeaveTheTerrain) {
+    // More placements than the renderer takes: reported, and the terrain
+    // drawn without them.
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    s.placements.assign(4097, Placement{"a", lat0, lon0, 120.0, 0.0F});
+    s.models = {{"a", box_glb(3.0F, 4.0F, 2.0F, {1.0F, 0.0F, 0.0F, 1.0F})}};
+    const fs::path dir = write_db("too_many", s);
+    RENDERER_OR_SKIP(r, 64, 64);
+    const TerrainLoad load = r->load_terrain(open_db(dir));
+    EXPECT_EQ(load.tiles, 1U);
+    EXPECT_EQ(load.models, 0U);
+    ASSERT_EQ(load.problems.size(), 1U);
+    EXPECT_NE(load.problems[0].find("4097 placements"), std::string::npos) << load.problems[0];
+    const SceneView v = view_at({lat0, lon0, 120.0}, 200.0, -90.0);
+    (void)settle(*r, {v});
+    EXPECT_GE(r->terrain_tiles_drawn(), 1U);
+    EXPECT_EQ(r->terrain_stats().placements_drawn, 0U);
     EXPECT_EQ(r->validation_messages(), 0U);
 }
 

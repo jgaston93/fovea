@@ -97,6 +97,9 @@ private:
     void write_descriptors(std::uint32_t slot, VkImageView heights, VkImageView imagery);
     void request_children(const SceneView& view, const TileSelection& sel,
                           double pixels_per_tangent);
+    // The selected tiles' records and their one draw.
+    void draw_tiles(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t o, const SceneView& view,
+                    std::uint32_t drawn, const std::array<float, 3>& sun_f);
 
     GpuContext gpu_;
     std::unique_ptr<TerrainDatabase> db_;

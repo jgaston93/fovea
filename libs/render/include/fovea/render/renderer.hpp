@@ -171,6 +171,9 @@ struct TerrainStats {
     std::uint64_t failures = 0;  // tiles that couldn't be loaded (skipped)
     std::uint32_t models_loaded = 0;     // placed models on the GPU so far
     std::uint32_t placements_drawn = 0;  // over all outputs
+    // Visible but not drawn: more primitives in a view than the draw
+    // records hold (kMaxModelDraws).
+    std::uint32_t placements_dropped = 0;
 };
 
 // Up to this many outputs get GPU timings.
