@@ -6,19 +6,13 @@
 
 namespace fovea {
 
-namespace {
-
-constexpr std::uint32_t kTombstone = kNoTile - 1;
-
-}  // namespace
-
 TileCache::TileCache(std::uint32_t capacity, std::size_t budget_bytes, std::uint32_t keep_frames)
     : slots_(capacity),
       lod_(capacity),
       budget_bytes_(budget_bytes),
       keep_frames_(std::max(keep_frames, 1U)),
       index_(std::bit_ceil(std::size_t{capacity} * 2 + 2)),
-      failed_(capacity) {
+      failed_(std::bit_ceil(std::size_t{capacity} * 2 + 2)) {
     roots_.reserve(capacity);
     free_.reserve(capacity);
     for (std::uint32_t s = capacity; s-- > 0;) {
@@ -30,7 +24,7 @@ std::size_t TileCache::index_find(const TileKey& key) const {
     const std::size_t mask = index_.size() - 1;
     for (std::size_t i = std::hash<TileKey>{}(key)&mask;; i = (i + 1) & mask) {
         const Bucket& b = index_[i];
-        if (b.slot == kNoTile || (b.slot != kTombstone && b.key == key)) {
+        if (b.slot == kNoTile || b.key == key) {
             return i;
         }
     }
@@ -39,17 +33,31 @@ std::size_t TileCache::index_find(const TileKey& key) const {
 void TileCache::index_put(const TileKey& key, std::uint32_t slot) {
     const std::size_t mask = index_.size() - 1;
     std::size_t i = std::hash<TileKey>{}(key)&mask;
-    while (index_[i].slot != kNoTile && index_[i].slot != kTombstone) {
+    while (index_[i].slot != kNoTile) {
         i = (i + 1) & mask;
     }
     index_[i] = {key, slot};
 }
 
 void TileCache::index_erase(const TileKey& key) {
-    const std::size_t i = index_find(key);
-    if (index_[i].slot != kNoTile) {
-        index_[i].slot = kTombstone;
+    // Backward-shift deletion (linear probing): later entries of the run
+    // whose home is at or before the hole move into it, so no marker is
+    // left behind and every run still ends at an empty bucket.
+    const std::size_t mask = index_.size() - 1;
+    std::size_t hole = index_find(key);
+    if (index_[hole].slot == kNoTile) {
+        return;
     }
+    for (std::size_t j = (hole + 1) & mask; index_[j].slot != kNoTile; j = (j + 1) & mask) {
+        const std::size_t home = std::hash<TileKey>{}(index_[j].key) & mask;
+        // Stays where it is if its home lies cyclically in (hole, j].
+        const bool stays = hole < j ? (home > hole && home <= j) : (home > hole || home <= j);
+        if (!stays) {
+            index_[hole] = index_[j];
+            hole = j;
+        }
+    }
+    index_[hole].slot = kNoTile;
 }
 
 std::optional<std::uint32_t> TileCache::find(const TileKey& key) const {
@@ -58,8 +66,15 @@ std::optional<std::uint32_t> TileCache::find(const TileKey& key) const {
 }
 
 bool TileCache::failed(const TileKey& key) const {
-    const auto end = failed_.begin() + static_cast<std::ptrdiff_t>(failed_count_);
-    return std::find(failed_.begin(), end, key) != end;
+    const std::size_t mask = failed_.size() - 1;
+    for (std::size_t i = std::hash<TileKey>{}(key)&mask;; i = (i + 1) & mask) {
+        if (!failed_[i].used) {
+            return false;
+        }
+        if (failed_[i].key == key) {
+            return true;
+        }
+    }
 }
 
 std::optional<std::uint32_t> TileCache::take_free() {
@@ -191,8 +206,15 @@ void TileCache::arrived(std::uint32_t s, const TileInfo& info, std::uint64_t fra
 }
 
 void TileCache::failed_to_load(std::uint32_t s) {
-    if (failed_count_ < failed_.size()) {
-        failed_[failed_count_++] = slots_[s].info.key;
+    // Half full at most, so every probe ends at an unused entry.
+    if (failed_count_ < slots_.size() && !failed(slots_[s].info.key)) {
+        const std::size_t mask = failed_.size() - 1;
+        std::size_t i = std::hash<TileKey>{}(slots_[s].info.key) & mask;
+        while (failed_[i].used) {
+            i = (i + 1) & mask;
+        }
+        failed_[i] = {slots_[s].info.key, true};
+        ++failed_count_;
     }
     ++stats_.failures;
     cancel(s);

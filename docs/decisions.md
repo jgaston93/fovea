@@ -137,3 +137,10 @@ GDAL is the compiler's main dependency. On Ubuntu 24.04 it is one package (`libg
 **Status:** Accepted (2026-11-06)
 
 The compiler converts the sources' NAVD88 heights to WGS-84 ellipsoid heights with NOAA's GEOID18 (h = H + N), so the runtime works in one vertical datum. The database also carries the geoid height over its area, which lets the runtime convert a host's sea-level altitudes properly there (issue #19) instead of with one constant.
+
+## D-021 Terrain uploads go on the render queue, for now
+
+**Status:** Accepted (2026-11-07)
+
+The plan has the paging thread upload tiles "through a transfer queue". Milestone 3 step 6 does everything but the hand-over on the paging thread (reading, decoding, making images, recording the copies) and has the render thread submit those command buffers ahead of its own frame, in the same submit, on its one queue. The render thread waits for nothing; a timeline semaphore every frame signals tells the paging thread when staging memory can be reused. This needs no queue-ownership transfers, and works where there is one queue (lavapipe). On the desk the uploads cost too little to show (GPU time at most 1.8 ms an output while paging a 150 m/s flight). A dedicated transfer queue follows if a heavier load shows the need: the paging thread would then submit itself, with ownership transfers to the render queue.
+

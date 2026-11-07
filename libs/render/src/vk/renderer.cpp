@@ -1558,6 +1558,10 @@ TerrainLoad Renderer::load_terrain(std::unique_ptr<TerrainDatabase> database,
     return report;
 }
 
+std::vector<std::string> Renderer::terrain_problems() const {
+    return impl_->terrain ? impl_->terrain->problems() : std::vector<std::string>{};
+}
+
 const TerrainStats& Renderer::terrain_stats() const {
     static const TerrainStats none;
     return impl_->terrain ? impl_->terrain->stats() : none;

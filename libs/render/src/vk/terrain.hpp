@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "fovea/core/time.hpp"
@@ -81,6 +82,8 @@ public:
 
     // This frame's numbers so far (reset by begin_frame).
     const TerrainStats& stats() const { return stats_; }
+    // Why paged tiles couldn't be used, so far (any thread; allocates).
+    std::vector<std::string> problems() const;
 
     struct Image {
         VkImage image = VK_NULL_HANDLE;

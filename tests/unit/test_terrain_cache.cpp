@@ -198,5 +198,51 @@ TEST(TerrainCache, AllocatesNothingOnceMade) {
     EXPECT_EQ(counter.count(), 0U);
 }
 
+TEST(TerrainCache, LookupsStayFastAfterManyEvictions) {
+    // A small cache (8 slots, a 32-bucket index) through which hundreds of
+    // different tiles pass, thousands of times: entries removed from the
+    // index must leave it as it was (tombstones once only ever accumulated,
+    // and a lookup of a missing tile would eventually never end).
+    TileCache c(8, 1 << 20, 1);
+    (void)c.add_root(info_for(kRoot));
+    std::uint64_t frame = 1;
+    int lost = 0;
+    // Load a tile under the root, then each of its descendants in turn,
+    // a level at a time, evicting as it goes.
+    const auto bring = [&](const TileKey& k) {
+        for (int attempt = 0; attempt < 8 && !c.find(k); ++attempt) {
+            if (const auto s = c.reserve(k, 100, frame)) {
+                c.arrived(*s, info_for(k), frame);
+                c.touch(*s, frame);
+            }
+            c.frames_completed(frame);
+            frame += 3;
+            // Every tile still there is found where it is, all along.
+            for (std::uint32_t s = 0; s < c.capacity(); ++s) {
+                if (c.resident(s) && c.find(c.info(s).key) != s) {
+                    ++lost;
+                }
+            }
+        }
+    };
+    for (int sweep = 0; sweep < 30; ++sweep) {
+        for (const TileKey& a : children(kRoot)) {
+            bring(a);
+            for (const TileKey& b : children(a)) {
+                bring(b);
+                for (const TileKey& d : children(b)) {
+                    bring(d);
+                    for (const TileKey& e : children(d)) {
+                        bring(e);
+                    }
+                }
+            }
+        }
+    }
+    EXPECT_GT(c.stats().evictions, 200U);
+    EXPECT_FALSE(c.find({20, 1, 1}).has_value());  // returns at all
+    EXPECT_EQ(lost, 0);
+}
+
 }  // namespace
 }  // namespace fovea

@@ -354,6 +354,7 @@ TEST(TerrainRender, PagingSkipsDamagedTilesAndStopsAtMaxLevel) {
     (void)settle(*r2, v, 120);
     EXPECT_EQ(r2->terrain_stats().resident, 1U);  // nothing finer asked for
     EXPECT_EQ(r2->terrain_stats().failures, 0U);
+    EXPECT_EQ(r2->terrain_stats().misses, 0U);  // nor missed: there is nothing to load
 }
 
 TEST(TerrainRender, ADamagedMiddleTileLeavesItsAncestorToCoverItsChildren) {

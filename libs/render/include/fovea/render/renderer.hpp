@@ -143,10 +143,6 @@ struct TerrainOptions {
     double pixel_error = 1.0;        // a tile splits where its error shows as more (D-016)
     std::uint32_t max_tiles = 4096;  // resident at once, roots included
     std::size_t budget_bytes = std::size_t{2} << 30;  // their heights and imagery
-    // Called after each tile loads (tiles loaded, tiles there could be),
-    // on the loading thread: a window's events can be handled there, so a
-    // long load doesn't leave it unresponsive.
-    std::function<void(std::size_t, std::size_t)> progress;
 };
 
 // What load_terrain did up front: the roots.
@@ -275,6 +271,9 @@ public:
 
     // The terrain in the last frame drawn (zeros without terrain).
     const TerrainStats& terrain_stats() const;
+    // Why paged tiles couldn't be used, so far (not for the render thread:
+    // it copies them under a lock).
+    std::vector<std::string> terrain_problems() const;
     std::uint32_t terrain_tiles_drawn() const { return terrain_stats().drawn; }
 
     // Offscreen outputs only: the last frame's pixels, RGBA8, row by row.

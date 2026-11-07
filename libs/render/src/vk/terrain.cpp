@@ -294,6 +294,7 @@ struct PreparedTile {
 
 struct PrepareContext {
     std::uint32_t samples = 0;
+    int max_level = 30;
     bool bc7 = false;
     bool bc1 = false;
     float max_root_error = 0.0F;  // skirts hang a tile's error and this, and a metre
@@ -380,6 +381,7 @@ PreparedTile prepare_tile(const TerrainDatabase& db, const TileKey& key, const P
         }
     }
     p.info.lod.error_m = static_cast<double>(grid->error_m);
+    p.info.lod.can_split = key.level < c.max_level && db.manifest().has_tile(children(key)[0]);
     p.heights = std::move(grid->heights);
     p.info.bytes = p.heights.size() * sizeof(float);
     if (p.has_imagery) {
@@ -505,6 +507,7 @@ struct TileRequest {
 struct TileArrival {
     std::uint32_t slot = 0;
     bool ok = false;
+    bool retry = false;  // not ok for now (a GPU error), not for good
     TileInfo info;
     VkImageView heights = VK_NULL_HANDLE;
     VkImageView imagery = VK_NULL_HANDLE;  // null: the grey fallback
@@ -657,8 +660,11 @@ private:
                     deliver(p, req.slot, out, stop);
                 }
             } catch (const std::exception& e) {
-                note(to_string(req.key) + ": " + e.what());
+                // A GPU or memory error, not the tile's data: asked for
+                // again later rather than given up on.
+                note(to_string(req.key) + ": " + e.what() + " (will be asked for again)");
                 out.ok = false;
+                out.retry = true;
             }
             while (!arrivals_.try_push(out)) {
                 if (stop.stop_requested()) {
@@ -674,6 +680,11 @@ private:
                  const std::stop_token& stop) {
         const GpuContext& gpu = t_.gpu_;
         const VkDeviceSize size = staged_bytes(p);
+        if (size > kStagingBytes) {
+            note(to_string(p.info.key) + ": " + std::to_string(size) +
+                 " bytes, more than the staging memory");
+            return;  // not ok: failed for good
+        }
         std::uint32_t batch = kBatches;
         std::optional<VkDeviceSize> at;
         while (!stop.stop_requested()) {
@@ -787,6 +798,7 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
     };
     PrepareContext ctx;
     ctx.samples = n;
+    ctx.max_level = options.max_level;
     ctx.bc7 = gpu.bc_textures && supported(VK_FORMAT_BC7_SRGB_BLOCK);
     ctx.bc1 = gpu.bc_textures && supported(VK_FORMAT_BC1_RGB_SRGB_BLOCK);
 
@@ -1087,6 +1099,10 @@ TerrainGpu::~TerrainGpu() {
     destroy(draws_);
 }
 
+std::vector<std::string> TerrainGpu::problems() const {
+    return pager_->problems();
+}
+
 void TerrainGpu::write_descriptors(std::uint32_t slot, VkImageView heights, VkImageView imagery) {
     const VkDescriptorImageInfo h{VK_NULL_HANDLE, heights,
                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -1119,7 +1135,11 @@ void TerrainGpu::begin_frame(std::uint64_t frame, std::uint64_t completed) {
             break;
         }
         if (!a->ok) {
-            cache_->failed_to_load(a->slot);
+            if (a->retry) {
+                cache_->cancel(a->slot);
+            } else {
+                cache_->failed_to_load(a->slot);
+            }
             continue;
         }
         write_descriptors(a->slot, a->heights, a->imagery);
@@ -1149,18 +1169,17 @@ void TerrainGpu::request_children(const SceneView& view, const TileSelection& se
         want_priority_[i] = screen_error_px(tile.error_m, d, pixels_per_tangent);
         want_order_[i] = static_cast<std::uint32_t>(i);
     }
-    // At most this many asked for per view per frame: the paging thread
-    // takes the most wanted first anyway, and later frames ask again.
+    // At most this many asked for per view per frame, most wanted first
+    // (tiles whose children are all asked for already are passed over);
+    // later frames ask for the rest.
     constexpr std::size_t kMaxRequests = 16;
     const auto order_end = want_order_.begin() + static_cast<std::ptrdiff_t>(wanted);
-    const auto top =
-        want_order_.begin() + static_cast<std::ptrdiff_t>(std::min(wanted, kMaxRequests / 4 + 1));
-    std::partial_sort(want_order_.begin(), top, order_end, [&](std::uint32_t a, std::uint32_t b) {
+    std::sort(want_order_.begin(), order_end, [&](std::uint32_t a, std::uint32_t b) {
         return want_priority_[a] > want_priority_[b];
     });
     std::uint32_t asked = 0;
     const DatabaseManifest& m = db_->manifest();
-    for (auto it = want_order_.begin(); it != top && asked < kMaxRequests; ++it) {
+    for (auto it = want_order_.begin(); it != order_end && asked < kMaxRequests; ++it) {
         const std::uint32_t slot = wants_[*it];
         for (const TileKey& child : children(cache_->info(slot).key)) {
             if (child.level > max_level_ || !m.has_tile(child) || cache_->find(child) ||
