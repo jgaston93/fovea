@@ -89,7 +89,8 @@ std::optional<RgbaImage> decode_image(std::span<const std::uint8_t> bytes, std::
 std::optional<RgbaImage> read_png(const std::filesystem::path& file) {
     // PNG only (decode_image takes JPEG too), and any size.
     std::string why;
-    const auto bytes = read_file(file, std::numeric_limits<int>::max(), why);
+    const auto bytes =
+        read_file(file, static_cast<std::size_t>(std::numeric_limits<int>::max()), why);
     constexpr std::array<std::uint8_t, 8> kSignature{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
     if (!bytes || bytes->size() < kSignature.size() ||
         !std::equal(kSignature.begin(), kSignature.end(), bytes->begin())) {
