@@ -49,10 +49,13 @@ struct Surface {
 // The point at grid sample (column, row), on the ellipsoid and raised by h.
 Surface surface(uint tile, int column, int row, float h) {
     const float cells = float(push.samples - 1);
+    // Columns and rows may be one outside the grid (a neighbour, for the
+    // normal): the edge cell then carries on linearly. Floored as signed
+    // first; a negative float to uint is undefined in SPIR-V.
     const float2 g = float2(float(column), float(row)) / cells * float(kControls - 1);
-    const uint2 c = min(uint2(g), uint2(kControls - 2));
+    const int2 c = clamp(int2(floor(g)), int2(0), int2(int(kControls) - 2));
     const float2 f = g - float2(c);
-    const uint base = tile * kControls * kControls + c.y * kControls + c.x;
+    const uint base = tile * kControls * kControls + uint(c.y) * kControls + uint(c.x);
     const Control c00 = controls[base];
     const Control c10 = controls[base + 1];
     const Control c01 = controls[base + kControls];

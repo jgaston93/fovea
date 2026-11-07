@@ -236,20 +236,31 @@ bool overlay_frame(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
     return true;
 }
 
-// Draws the fullscreen triangle into one colour target with dynamic rendering.
-void draw_fullscreen(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent) {
+// Begins dynamic rendering into one colour target, every pixel to be
+// written, with a reverse-Z depth buffer cleared to 0 if one is given; the
+// viewport and scissor cover the target.
+void begin_pass(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
+                VkImageView depth_view = VK_NULL_HANDLE) {
     VkRenderingAttachmentInfo colour{};
     colour.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     colour.imageView = target;
     colour.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     colour.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;  // every pixel is written
     colour.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingAttachmentInfo depth{};
+    depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depth.imageView = depth_view;
+    depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.clearValue.depthStencil = {0.0F, 0};
     VkRenderingInfo info{};
     info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     info.renderArea = {{0, 0}, extent};
     info.layerCount = 1;
     info.colorAttachmentCount = 1;
     info.pColorAttachments = &colour;
+    info.pDepthAttachment = depth_view != VK_NULL_HANDLE ? &depth : nullptr;
     vkCmdBeginRendering(cmd, &info);
     const VkViewport viewport{
         0.0F, 0.0F, static_cast<float>(extent.width), static_cast<float>(extent.height),
@@ -257,6 +268,11 @@ void draw_fullscreen(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent)
     const VkRect2D scissor{{0, 0}, extent};
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
+}
+
+// Draws the fullscreen triangle into one colour target.
+void draw_fullscreen(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent) {
+    begin_pass(cmd, target, extent);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRendering(cmd);
 }
@@ -477,6 +493,7 @@ void Renderer::Impl::create_device(bool present) {
     f12.runtimeDescriptorArray = VK_TRUE;
     f12.descriptorBindingPartiallyBound = VK_TRUE;
     f12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    f12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
 
     vkb::PhysicalDeviceSelector selector(instance);
     selector.set_minimum_version(1, 3)
@@ -1049,33 +1066,7 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
     dep.pImageMemoryBarriers = &db;
     vkCmdPipelineBarrier2(cmd, &dep);
 
-    VkRenderingAttachmentInfo colour{};
-    colour.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    colour.imageView = t.view;
-    colour.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colour.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;  // the sky writes every pixel
-    colour.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    VkRenderingAttachmentInfo depth{};
-    depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    depth.imageView = t.depth_view;
-    depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depth.clearValue.depthStencil = {0.0F, 0};
-    VkRenderingInfo pass{};
-    pass.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    pass.renderArea = {{0, 0}, t.extent};
-    pass.layerCount = 1;
-    pass.colorAttachmentCount = 1;
-    pass.pColorAttachments = &colour;
-    pass.pDepthAttachment = &depth;
-    vkCmdBeginRendering(cmd, &pass);
-    const VkViewport viewport{
-        0.0F, 0.0F, static_cast<float>(t.extent.width), static_cast<float>(t.extent.height),
-        0.0F, 1.0F};
-    const VkRect2D scissor{{0, 0}, t.extent};
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    begin_pass(cmd, t.view, t.extent, t.depth_view);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     if (terrain) {
         terrain_drawn += terrain->record(cmd, static_cast<std::uint32_t>(slot),

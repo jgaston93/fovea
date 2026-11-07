@@ -315,7 +315,31 @@ TEST(TerrainRender, LoadingSkipsDamagedTilesAndStopsAtMaxLevel) {
 
     r.reset();  // one Renderer at a time
     RENDERER_OR_SKIP(r2, 64, 64);
-    EXPECT_EQ(r2->load_terrain(*db, {15, 1.0}).tiles, 1U);
+    TerrainOptions only_roots;
+    only_roots.max_level = 15;
+    EXPECT_EQ(r2->load_terrain(*db, only_roots).tiles, 1U);
+}
+
+TEST(TerrainRender, ADamagedMiddleTileLeavesItsAncestorToCoverItsChildren) {
+    // Three levels; one level-16 tile damaged. Its grandparent can't split
+    // and covers everything: its children must not be drawn over it too.
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = quadrant_spec([](double, double) { return 120.0; }, &lat0, &lon0);
+    s.finest = 17;
+    s.texels = 64;
+    const fs::path dir = write_db("damaged_middle", s);
+    const TileKey broken = children(s.root_key)[0];
+    std::ofstream(dir / tile_path(broken), std::ios::binary | std::ios::trunc) << "not a tile";
+    const auto db = open_db(dir);
+    RENDERER_OR_SKIP(r, 64, 64);
+    const TerrainLoad load = r->load_terrain(*db);
+    EXPECT_EQ(load.tiles, 1U + 3U + 16U);
+    const GeoBounds b = tile_bounds(broken);
+    r->draw_scene_frame(std::vector<SceneView>{view_at(
+        {(b.south_deg + b.north_deg) / 2, (b.west_deg + b.east_deg) / 2, 120.0}, 300.0, -90.0)});
+    EXPECT_EQ(r->terrain_tiles_drawn(), 1U);  // the root alone
+    EXPECT_EQ(r->validation_messages(), 0U);
 }
 
 // Hills and a pattern from 400 m: everything together, as a golden image

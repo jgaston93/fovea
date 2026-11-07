@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -139,6 +140,10 @@ double view_heading_deg(const SceneView& view);
 struct TerrainOptions {
     int max_level = 30;        // tiles finer than this aren't loaded
     double pixel_error = 1.0;  // a tile splits where its error shows as more (D-016)
+    // Called after each tile loads (tiles loaded, tiles there could be),
+    // on the loading thread: a window's events can be handled there, so a
+    // long load doesn't leave it unresponsive.
+    std::function<void(std::size_t, std::size_t)> progress;
 };
 
 struct TerrainLoad {
