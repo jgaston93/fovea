@@ -367,6 +367,20 @@ bool build_imagery(const CompileSettings& s, const fs::path& part, const LevelTi
     return true;
 }
 
+// The sources' heights at points, ellipsoidal (h = H + N, D-020): one rule
+// for the tiles and the runways' fit, so the blend meets the tiles.
+bool ellipsoidal_at(const ElevationSources& sources, const Geoid& geoid,
+                    std::span<const double> lat, std::span<const double> lon,
+                    std::vector<float>& out, std::string& error) {
+    if (!sources.at_points(lat, lon, out, error)) {
+        return false;
+    }
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        out[i] = static_cast<float>(static_cast<double>(out[i]) + geoid.at(lat[i], lon[i]));
+    }
+    return true;
+}
+
 }  // namespace
 
 CompileResult compile(const CompileSettings& s, unsigned jobs,
@@ -430,14 +444,7 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
         }
         const PointHeights heights = [&](std::span<const double> lat, std::span<const double> lon,
                                          std::vector<float>& out, std::string& err) {
-            if (!sources->at_points(lat, lon, out, err)) {
-                return false;
-            }
-            for (std::size_t i = 0; i < out.size(); ++i) {
-                out[i] =
-                    static_cast<float>(static_cast<double>(out[i]) + geoid->at(lat[i], lon[i]));
-            }
-            return true;
+            return ellipsoidal_at(*sources, *geoid, lat, lon, out, err);
         };
         for (const Runway& r : s.runways) {
             auto fitted = RunwaySurface::fit(r, s.runway_blend_m, heights, error);
@@ -447,6 +454,19 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
             result.runways.push_back(
                 {r.name, fitted->length_m(), fitted->rms_m(), fitted->max_abs_m()});
             runways.push_back(std::move(*fitted));
+        }
+        // Each is fitted to the sources alone, so where two meet (crossing,
+        // or one's blend reaching the other) the second would leave a step
+        // on the first: not yet supported.
+        for (std::size_t i = 0; i < runways.size(); ++i) {
+            for (std::size_t j = i + 1; j < runways.size(); ++j) {
+                if (runways[i].touches(runways[j].reach())) {
+                    return fail("runways " + runways[i].runway().name + " and " +
+                                runways[j].runway().name +
+                                " come within their blend of each other: crossing runways "
+                                "aren't supported yet");
+                }
+            }
         }
     }
 
@@ -473,7 +493,8 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
         struct State {
             std::unique_ptr<ElevationSources> sources;
             ChildLevel below;
-            std::vector<float> heights;
+            std::vector<double> lat;
+            std::vector<double> lon;
         };
         const bool ok =
             run_parallel(tiles.count(), jobs, result.errors, [&](std::string& why) -> Job {
@@ -481,26 +502,29 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
                     finest ? ElevationSources::open(s.elevation, why) : nullptr,
                     ChildLevel(
                         part, descendants(roots, static_cast<std::uint8_t>(lv + 1 - s.root_level))),
+                    {},
                     {}});
                 return [&, st](std::size_t i, std::string& err) {
                     const TileKey key = tiles.at(i);
                     ElevationGrid grid;
                     if (finest) {
-                        if (!st->sources->heights(key, s.samples, st->heights, err)) {
-                            return false;
-                        }
                         const GeoBounds b = tile_bounds(key);
                         const double step = (b.east_deg - b.west_deg) / (s.samples - 1);
-                        grid.size = s.samples;
-                        grid.heights.resize(st->heights.size());
+                        st->lat.resize(std::size_t{s.samples} * s.samples);
+                        st->lon.resize(st->lat.size());
                         for (std::uint32_t r = 0; r < s.samples; ++r) {
                             for (std::uint32_t c = 0; c < s.samples; ++c) {
                                 const std::size_t at = std::size_t{r} * s.samples + c;
-                                grid.heights[at] = static_cast<float>(
-                                    static_cast<double>(st->heights[at]) +
-                                    geoid->at(b.south_deg + r * step, b.west_deg + c * step));
+                                st->lat[at] = b.south_deg + r * step;
+                                st->lon[at] = b.west_deg + c * step;
                             }
                         }
+                        if (!ellipsoidal_at(*st->sources, *geoid, st->lat, st->lon, grid.heights,
+                                            err)) {
+                            err = "tile " + to_string(key) + ": " + err;
+                            return false;
+                        }
+                        grid.size = s.samples;
                         apply_runways(runways, key, s.samples, grid.heights);
                     } else {
                         auto filtered = filter_children(st->below, key, s.samples, err);

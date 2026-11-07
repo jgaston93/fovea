@@ -100,10 +100,12 @@ std::optional<RunwaySurface> RunwaySurface::fit(const Runway& runway, double ble
     const DVec3 far =
         s.to_local_ * (geodetic_to_ecef({e1.lat_deg, e1.lon_deg, 0.0}) - s.origin_ecef_);
     s.length_ = std::hypot(far.x, far.y);
-    if (!(s.length_ > 2.0 * kStationStep) || !(runway.width_m > 1.0) ||
+    // At least 5 m wide: six samples across, so three distances from the
+    // centreline for the crown's terms.
+    if (!(s.length_ > 2.0 * kStationStep) || !(runway.width_m >= 5.0) ||
         runway.width_m > s.length_) {
         error = "runway " + runway.name +
-                ": needs a length over 4 m and a width from 1 m to its length";
+                ": needs a length over 4 m and a width from 5 m to its length";
         return std::nullopt;
     }
     // A published length catches a mistyped end.
@@ -201,7 +203,7 @@ std::optional<RunwaySurface> RunwaySurface::fit(const Runway& runway, double ble
             std::array<double, kTerms> p{};
             if (!solve(m, p)) {
                 error = "runway " + runway.name + ": the fit is singular at " + std::to_string(uk) +
-                        " m (nothing like ground there?)";
+                        " m";
                 return std::nullopt;
             }
             // At the station (du = 0), in metres across.

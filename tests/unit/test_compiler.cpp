@@ -1012,6 +1012,40 @@ TEST(CompilerRunways, TheFitFollowsTheGradeAndTheCrownThroughNoiseAndBumps) {
     EXPECT_LT(runway_fit_error(*c, clean), 0.002);
 }
 
+TEST(CompilerRunways, SomethingAcrossTheWholeRunwayDoesNotStopTheFit) {
+    // 3 m high over the full width for 80 m, wider than a station's window:
+    // the fit takes it as the ground there (its samples are never all left
+    // out, so no station is singular), and is unaffected 60 m away.
+    RunwayGround g;
+    g.bump = false;
+    const PointHeights covered = [&](std::span<const double> lat, std::span<const double> lon,
+                                     std::vector<float>& out, std::string& why) {
+        (void)g.heights()(lat, lon, out, why);
+        for (std::size_t i = 0; i < lat.size(); ++i) {
+            const double u = RunwayGround::along(lat[i]);
+            if (u > 600.0 && u < 680.0) {
+                out[i] += 3.0F;
+            }
+        }
+        return true;
+    };
+    std::string error;
+    const auto s = RunwaySurface::fit(test_runway(), 20.0, covered, error);
+    ASSERT_TRUE(s.has_value()) << error;
+    // Where the block is, the fit takes it as the ground (it's wider than
+    // the window); 60 m away from it, the ground's own.
+    double away = 0.0;
+    for (double u = 0.0; u <= kRunwayLength; u += 2.5) {
+        if (u > 540.0 && u < 740.0) {
+            continue;
+        }
+        const double lat = kRunwayLat + u / kMetresPerDegLat;
+        const RunwayPoint p = s->to_runway(lat, kRunwayLon);
+        away = std::max(away, std::abs(s->surface(p.along_m, p.across_m) - g.smooth(u, 0.0)));
+    }
+    EXPECT_LT(away, 0.02);
+}
+
 TEST(CompilerRunways, BlendsIntoTheGroundWithNoStep) {
     const RunwayGround g;
     std::string error;
@@ -1112,6 +1146,11 @@ TEST(CompilerRunways, RefusesBadRunwaysAndMissingHeights) {
     EXPECT_NE(error.find("apart"), std::string::npos) << error;
     mistyped.length_m = kRunwayLength;
     EXPECT_TRUE(RunwaySurface::fit(mistyped, 20.0, g.heights(), error).has_value()) << error;
+    Runway narrow = test_runway();
+    narrow.width_m = 4.0;  // too few distances from the centreline for the crown
+    EXPECT_FALSE(RunwaySurface::fit(narrow, 20.0, g.heights(), error).has_value());
+    narrow.width_m = 5.0;
+    EXPECT_TRUE(RunwaySurface::fit(narrow, 20.0, g.heights(), error).has_value()) << error;
     EXPECT_FALSE(RunwaySurface::fit(test_runway(), 20.0, none, error).has_value());
     EXPECT_NE(error.find("no source"), std::string::npos) << error;
 }
@@ -1140,6 +1179,24 @@ TEST(CompilerRunways, TheCompilerSmoothsTheFinestLevelOnly) {
             << dm(lon, false) << "\"\nelevation_ft = 0.0\n"
             << "[[runway.end]]\nid = \"18\"\nlat = \"" << dm(lat1, true) << "\"\nlon = \""
             << dm(lon, false) << "\"\nelevation_ft = 0.0\n";
+    }
+    // Two runways crossing are refused (each is fitted alone).
+    {
+        std::ofstream(scene.dir / "crossing.toml")
+            << "[[runway]]\nname = \"36/18\"\nwidth_ft = 100.0\n"
+            << "[[runway.end]]\nid = \"36\"\nlat = \"" << dm(lat0, true) << "\"\nlon = \""
+            << dm(lon, false) << "\"\nelevation_ft = 0.0\n"
+            << "[[runway.end]]\nid = \"18\"\nlat = \"" << dm(lat1, true) << "\"\nlon = \""
+            << dm(lon, false) << "\"\nelevation_ft = 0.0\n"
+            << "[[runway]]\nname = \"09/27\"\nwidth_ft = 100.0\n"
+            << "[[runway.end]]\nid = \"09\"\nlat = \"" << dm((lat0 + lat1) / 2, true)
+            << "\"\nlon = \"" << dm(lon - 0.002, false) << "\"\nelevation_ft = 0.0\n"
+            << "[[runway.end]]\nid = \"27\"\nlat = \"" << dm((lat0 + lat1) / 2, true)
+            << "\"\nlon = \"" << dm(lon + 0.002, false) << "\"\nelevation_ft = 0.0\n";
+        const auto x = scene.build(scene.settings() + "[runways]\nairport = \"crossing.toml\"\n");
+        EXPECT_FALSE(x.ok);
+        ASSERT_FALSE(x.errors.empty());
+        EXPECT_NE(x.errors[0].find("crossing"), std::string::npos) << x.errors[0];
     }
     std::string plain = scene.settings();
     plain.replace(plain.find("output = \"db\""), 13, "output = \"plain\"");
@@ -1240,6 +1297,7 @@ TEST(CompilerRunways, AirportFileMistakesAreRefused) {
     EXPECT_FALSE(with("elevation_ft = 611.2\n", "").errors.empty());
     EXPECT_FALSE(with(airport, "").errors.empty());  // no runways
     EXPECT_FALSE(with("[[runway.end]]\nid = \"36L\"", "[[runway.x]]\nid = \"36L\"").errors.empty());
+    EXPECT_EQ(with("width_ft = 150.0", "width_ft = = 150.0").errors.size(), 1U);  // not twice
     std::ofstream(dir / "airport.toml") << airport;
     std::string bad_blend = good + "blend_m = -1.0\n";
     EXPECT_FALSE(parse_settings(bad_blend, "s.toml", dir).errors.empty());
