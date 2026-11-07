@@ -1303,9 +1303,10 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
     }
     check(vkEndCommandBuffer(f.cmd), "vkEndCommandBuffer");
 
-    // Terrain uploads first (the paging thread recorded them), then the
-    // frame: in one submit, so the frame's draws see the uploaded tiles.
-    std::array<VkCommandBufferSubmitInfo, kMaxUploadsPerFrame + 1> cmds{};
+    // Terrain uploads first (the paging thread recorded them: tiles and
+    // models), then the frame: in one submit, so the frame's draws see the
+    // uploaded tiles. Room for every upload a frame can take, and the frame.
+    std::array<VkCommandBufferSubmitInfo, kMaxUploadsInAFrame + 1> cmds{};
     std::uint32_t cmd_count = 0;
     if (terrain && request.scene) {
         for (const VkCommandBufferSubmitInfo& u : terrain->uploads()) {

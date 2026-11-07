@@ -653,6 +653,64 @@ TEST(TerrainRender, ModelsThatCannotBeSetUpLeaveTheTerrain) {
     EXPECT_EQ(r->validation_messages(), 0U);
 }
 
+TEST(TerrainRender, AFrameTakesAFullLoadOfTilesAndModelsTogether) {
+    // Two views asking for many tiles at once, and four models, all ready
+    // before the next frame: it takes 16 tiles and models together, and
+    // submits them all (the submit once had room for 16 uploads only).
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    s.finest = 18;
+    s.texels = 32;
+    // Big textures (1024 x 1024 of noise): each model takes a while to
+    // decode, so models are still arriving when the tiles do.
+    std::mt19937 rng(5);
+    RgbaImage noise{1024, 1024, std::vector<std::uint8_t>(std::size_t{1024} * 1024 * 4)};
+    for (auto& v : noise.pixels) {
+        v = static_cast<std::uint8_t>(rng());
+    }
+    const auto texture = encode_png(noise);
+    for (int i = 0; i < 4; ++i) {
+        const std::string name = "m" + std::to_string(i);
+        s.placements.push_back({name, lat0 + 0.0002 * i, lon0, 120.0, 0.0F});
+        test::GlbSpec g = test::glb_box(2.0F + static_cast<float>(i), 3.0F, 2.0F);
+        g.image = texture;
+        g.extras = R"({"fovea_material": 1})";
+        s.models.emplace_back(name, test::make_glb(g));
+    }
+    const fs::path dir = write_db("full_load", s);
+    RendererOptions options;
+    if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
+        options.validation = Validation::required;
+    }
+    std::unique_ptr<Renderer> r;
+    try {
+        r = Renderer::offscreen(std::vector<OffscreenOutput>{{128, 128}, {128, 128}}, options);
+    } catch (const std::runtime_error& e) {
+        if (std::getenv("FOVEA_REQUIRE_VULKAN") != nullptr) {
+            ADD_FAILURE() << "no Vulkan: " << e.what();
+        }
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    (void)r->load_terrain(open_db(dir));
+    const GeoBounds b = tile_bounds(s.root_key);
+    const double lat = (b.south_deg + b.north_deg) / 2;
+    const double lon = (b.west_deg + b.east_deg) / 2;
+    const std::vector<SceneView> views{view_at({lat, lon, 120.0}, 60.0, -90.0),
+                                       view_at({lat, lon, 120.0}, 60.0, -30.0, 90.0)};
+    r->draw_scene_frame(views);  // asks for children: 16 a view
+    bool together = false;
+    for (int f = 0; f < 50 && !together; ++f) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        const std::uint32_t before = r->terrain_stats().models_loaded;
+        r->draw_scene_frame(views);
+        const TerrainStats& st = r->terrain_stats();
+        together = st.uploads == 16 && st.models_loaded > before;
+    }
+    EXPECT_TRUE(together) << "no frame took 16 tiles and a model";
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
 TEST(TerrainRender, DrawingModelsAllocatesNothing) {
     double lat0 = 0.0;
     double lon0 = 0.0;
