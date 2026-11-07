@@ -344,4 +344,73 @@ std::optional<ImageryImage> decode_imagery(const TileLayer& l) {
     return image;
 }
 
+bool valid_model_name(std::string_view name) {
+    return !name.empty() && name.size() <= 64 && std::all_of(name.begin(), name.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+               c == '_' || c == '-';
+    });
+}
+
+TileLayer encode_placements(std::span<const Placement> placements) {
+    TileLayer l;
+    l.name = std::string(kPlacementsLayer);
+    l.format = kPlacementsV1;
+    l.data.assign(4, 0);
+    put(l.data, 0, static_cast<std::uint32_t>(placements.size()));
+    for (const Placement& p : placements) {
+        const std::size_t at = l.data.size();
+        // Name length, name, three doubles, a float, two zero bytes.
+        l.data.resize(at + p.model.size() + std::size_t{32}, 0);
+        put(l.data, at, static_cast<std::uint16_t>(p.model.size()));
+        std::copy(p.model.begin(), p.model.end(),
+                  l.data.begin() + static_cast<std::ptrdiff_t>(at + 2));
+        std::size_t q = at + 2 + p.model.size();
+        put(l.data, q, p.lat_deg);
+        put(l.data, q + 8, p.lon_deg);
+        put(l.data, q + 16, p.height_m);
+        put(l.data, q + 24, p.heading_deg);
+    }
+    return l;
+}
+
+std::optional<std::vector<Placement>> decode_placements(const TileLayer& l) {
+    if (l.format != kPlacementsV1 || l.data.size() < 4) {
+        return std::nullopt;
+    }
+    const std::span<const std::uint8_t> in(l.data);
+    const auto count = get<std::uint32_t>(in, 0);
+    std::vector<Placement> out;
+    std::size_t at = 4;
+    for (std::uint32_t i = 0; i < count; ++i) {
+        if (in.size() - at < 2) {
+            return std::nullopt;
+        }
+        const auto length = get<std::uint16_t>(in, at);
+        if (in.size() - at - 2 < std::size_t{length} + 30) {
+            return std::nullopt;
+        }
+        Placement p;
+        p.model.assign(in.begin() + static_cast<std::ptrdiff_t>(at + 2),
+                       in.begin() + static_cast<std::ptrdiff_t>(at + 2 + length));
+        const std::size_t q = at + 2 + length;
+        p.lat_deg = get<double>(in, q);
+        p.lon_deg = get<double>(in, q + 8);
+        p.height_m = get<double>(in, q + 16);
+        p.heading_deg = get<float>(in, q + 24);
+        // NaNs fail every comparison: each is checked for first.
+        if (!valid_model_name(p.model) || std::isnan(p.lat_deg) || std::abs(p.lat_deg) > 90.0 ||
+            std::isnan(p.lon_deg) || std::abs(p.lon_deg) > 180.0 || !std::isfinite(p.height_m) ||
+            std::abs(p.height_m) >= 1e5 || std::isnan(p.heading_deg) || p.heading_deg < 0.0F ||
+            p.heading_deg >= 360.0F || get<std::uint16_t>(in, q + 28) != 0) {
+            return std::nullopt;
+        }
+        out.push_back(std::move(p));
+        at = q + 30;
+    }
+    if (at != in.size()) {
+        return std::nullopt;
+    }
+    return out;
+}
+
 }  // namespace fovea

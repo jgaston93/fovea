@@ -35,6 +35,10 @@ std::filesystem::path tile_path(const TileKey& key) {
            (std::to_string(key.y) + ".fvt");
 }
 
+std::filesystem::path model_path(std::string_view name) {
+    return std::filesystem::path("models") / (std::string(name) + ".glb");
+}
+
 namespace {
 
 // A TOML basic string: quoted, with quotes, backslashes and control
@@ -72,6 +76,9 @@ std::string manifest_text(const DatabaseManifest& m) {
     if (m.imagery) {
         s << "\n[layers.imagery]\nformat = \"" << imagery_format_name(m.imagery->format)
           << "\"\ntexels = " << m.imagery->texels << "\n";
+    }
+    if (m.placements) {
+        s << "\n[layers.placements]\nlevel = " << int{m.placements->level} << "\n";
     }
     for (const SourceInfo& src : m.sources) {
         s << "\n[[source]]\nlayer = " << toml_string(src.layer)
@@ -144,6 +151,14 @@ ManifestResult parse_manifest(const std::string& text, const std::string& source
                   "power of two from 4 to 4096");
         } else {
             m.imagery = DatabaseManifest::Imagery{*format, static_cast<std::uint32_t>(*texels)};
+        }
+    }
+    if (const auto* placements = root["layers"]["placements"].as_table()) {
+        const auto level = (*placements)["level"].value<std::int64_t>();
+        if (!level || *level < 0 || *level > kMaxTileLevel) {
+            error(placements->source(), "[layers.placements] needs level from 0 to 30");
+        } else {
+            m.placements = DatabaseManifest::Placements{static_cast<std::uint8_t>(*level)};
         }
     }
     if (const auto* list = root["source"].as_array()) {
