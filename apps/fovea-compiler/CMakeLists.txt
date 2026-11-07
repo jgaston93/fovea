@@ -20,11 +20,12 @@ add_library(fovea_compiler_lib STATIC
     compile.cpp
     elevation.cpp
     imagery.cpp
+    placements.cpp
     runways.cpp
     settings.cpp
     texture.cpp)
 target_include_directories(fovea_compiler_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(fovea_compiler_lib PUBLIC fovea::core fovea::terrain
+target_link_libraries(fovea_compiler_lib PUBLIC fovea::core fovea::terrain fovea::models
     PRIVATE GDAL::GDAL fovea_tomlplusplus fovea_bc7enc)
 fovea_target_defaults(fovea_compiler_lib)
 

@@ -1,0 +1,113 @@
+# The KHSV landmarks (milestone 4 step 4, D-026): each a model in
+# data/models (built by khsv_landmarks.py) at a point and true heading
+# (degrees clockwise from north; the model's front, its depth, along it).
+# Points are the footprints' centres, read off the NAIP 2023 imagery (to a
+# few metres); the buildings stand square to the runways (0.9 degrees, from
+# the FAA's runway ends). The compiler sets each on the lowest ground under
+# its footprint.
+
+# The passenger terminal: landside building, airside hall, concourse.
+[[placement]]
+model = "khsv_terminal"
+lat = 34.64953
+lon = -86.77473
+heading = 0.9
+
+[[placement]]
+model = "khsv_terminal_hall"
+lat = 34.64818
+lon = -86.77454
+heading = 0.9
+
+[[placement]]
+model = "khsv_concourse"
+lat = 34.64675
+lon = -86.77508
+heading = 0.9
+
+# The control tower and the building at its foot, mid-field.
+[[placement]]
+model = "khsv_tower"
+lat = 34.63950
+lon = -86.77391
+heading = 0.0
+
+[[placement]]
+model = "khsv_tower_base"
+lat = 34.63969
+lon = -86.77358
+heading = 0.9
+
+# General aviation hangars east of the terminal.
+[[placement]]
+model = "khsv_hangar_27x105"
+lat = 34.64788
+lon = -86.77165
+heading = 0.9
+
+[[placement]]
+model = "khsv_hangar_24x147"
+lat = 34.64759
+lon = -86.77112
+heading = 0.9
+
+[[placement]]
+model = "khsv_hangar_27x144"
+lat = 34.64748
+lon = -86.77023
+heading = 0.9
+
+[[placement]]
+model = "khsv_hangar_28x166"
+lat = 34.64738
+lon = -86.76968
+heading = 0.9
+
+[[placement]]
+model = "khsv_hangar_35x108"
+lat = 34.64959
+lon = -86.77126
+heading = 0.9
+
+[[placement]]
+model = "khsv_hangar_73x38"
+lat = 34.65055
+lon = -86.77092
+heading = 0.9
+
+# Air cargo, east of runway 18L/36R.
+[[placement]]
+model = "khsv_warehouse"
+lat = 34.65168
+lon = -86.76141
+heading = 0.9
+
+[[placement]]
+model = "khsv_cargo_42x194"
+lat = 34.64277
+lon = -86.76171
+heading = 0.9
+
+[[placement]]
+model = "khsv_cargo_53x115"
+lat = 34.64140
+lon = -86.76183
+heading = 0.9
+
+[[placement]]
+model = "khsv_cargo_70x261"
+lat = 34.63934
+lon = -86.76110
+heading = 0.9
+
+[[placement]]
+model = "khsv_hangar_72x100"
+lat = 34.63756
+lon = -86.76114
+heading = 0.9
+
+[[placement]]
+model = "khsv_hangar_60x108"
+lat = 34.63611
+lon = -86.76126
+heading = 0.9

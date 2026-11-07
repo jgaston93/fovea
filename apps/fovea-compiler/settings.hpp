@@ -22,6 +22,10 @@
 //   [runways]                       # optional: smoothed in the elevation (D-022)
 //   airport = "../airports/khsv.toml"  # its [[runway]]s (format below)
 //   blend_m = 20.0                  # the blend into the ground beyond them
+//   [placements]                    # optional: models placed (D-026)
+//   file = "../placements/khsv.toml"  # their [[placement]]s (placements.hpp)
+//   models = "../models"            # where their .glb files are
+//   level = 12                      # whose tiles hold them (default: the root level)
 //   [[credit]]                      # the manifest's [[source]] entries
 //   layer = "elevation"
 //   name = "USGS 3DEP 1 m DEM"
@@ -54,6 +58,7 @@
 
 #include "fovea/terrain/database.hpp"
 #include "fovea/terrain/tile_key.hpp"
+#include "placements.hpp"
 #include "runways.hpp"
 
 namespace fovea::compiler {
@@ -79,6 +84,13 @@ struct CompileSettings {
 
     std::vector<Runway> runways;
     double runway_blend_m = 20.0;
+
+    struct Placements {
+        std::vector<PlacementSpec> placements;
+        std::filesystem::path models;
+        std::optional<std::uint8_t> level;  // the root level if not given
+    };
+    std::optional<Placements> placements;
 };
 
 struct SettingsResult {
