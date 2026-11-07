@@ -27,3 +27,6 @@ data/cache/
 
 # Synthetic databases the terrain tests write (they use the temp directory; this guards old runs)
 terrain_test_dbs/
+
+# Compiled terrain databases (fovea-compiler); the settings in data/compile/ are committed
+data/db/
