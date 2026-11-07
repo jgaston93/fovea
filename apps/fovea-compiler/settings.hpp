@@ -26,7 +26,7 @@
 //
 // A source pattern is a directory under the cache and a file name with
 // '*' wildcards. Where several sources cover a point, the one listed first
-// wins; a file matched by two patterns belongs to the first. For imagery,
+// wins; a file matched by two patterns of a layer belongs to the first. For imagery,
 // files of one pattern are equals (one year's tiles): the file a point is
 // deepest inside wins, so the seams fall midway through their overlaps.
 
