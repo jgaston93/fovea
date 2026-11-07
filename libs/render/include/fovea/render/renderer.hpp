@@ -145,9 +145,12 @@ struct TerrainOptions {
     std::size_t budget_bytes = std::size_t{2} << 30;  // their heights and imagery
 };
 
-// What load_terrain did up front: the roots.
+// What load_terrain did up front: the roots, and the placements they hold
+// (milestone 4 step 3; their models load afterwards).
 struct TerrainLoad {
     std::size_t tiles = 0;
+    std::size_t placements = 0;
+    std::size_t models = 0;  // distinct models placed
     std::size_t bytes = 0;  // heights and imagery uploaded
     double seconds = 0.0;
     std::vector<std::string> problems;  // tiles skipped or drawn without imagery, and why
@@ -166,6 +169,11 @@ struct TerrainStats {
     std::size_t bytes = 0;  // GPU memory the tiles take
     std::uint64_t evictions = 0;
     std::uint64_t failures = 0;  // tiles that couldn't be loaded (skipped)
+    std::uint32_t models_loaded = 0;     // placed models on the GPU so far
+    std::uint32_t placements_drawn = 0;  // over all outputs
+    // Visible but not drawn: more primitives in a view than the draw
+    // records hold (kMaxModelDraws).
+    std::uint32_t placements_dropped = 0;
 };
 
 // Up to this many outputs get GPU timings.

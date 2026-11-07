@@ -32,10 +32,12 @@
 
 #include "fovea/render/renderer.hpp"
 #include "overlay_ui.hpp"
+#include "shaders/kFsModel.hpp"
 #include "shaders/kFsScene.hpp"
 #include "shaders/kFsTerrain.hpp"
 #include "shaders/kFsTonemap.hpp"
 #include "shaders/kVsFullscreen.hpp"
+#include "shaders/kVsModel.hpp"
 #include "shaders/kVsTerrain.hpp"
 #include "terrain.hpp"
 
@@ -484,6 +486,9 @@ void Renderer::Impl::create_device(bool present) {
     f13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     f13.dynamicRendering = VK_TRUE;
     f13.synchronization2 = VK_TRUE;
+    // discard in fragment shaders (models' alpha masks) is demote-to-helper,
+    // which Vulkan 1.3 has everywhere but must be asked for.
+    f13.shaderDemoteToHelperInvocation = VK_TRUE;
     // Descriptor indexing for bindless resources (architecture.md, "Render
     // path rules") and timeline semaphores for the paging thread.
     VkPhysicalDeviceVulkan12Features f12{};
@@ -495,9 +500,16 @@ void Renderer::Impl::create_device(bool present) {
     f12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
     f12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
 
+    // Indirect draws of many primitives, each its own instance (models,
+    // milestone 4 step 3: GPU-driven rendering, architecture.md).
+    VkPhysicalDeviceFeatures f10{};
+    f10.multiDrawIndirect = VK_TRUE;
+    f10.drawIndirectFirstInstance = VK_TRUE;
+
     vkb::PhysicalDeviceSelector selector(instance);
     selector.set_minimum_version(1, 3)
         .prefer_gpu_device_type(vkb::PreferredDeviceType::discrete)
+        .set_required_features(f10)
         .set_required_features_13(f13)
         .set_required_features_12(f12);
     if (present) {
@@ -1542,19 +1554,24 @@ TerrainLoad Renderer::load_terrain(std::unique_ptr<TerrainDatabase> database,
                          m.bc_textures,
                          m.max_anisotropy,
                          m.timeline};
-    VkShaderModule vs = m.make_module(kVsTerrain);
-    VkShaderModule fs = m.make_module(kFsTerrain);
+    const std::array<VkShaderModule, 4> modules = {
+        m.make_module(kVsTerrain), m.make_module(kFsTerrain), m.make_module(kVsModel),
+        m.make_module(kFsModel)};
+    const auto release = [&] {
+        for (VkShaderModule s : modules) {
+            vkDestroyShaderModule(m.device.device, s, nullptr);
+        }
+    };
     TerrainLoad report;
     try {
         m.terrain = TerrainGpu::load(gpu, std::move(database), options, kFramesInFlight,
-                                     m.output_total(), vs, fs, kHdrFormat, kDepthFormat, report);
+                                     m.output_total(), modules[0], modules[1], modules[2],
+                                     modules[3], kHdrFormat, kDepthFormat, report);
     } catch (...) {
-        vkDestroyShaderModule(m.device.device, vs, nullptr);
-        vkDestroyShaderModule(m.device.device, fs, nullptr);
+        release();
         throw;
     }
-    vkDestroyShaderModule(m.device.device, vs, nullptr);
-    vkDestroyShaderModule(m.device.device, fs, nullptr);
+    release();
     return report;
 }
 

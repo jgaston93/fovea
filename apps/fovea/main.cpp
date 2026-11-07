@@ -216,7 +216,7 @@ int finish(const fovea::Renderer& r) {
     // Paged terrain tiles that couldn't be used (drawn coarser instead).
     const auto problems = r.terrain_problems();
     if (!problems.empty()) {
-        std::printf("Terrain: %zu tiles couldn't be paged in:\n", problems.size());
+        std::printf("Terrain: %zu tiles or models couldn't be paged in:\n", problems.size());
         for (std::size_t i = 0; i < std::min<std::size_t>(problems.size(), 10); ++i) {
             std::printf("  %s\n", problems[i].c_str());
         }
@@ -285,6 +285,10 @@ bool load_terrain(fovea::Renderer& renderer, const fovea::DisplayConfig& config)
     std::printf("Terrain: %s, %zu root tiles (%.2f GB) in %.1f s; the rest paged\n",
                 t.database.string().c_str(), load.tiles, static_cast<double>(load.bytes) / 1e9,
                 load.seconds);
+    if (load.placements > 0) {
+        std::printf("  %zu placements of %zu models, loaded as they're paged in\n", load.placements,
+                    load.models);
+    }
     const std::size_t shown = std::min<std::size_t>(load.problems.size(), 10);
     for (std::size_t i = 0; i < shown; ++i) {
         std::printf("  %s\n", load.problems[i].c_str());

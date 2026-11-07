@@ -125,4 +125,33 @@ struct ImageryImage {
 TileLayer encode_imagery(const ImageryImage& image);
 std::optional<ImageryImage> decode_imagery(const TileLayer& layer);
 
+// The placements layer (D-026): models placed in the tile, each by name
+// (a file in the database's models directory, models/<name>.glb), at a
+// point and true heading, its ground line at an ellipsoidal height (the
+// lowest terrain under its footprint, as the compiler found it).
+//   data: count u32, then each: name length u16, name (that many bytes),
+//   latitude f64, longitude f64, height f64 (metres above the WGS-84
+//   ellipsoid), heading f32 (degrees clockwise from true north), 2 zero
+//   bytes. Names are 1 to 64 of A-Z a-z 0-9 _ -.
+inline constexpr std::string_view kPlacementsLayer = "placements";
+inline constexpr std::uint32_t kPlacementsV1 = 1;
+
+struct Placement {
+    std::string model;
+    double lat_deg = 0.0;
+    double lon_deg = 0.0;
+    double height_m = 0.0;
+    float heading_deg = 0.0F;
+};
+
+bool valid_model_name(std::string_view name);
+// A name valid_model_name takes, a point on the Earth, a finite height
+// within 100 km of the ellipsoid, a heading from 0 up to 360.
+bool valid_placement(const Placement& p);
+// Nothing if any placement isn't valid (the reader would refuse the layer).
+std::optional<TileLayer> encode_placements(std::span<const Placement> placements);
+// Nothing if malformed: a bad name, a point or heading out of range, or
+// bytes left over.
+std::optional<std::vector<Placement>> decode_placements(const TileLayer& layer);
+
 }  // namespace fovea

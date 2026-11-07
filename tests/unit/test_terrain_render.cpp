@@ -29,6 +29,7 @@
 #include "fovea/terrain/tile_file.hpp"
 #include "fovea/terrain/tile_key.hpp"
 #include "support/alloc_counter.hpp"
+#include "support/glb.hpp"
 
 namespace fovea {
 namespace {
@@ -66,6 +67,10 @@ struct Spec {
     TileKey root_key;
     std::function<double(double, double)> height;
     std::function<Rgb(double, double)> colour;
+    // Placed models (milestone 4 step 3): in the root tile, their files in
+    // models/.
+    std::vector<Placement> placements;
+    std::vector<std::pair<std::string, std::vector<std::uint8_t>>> models;
 };
 
 fs::path write_db(const std::string& name, const Spec& s) {
@@ -135,9 +140,18 @@ fs::path write_db(const std::string& name, const Spec& s) {
                 }
                 mip = std::move(next);
             }
-            EXPECT_TRUE(
-                write_tile(dir / tile_path(key), {key, {encode_elevation(g), encode_imagery(im)}}));
+            TileFile tile{key, {encode_elevation(g), encode_imagery(im)}};
+            if (lv == s.root && !s.placements.empty()) {
+                tile.layers.push_back(*encode_placements(s.placements));
+            }
+            EXPECT_TRUE(write_tile(dir / tile_path(key), tile));
         }
+    }
+    if (!s.placements.empty()) {
+        m.placements = DatabaseManifest::Placements{s.root};
+    }
+    for (const auto& [model, bytes] : s.models) {
+        EXPECT_TRUE(write_bytes_atomically(dir / model_path(model), bytes));
     }
     EXPECT_TRUE(write_manifest(dir, m));
     return dir;
@@ -190,6 +204,15 @@ int settle(Renderer& r, const std::vector<SceneView>& views, int max_frames = 60
         }
     }
     return max_frames;
+}
+
+// settle, until `models` placed models have arrived too.
+void settle_models(Renderer& r, const std::vector<SceneView>& views, std::uint32_t models) {
+    for (int i = 0; i < 100 && r.terrain_stats().models_loaded < models; ++i) {
+        (void)settle(r, views, 60);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    (void)settle(r, views);
 }
 
 std::unique_ptr<TerrainDatabase> open_db(const fs::path& dir) {
@@ -484,6 +507,184 @@ TEST(TerrainRender, TooSmallACacheMissesTilesWithoutThrashing) {
 
 // Hills and a pattern from 400 m: everything together, as a golden image
 // (FOVEA_UPDATE_GOLDEN=1 rewrites it, on lavapipe, as test_golden.cpp).
+// A box model: `half_x` either side (glTF's x, its left), `half_z` front and
+// back, `height` tall; one plain colour (linear).
+std::vector<std::uint8_t> box_glb(float half_x, float height, float half_z,
+                                  std::array<float, 4> colour, const std::string& node = "") {
+    test::GlbSpec g = test::glb_box(half_x, height, half_z);
+    g.node = node;
+    g.base_colour = colour;
+    g.extras = R"({"fovea_material": 1})";
+    return test::make_glb(g);
+}
+
+// Red: the strongest channel by far.
+bool is_red(const std::vector<std::uint8_t>& px, std::uint32_t w, int x, int y) {
+    const std::size_t at = (static_cast<std::size_t>(y) * w + static_cast<std::size_t>(x)) * 4;
+    return px[at] > 120 && px[at + 1] < 60 && px[at + 2] < 60;
+}
+
+Spec flat_grey(double* lat0, double* lon0) {
+    Spec s;
+    s.root_key = tile_at(34.637, -86.775, s.root);
+    const GeoBounds b = tile_bounds(s.root_key);
+    *lat0 = b.south_deg + 0.37 * (b.north_deg - b.south_deg);
+    *lon0 = b.west_deg + 0.41 * (b.east_deg - b.west_deg);
+    s.height = [](double, double) { return 120.0; };
+    s.colour = [](double, double) { return Rgb{60, 60, 60}; };
+    return s;
+}
+
+TEST(TerrainRender, ModelsStandWhereTheirPlacementsPutThem) {
+    // A red slab 40 m by 10 m and 2 m tall, its front (the 10 m side) to
+    // the east (heading 90), and set 6 m to its left (north, facing east)
+    // and 15 m forward (east) of its origin: seen from straight above, its
+    // top shows where the view's matrix, in double, puts the top's corners
+    // (a heading the wrong way round, or a mirrored frame, would put it
+    // elsewhere).
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    s.placements = {{"slab", lat0, lon0, 120.0, 90.0F}};
+    s.models = {{"slab", box_glb(20.0F, 2.0F, 5.0F, {1.0F, 0.0F, 0.0F, 1.0F},
+                                 R"("translation":[6,0,15],)")}};
+    const fs::path dir = write_db("placed", s);
+    constexpr std::uint32_t kSize = 256;
+    RENDERER_OR_SKIP(r, kSize, kSize);
+    const TerrainLoad load = r->load_terrain(open_db(dir));
+    EXPECT_EQ(load.placements, 1U);
+    EXPECT_EQ(load.models, 1U);
+    EXPECT_TRUE(load.problems.empty()) << load.problems[0];
+    const SceneView v = view_at({lat0, lon0, 120.0}, 200.0, -90.0);
+    settle_models(*r, {v}, 1);
+    EXPECT_EQ(r->terrain_stats().models_loaded, 1U);
+    EXPECT_EQ(r->terrain_stats().placements_drawn, 1U);
+    EXPECT_TRUE(r->terrain_problems().empty()) << r->terrain_problems()[0];
+    EXPECT_EQ(r->validation_messages(), 0U);
+    const auto px = r->read_back_rgba(0);
+    // The top's corners: 20 m either side of 6 m north, 5 m either side of
+    // 15 m east, 2 m up.
+    const DVec3 base = geodetic_to_ecef({lat0, lon0, 120.0});
+    const DMat3 ned = ned_to_ecef(lat0, lon0);
+    double x0 = 1e9;
+    double x1 = -1e9;
+    double y0 = 1e9;
+    double y1 = -1e9;
+    for (const double n : {6.0 - 20.0, 6.0 + 20.0}) {
+        for (const double e : {15.0 - 5.0, 15.0 + 5.0}) {
+            const glm::dvec2 at =
+                project(v, ecef_to_geodetic(base + ned * DVec3(n, e, -2.0)), kSize, kSize);
+            x0 = std::min(x0, at.x);
+            x1 = std::max(x1, at.x);
+            y0 = std::min(y0, at.y);
+            y1 = std::max(y1, at.y);
+        }
+    }
+    int rx0 = kSize;
+    int rx1 = -1;
+    int ry0 = kSize;
+    int ry1 = -1;
+    for (int y = 0; y < static_cast<int>(kSize); ++y) {
+        for (int x = 0; x < static_cast<int>(kSize); ++x) {
+            if (is_red(px, kSize, x, y)) {
+                rx0 = std::min(rx0, x);
+                rx1 = std::max(rx1, x);
+                ry0 = std::min(ry0, y);
+                ry1 = std::max(ry1, y);
+            }
+        }
+    }
+    ASSERT_GE(rx1, 0) << "no model drawn";
+    // Pixels whose centres lie inside: each edge within a pixel.
+    EXPECT_NEAR(rx0 + 0.5, x0, 1.0);
+    EXPECT_NEAR(rx1 + 0.5, x1, 1.0);
+    EXPECT_NEAR(ry0 + 0.5, y0, 1.0);
+    EXPECT_NEAR(ry1 + 0.5, y1, 1.0);
+    EXPECT_GT(y1 - y0, 3.0 * (x1 - x0));  // north-south, as the heading says
+}
+
+TEST(TerrainRender, AModelThatCannotLoadIsReportedAndTheRestDrawn) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    s.placements = {{"slab", lat0, lon0, 120.0, 0.0F},
+                    {"ghost", lat0, lon0 + 0.0003, 120.0, 0.0F},
+                    {"broken", lat0, lon0 - 0.0003, 120.0, 0.0F}};
+    s.models = {{"slab", box_glb(5.0F, 2.0F, 5.0F, {1.0F, 0.0F, 0.0F, 1.0F})},
+                {"broken", {'g', 'l', 'T', 'F', 2, 0, 0, 0}}};
+    const fs::path dir = write_db("unloadable", s);
+    constexpr std::uint32_t kSize = 128;
+    RENDERER_OR_SKIP(r, kSize, kSize);
+    const TerrainLoad load = r->load_terrain(open_db(dir));
+    EXPECT_EQ(load.models, 3U);
+    const SceneView v = view_at({lat0, lon0, 120.0}, 200.0, -90.0);
+    settle_models(*r, {v}, 1);
+    for (int i = 0; i < 20; ++i) {
+        r->draw_scene_frame(std::vector<SceneView>{v});  // the failures come in too
+    }
+    EXPECT_EQ(r->terrain_stats().models_loaded, 1U);
+    EXPECT_EQ(r->terrain_stats().placements_drawn, 1U);
+    const auto problems = r->terrain_problems();
+    ASSERT_EQ(problems.size(), 2U);
+    EXPECT_NE(problems[0].find("broken"), std::string::npos) << problems[0];  // name order
+    EXPECT_NE(problems[1].find("ghost"), std::string::npos) << problems[1];
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
+TEST(TerrainRender, ModelsThatCannotBeSetUpLeaveTheTerrain) {
+    // More placements than the renderer takes: reported, and the terrain
+    // drawn without them.
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    s.placements.assign(4097, Placement{"a", lat0, lon0, 120.0, 0.0F});
+    s.models = {{"a", box_glb(3.0F, 4.0F, 2.0F, {1.0F, 0.0F, 0.0F, 1.0F})}};
+    const fs::path dir = write_db("too_many", s);
+    RENDERER_OR_SKIP(r, 64, 64);
+    const TerrainLoad load = r->load_terrain(open_db(dir));
+    EXPECT_EQ(load.tiles, 1U);
+    EXPECT_EQ(load.models, 0U);
+    ASSERT_EQ(load.problems.size(), 1U);
+    EXPECT_NE(load.problems[0].find("4097 placements"), std::string::npos) << load.problems[0];
+    const SceneView v = view_at({lat0, lon0, 120.0}, 200.0, -90.0);
+    (void)settle(*r, {v});
+    EXPECT_GE(r->terrain_tiles_drawn(), 1U);
+    EXPECT_EQ(r->terrain_stats().placements_drawn, 0U);
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
+TEST(TerrainRender, DrawingModelsAllocatesNothing) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    for (int i = 0; i < 50; ++i) {
+        s.placements.push_back({i % 2 == 0 ? "a" : "b", lat0 + 0.0001 * (i % 7),
+                                lon0 + 0.0001 * (i / 7), 120.0, static_cast<float>(i * 7)});
+    }
+    s.models = {{"a", box_glb(3.0F, 4.0F, 2.0F, {1.0F, 0.0F, 0.0F, 1.0F})},
+                {"b", box_glb(2.0F, 6.0F, 2.0F, {0.0F, 0.0F, 1.0F, 1.0F})}};
+    const fs::path dir = write_db("many", s);
+    constexpr std::uint32_t kSize = 64;
+    RenderOptionsNoValidation no_validation;  // the layer allocates on the calling thread
+    auto r = make_renderer(kSize, kSize, no_validation.options);
+    if (!r) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    (void)r->load_terrain(open_db(dir));
+    const SceneView v = view_at({lat0 + 0.0003, lon0 + 0.0003, 120.0}, 150.0, -60.0);
+    settle_models(*r, {v}, 2);
+    ASSERT_EQ(r->terrain_stats().models_loaded, 2U);
+    const std::vector<SceneView> views{v};
+    std::uint64_t allocations = 0;
+    for (int f = 0; f < 60; ++f) {
+        const test::AllocationCounter counter;
+        r->draw_scene_frame(views);
+        allocations += counter.count();
+    }
+    EXPECT_EQ(allocations, 0U);
+    EXPECT_GT(r->terrain_stats().placements_drawn, 10U);
+}
+
 TEST(TerrainRender, HillsMatchTheGoldenImage) {
     Spec s;
     s.finest = 17;
@@ -534,6 +735,86 @@ TEST(TerrainRender, HillsMatchTheGoldenImage) {
     }
     // As the reference scene's goldens (test_golden.cpp), with room for
     // GPUs' texture filtering, which differs more than flat shading.
+    EXPECT_LE(d.fraction_over, 0.01) << d.fraction_over * 100.0 << "% of pixels differ (mean "
+                                     << d.mean_abs << ", max " << int{d.max_abs} << ")";
+}
+
+TEST(TerrainRender, ModelsOnHillsMatchTheGoldenImage) {
+    // The hills (smooth colours, as above) and boxes at several headings
+    // standing on them, some textured, seen at an angle.
+    Spec s;
+    s.finest = 16;
+    s.samples = 33;
+    s.texels = 64;
+    s.root_key = tile_at(34.637, -86.775, s.root);
+    const GeoBounds b = tile_bounds(s.root_key);
+    const double clat = (b.south_deg + b.north_deg) / 2;
+    const double clon = (b.west_deg + b.east_deg) / 2;
+    s.height = [clat, clon](double lat, double lon) {
+        const double n = (lat - clat) * 111000.0;
+        const double e = (lon - clon) * 91000.0;
+        return 150.0 + 6.0 * std::sin(n / 60.0) * std::cos(e / 50.0);
+    };
+    s.colour = [](double lat, double lon) {
+        const auto wave = [](double v) { return static_cast<std::uint8_t>(110.0 + 40.0 * v); };
+        return Rgb{wave(std::sin(lat * 9000.0)), wave(std::cos(lon * 7000.0)), 90};
+    };
+    // A texture of smooth colour (GPUs filter differently: no hard edges).
+    RgbaImage tex{32, 32, std::vector<std::uint8_t>(32 * 32 * 4)};
+    for (std::uint32_t y = 0; y < 32; ++y) {
+        for (std::uint32_t x = 0; x < 32; ++x) {
+            std::uint8_t* p = &tex.pixels[(std::size_t{y} * 32 + x) * 4];
+            p[0] = static_cast<std::uint8_t>(60 + 6 * x);
+            p[1] = static_cast<std::uint8_t>(60 + 6 * y);
+            p[2] = 200;
+            p[3] = 255;
+        }
+    }
+    test::GlbSpec textured = test::glb_box(8.0F, 12.0F, 5.0F);
+    textured.image = encode_png(tex);
+    textured.base_colour = {1.0F, 1.0F, 1.0F, 1.0F};
+    textured.extras = R"({"fovea_material": 2})";
+    s.models = {{"tower", box_glb(3.0F, 25.0F, 3.0F, {0.8F, 0.75F, 0.7F, 1.0F})},
+                {"hangar", test::make_glb(textured)}};
+    const std::array<std::array<double, 3>, 5> where = {
+        {{0.0, 0.0, 0.0},
+         {40.0, -30.0, 30.0},
+         {-35.0, 25.0, 75.0},
+         {70.0, 20.0, 135.0},
+         {10.0, 60.0, 200.0}}};  // metres north and east of the centre, heading
+    for (std::size_t i = 0; i < where.size(); ++i) {
+        const double lat = clat + where[i][0] / 111000.0;
+        const double lon = clon + where[i][1] / 91000.0;
+        s.placements.push_back({i % 2 == 0 ? "tower" : "hangar", lat, lon, s.height(lat, lon) - 1.0,
+                                static_cast<float>(where[i][2])});
+    }
+    const fs::path dir = write_db("models_on_hills", s);
+    constexpr std::uint32_t kW = 320;
+    constexpr std::uint32_t kH = 200;
+    RENDERER_OR_SKIP(r, kW, kH);
+    (void)r->load_terrain(open_db(dir));
+    const SceneView v = view_at({clat - 0.0012, clon - 0.0002, 150.0}, 60.0, -15.0, 5.0);
+    settle_models(*r, {v}, 2);
+    ASSERT_EQ(r->terrain_stats().models_loaded, 2U);
+    EXPECT_GE(r->terrain_stats().placements_drawn, 4U);
+    EXPECT_EQ(r->validation_messages(), 0U);
+    const RgbaImage image{kW, kH, r->read_back_rgba(0)};
+    const fs::path file = FOVEA_SOURCE_DIR "/tests/data/golden/models_on_hills.png";
+    if (std::getenv("FOVEA_UPDATE_GOLDEN") != nullptr) {
+        ASSERT_NE(r->gpu().name.find("llvmpipe"), std::string::npos)
+            << "FOVEA_UPDATE_GOLDEN on " << r->gpu().name << ": set VK_DRIVER_FILES to lavapipe";
+        ASSERT_TRUE(write_png(file, image));
+        return;
+    }
+    const auto golden = read_png(file);
+    ASSERT_TRUE(golden.has_value()) << "missing " << file << " (FOVEA_UPDATE_GOLDEN=1 makes it)";
+    const ImageDifference d = compare_images(image, *golden, 4);
+    ASSERT_TRUE(d.same_size);
+    if (d.fraction_over > 0.01) {
+        const fs::path actual = fs::temp_directory_path() / "models_on_hills.actual.png";
+        EXPECT_TRUE(write_png(actual, image));
+        std::printf("wrote %s\n", actual.string().c_str());
+    }
     EXPECT_LE(d.fraction_over, 0.01) << d.fraction_over * 100.0 << "% of pixels differ (mean "
                                      << d.mean_abs << ", max " << int{d.max_abs} << ")";
 }

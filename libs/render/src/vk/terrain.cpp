@@ -290,6 +290,7 @@ struct PreparedTile {
     bool has_imagery = false;
     ImageryImage imagery;
     std::array<Control, std::size_t{kControls} * kControls> controls{};
+    std::vector<Placement> placements;  // in a tile at the placements' level
 };
 
 struct PrepareContext {
@@ -298,6 +299,7 @@ struct PrepareContext {
     bool bc7 = false;
     bool bc1 = false;
     float max_root_error = 0.0F;  // skirts hang a tile's error and this, and a metre
+    int placement_level = -1;     // whose tiles hold placements (none: -1)
 };
 
 std::size_t align16(std::size_t n) {
@@ -359,6 +361,16 @@ PreparedTile prepare_tile(const TerrainDatabase& db, const TileKey& key, const P
         p.problem = to_string(key) + ": this GPU can't sample " +
                     std::string(imagery_format_name(p.imagery.format));
         p.has_imagery = false;
+    }
+    if (static_cast<int>(key.level) == c.placement_level) {
+        if (const TileLayer* pl = read.tile->find(kPlacementsLayer)) {
+            if (auto placed = decode_placements(*pl)) {
+                p.placements = std::move(*placed);
+            } else {
+                p.problem += (p.problem.empty() ? "" : "; ") + to_string(key) +
+                             ": its placements layer doesn't decode";
+            }
+        }
     }
     if (p.has_imagery && p.imagery.mips.size() > 16) {
         p.problem = to_string(key) + ": more mips than 16";
@@ -515,6 +527,14 @@ struct TileArrival {
     std::uint32_t batch = 0;
 };
 
+// A placed model staged, or given up on.
+struct ModelArrival {
+    std::uint32_t model = 0;
+    bool ok = false;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    std::uint32_t batch = 0;
+};
+
 // The paging thread: takes requests, reads and decodes tiles (most wanted
 // first), makes their images and records their uploads into staging memory
 // it reuses once the frames that submitted them have finished (the
@@ -565,6 +585,7 @@ public:
     // Render thread.
     bool request(const TileRequest& r) { return requests_.try_push(r); }
     std::optional<TileArrival> take() { return arrivals_.try_pop(); }
+    std::optional<ModelArrival> take_model() { return model_arrivals_.try_pop(); }
     void submitted(std::uint32_t batch, std::uint64_t value) {
         batches_[batch].value.store(value, std::memory_order_release);
     }
@@ -635,11 +656,26 @@ private:
     void run(const std::stop_token& stop) {
         std::vector<TileRequest> pending;
         const auto idle = [] { std::this_thread::sleep_for(std::chrono::milliseconds(2)); };
+        // Every placed model, once (they're few, and wanted from the start:
+        // their placements are in the roots), between tiles.
+        std::uint32_t next_model = 0;
+        std::uint32_t tiles_since_model = 0;
+        const std::uint32_t models = t_.models_ ? t_.models_->model_count() : 0;
         while (!stop.stop_requested()) {
             while (auto r = requests_.try_pop()) {
                 pending.push_back(*r);
             }
             reclaim();
+            // A model between every few tiles, so neither waits long for
+            // the other.
+            if (next_model < models && (pending.empty() || tiles_since_model >= 4)) {
+                tiles_since_model = 0;
+                if (!load_model(next_model++, stop)) {
+                    return;
+                }
+                continue;
+            }
+            ++tiles_since_model;
             if (pending.empty()) {
                 idle();
                 continue;
@@ -685,23 +721,11 @@ private:
                  " bytes, more than the staging memory");
             return;  // not ok: failed for good
         }
-        std::uint32_t batch = kBatches;
-        std::optional<VkDeviceSize> at;
-        while (!stop.stop_requested()) {
-            for (std::uint32_t i = 0; i < kBatches && batch == kBatches; ++i) {
-                batch = batches_[i].busy ? kBatches : i;
-            }
-            at = staging_room(size);
-            if (batch != kBatches && at) {
-                break;
-            }
-            batch = kBatches;
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            reclaim();
-        }
-        if (batch == kBatches || !at) {
+        const auto room = acquire(size, stop);
+        if (!room) {
             return;  // stopping
         }
+        const auto [batch, at] = *room;
         // The slot is free: nothing on the GPU uses its old images.
         t_.destroy(t_.heights_[slot]);
         t_.destroy(t_.imagery_[slot]);
@@ -711,20 +735,10 @@ private:
                                            static_cast<std::uint32_t>(p.imagery.mips.size()));
         }
         Batch& b = batches_[batch];
-        check(vkResetCommandBuffer(b.cmd, 0), "vkResetCommandBuffer");
-        VkCommandBufferBeginInfo begin{};
-        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        check(vkBeginCommandBuffer(b.cmd, &begin), "vkBeginCommandBuffer");
-        stage_and_record(b.cmd, staging_, mapped_, *at, p, t_.heights_[slot].image,
+        begin(b);
+        stage_and_record(b.cmd, staging_, mapped_, at, p, t_.heights_[slot].image,
                          t_.imagery_[slot].image, t_.controls_.buffer, slot, ctx_.samples);
-        check(vkEndCommandBuffer(b.cmd), "vkEndCommandBuffer");
-        check(vmaFlushAllocation(gpu.allocator, staging_memory_, *at, size), "vmaFlushAllocation");
-        b.busy = true;
-        b.begin = *at;
-        b.value.store(0, std::memory_order_relaxed);
-        in_flight_.push_back(batch);
-        head_ = *at + size;
+        commit(batch, at, size);
         out.ok = true;
         out.info = p.info;
         out.heights = t_.heights_[slot].view;
@@ -733,10 +747,89 @@ private:
         out.batch = batch;
     }
 
+    // A free batch and room in the staging ring for `size` bytes, waiting
+    // for frames to finish; nothing if stopping.
+    std::optional<std::pair<std::uint32_t, VkDeviceSize>> acquire(VkDeviceSize size,
+                                                                  const std::stop_token& stop) {
+        while (!stop.stop_requested()) {
+            std::uint32_t batch = kBatches;
+            for (std::uint32_t i = 0; i < kBatches && batch == kBatches; ++i) {
+                batch = batches_[i].busy ? kBatches : i;
+            }
+            const auto at = staging_room(size);
+            if (batch != kBatches && at) {
+                return std::pair(batch, *at);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            reclaim();
+        }
+        return std::nullopt;
+    }
+    static void begin(Batch& b) {
+        check(vkResetCommandBuffer(b.cmd, 0), "vkResetCommandBuffer");
+        VkCommandBufferBeginInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check(vkBeginCommandBuffer(b.cmd, &info), "vkBeginCommandBuffer");
+    }
+    void commit(std::uint32_t batch, VkDeviceSize at, VkDeviceSize size) {
+        Batch& b = batches_[batch];
+        check(vkEndCommandBuffer(b.cmd), "vkEndCommandBuffer");
+        check(vmaFlushAllocation(t_.gpu_.allocator, staging_memory_, at, size),
+              "vmaFlushAllocation");
+        b.busy = true;
+        b.begin = at;
+        b.value.store(0, std::memory_order_relaxed);
+        in_flight_.push_back(batch);
+        head_ = at + size;
+    }
+
+    // Reads, stages and hands over one placed model. False if stopping.
+    bool load_model(std::uint32_t m, const std::stop_token& stop) {
+        ModelGpu& models = *t_.models_;
+        ModelArrival out;
+        out.model = m;
+        try {
+            std::string problem;
+            auto p = models.prepare(m, problem);
+            if (!problem.empty()) {
+                note(problem);
+            }
+            if (p) {
+                const VkDeviceSize size = ModelGpu::staged_bytes(*p);
+                if (size > kStagingBytes) {
+                    note("model '" + models.model_name(m) + "': " + std::to_string(size) +
+                         " bytes, more than the staging memory");
+                } else if (const auto room = acquire(size, stop)) {
+                    const auto [batch, at] = *room;
+                    begin(batches_[batch]);
+                    models.stage_and_record(batches_[batch].cmd, staging_, mapped_, at, m, *p);
+                    commit(batch, at, size);
+                    out.ok = true;
+                    out.cmd = batches_[batch].cmd;
+                    out.batch = batch;
+                } else {
+                    return false;
+                }
+            }
+        } catch (const std::exception& e) {
+            note("model '" + models.model_name(m) + "': " + e.what());
+            out.ok = false;
+        }
+        while (!model_arrivals_.try_push(out)) {
+            if (stop.stop_requested()) {
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return true;
+    }
+
     TerrainGpu& t_;
     PrepareContext ctx_;
     SpscRing<TileRequest, 1024> requests_;
     SpscRing<TileArrival, 64> arrivals_;
+    SpscRing<ModelArrival, 64> model_arrivals_;
     std::array<Batch, kBatches> batches_{};
     std::deque<std::uint32_t> in_flight_;  // batches, in staging order
     VkDeviceSize head_ = 0;                // where the next staging goes
@@ -753,7 +846,8 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
                                              std::unique_ptr<TerrainDatabase> db,
                                              const TerrainOptions& options, std::uint32_t slots,
                                              std::uint32_t outputs, VkShaderModule vertex,
-                                             VkShaderModule fragment, VkFormat colour,
+                                             VkShaderModule fragment, VkShaderModule model_vertex,
+                                             VkShaderModule model_fragment, VkFormat colour,
                                              VkFormat depth, TerrainLoad& report) {
     const auto start = std::chrono::steady_clock::now();
     std::unique_ptr<TerrainGpu> t(new TerrainGpu(gpu));
@@ -801,6 +895,10 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
     ctx.max_level = options.max_level;
     ctx.bc7 = gpu.bc_textures && supported(VK_FORMAT_BC7_SRGB_BLOCK);
     ctx.bc1 = gpu.bc_textures && supported(VK_FORMAT_BC1_RGB_SRGB_BLOCK);
+    // Placements are read from the roots only, for now (#48).
+    if (m.placements && m.placements->level == m.levels.front().level) {
+        ctx.placement_level = m.placements->level;
+    }
 
     t->cache_ = std::make_unique<TileCache>(capacity, options.budget_bytes);
     t->heights_.resize(capacity);
@@ -1071,6 +1169,32 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
     check(vkCreateGraphicsPipelines(gpu.device, VK_NULL_HANDLE, 1, &ci, nullptr, &t->pipeline_),
           "vkCreateGraphicsPipelines (terrain)");
 
+    // Placements (milestone 4 step 3): from the roots, always resident.
+    // Finer levels would page them with their tiles; not yet needed.
+    std::vector<Placement> placements;
+    if (m.placements && m.placements->level != top.level) {
+        report.problems.push_back("placements at level " + std::to_string(m.placements->level) +
+                                  ", not the roots' (" + std::to_string(top.level) +
+                                  "): not drawn yet");
+    }
+    for (PreparedTile& p : roots) {
+        for (Placement& pl : p.placements) {
+            placements.push_back(std::move(pl));
+        }
+    }
+    if (!placements.empty()) {
+        report.placements = placements.size();
+        // Models are optional: the terrain draws without them.
+        try {
+            t->models_ =
+                std::make_unique<ModelGpu>(gpu, t->db_->dir(), placements, slots, t->outputs_,
+                                           model_vertex, model_fragment, colour, depth);
+            report.models = t->models_->model_count();
+        } catch (const std::exception& e) {
+            report.problems.push_back(std::string("models: ") + e.what() + " (none drawn)");
+        }
+    }
+
     report.tiles = roots.size();
     report.seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -1151,6 +1275,22 @@ void TerrainGpu::begin_frame(std::uint64_t frame, std::uint64_t completed) {
         ++upload_count_;
     }
     stats_.uploads = upload_count_;
+    for (std::uint32_t taken = 0; models_ && taken < kMaxModelUploadsPerFrame; ++taken) {
+        const auto a = pager_->take_model();
+        if (!a) {
+            break;
+        }
+        if (!a->ok) {
+            continue;  // reported by the paging thread
+        }
+        models_->arrived(a->model);
+        upload_infos_[upload_count_] = {};
+        upload_infos_[upload_count_].sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+        upload_infos_[upload_count_].commandBuffer = a->cmd;
+        upload_batches_[upload_count_] = a->batch;
+        ++upload_count_;
+    }
+    stats_.models_loaded = models_ ? models_->loaded() : 0;
 }
 
 void TerrainGpu::submitted(std::uint64_t timeline_value) {
@@ -1202,7 +1342,6 @@ void TerrainGpu::request_children(const SceneView& view, const TileSelection& se
 
 std::uint32_t TerrainGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
                                  const SceneView& view, VkExtent2D extent) {
-    const std::uint32_t capacity = cache_->capacity();
     LodView lv;
     lv.eye_ecef = view.eye_ecef;
     lv.ecef_to_clip = view.ecef_to_clip;
@@ -1260,9 +1399,23 @@ std::uint32_t TerrainGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::u
     stats_.failures = cs.failures;
 
     const auto drawn = static_cast<std::uint32_t>(sel.drawn);
-    if (drawn == 0) {
-        return 0;
+    const DVec3 sun = sun_direction(view.eye_ecef);
+    const std::array<float, 3> sun_f = {static_cast<float>(sun.x), static_cast<float>(sun.y),
+                                        static_cast<float>(sun.z)};
+    if (drawn > 0) {
+        draw_tiles(cmd, slot, o, view, drawn, sun_f);
     }
+    if (models_) {
+        stats_.placements_drawn +=
+            models_->record(cmd, slot, o, view, sun_f, stats_.placements_dropped);
+    }
+    return drawn;
+}
+
+void TerrainGpu::draw_tiles(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t o,
+                            const SceneView& view, std::uint32_t drawn,
+                            const std::array<float, 3>& sun_f) {
+    const std::uint32_t capacity = cache_->capacity();
     const std::uint32_t base = (slot * outputs_ + o) * capacity;
     auto* records = static_cast<TileDraw*>(draws_.mapped) + base;
     for (std::uint32_t i = 0; i < drawn; ++i) {
@@ -1280,8 +1433,7 @@ std::uint32_t TerrainGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::u
 
     TerrainPush push;
     push.ecef_to_clip = view.ecef_to_clip;
-    const DVec3 sun = sun_direction(view.eye_ecef);
-    push.sun = {static_cast<float>(sun.x), static_cast<float>(sun.y), static_cast<float>(sun.z)};
+    push.sun = sun_f;
     push.samples = samples_;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set_, 0, nullptr);
@@ -1290,7 +1442,6 @@ std::uint32_t TerrainGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::u
                        sizeof(push), &push);
     // The records' region: first instance is where this view's start.
     vkCmdDrawIndexed(cmd, index_count_, drawn, 0, 0, base);
-    return drawn;
 }
 
 }  // namespace fovea
