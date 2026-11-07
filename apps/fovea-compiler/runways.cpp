@@ -77,7 +77,8 @@ std::optional<double> parse_degrees_minutes(std::string_view text, bool latitude
     const char* m_end = text.data() + text.size() - 1;
     const auto [mp, me] = std::from_chars(m_begin, m_end, minutes);
     if (de != std::errc{} || dp != d_end || me != std::errc{} || mp != m_end || degrees < 0 ||
-        degrees > (latitude ? 90 : 180) || !(minutes >= 0.0 && minutes < 60.0)) {
+        degrees > (latitude ? 90 : 180) || std::isnan(minutes) || minutes < 0.0 ||
+        minutes >= 60.0) {
         return std::nullopt;
     }
     const double v = degrees + minutes / 60.0;
@@ -186,7 +187,7 @@ std::optional<RunwaySurface> RunwaySurface::fit(const Runway& runway, double ble
                     }
                     const double y = (-half + static_cast<double>(j) * dv) / half;
                     const std::array<double, kTerms> t{1.0, x, x * x, y, std::abs(y), y * y};
-                    const double z = static_cast<double>(h[i * nv + j]);
+                    const auto z = static_cast<double>(h[i * nv + j]);
                     for (std::size_t a = 0; a < kTerms; ++a) {
                         for (std::size_t b = a; b < kTerms; ++b) {
                             m[a][b] += w * t[a] * t[b];

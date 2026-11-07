@@ -521,7 +521,7 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
                         }
                         if (!ellipsoidal_at(*st->sources, *geoid, st->lat, st->lon, grid.heights,
                                             err)) {
-                            err = "tile " + to_string(key) + ": " + err;
+                            err.insert(0, "tile " + to_string(key) + ": ");
                             return false;
                         }
                         grid.size = s.samples;

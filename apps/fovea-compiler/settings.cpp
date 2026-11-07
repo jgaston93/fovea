@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -221,7 +222,7 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
 
     if (const auto runways = root["runways"]; runways.is_table()) {
         const auto blend = runways["blend_m"].value<double>();
-        if (blend && !(*blend >= 0.0 && *blend <= 1000.0)) {
+        if (blend && (std::isnan(*blend) || *blend < 0.0 || *blend > 1000.0)) {
             error(runways.node()->source(), "[runways] blend_m is from 0 to 1000");
         }
         s.runway_blend_m = blend.value_or(s.runway_blend_m);
