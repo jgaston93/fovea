@@ -4,9 +4,11 @@
 #include <bit>
 #include <cmath>
 #include <fstream>
+#include <iterator>
 #include <set>
 #include <sstream>
 #include <string_view>
+#include <tuple>
 
 #include <toml++/toml.hpp>
 
@@ -50,6 +52,67 @@ std::optional<std::string> read_text(const fs::path& file) {
     std::ostringstream text;
     text << in.rdbuf();
     return text.str();
+}
+
+// An airport file's runways (the format above), each named with the
+// airport's name if it has one ("KHUA 17/35"), so runways of different
+// airports can be told apart.
+void parse_airport(const std::string& text, const fs::path& f, std::vector<Runway>& runways,
+                   std::vector<std::string>& errors) {
+    toml::table airport;
+    try {
+        airport = toml::parse(text, f.string());
+    } catch (const toml::parse_error& e) {
+        errors.push_back(f.string() + ":" + std::to_string(e.source().begin.line) + ": " +
+                         std::string(e.description()));
+        return;
+    }
+    const auto bad = [&](const toml::node& at, const std::string& msg) {
+        errors.push_back(f.string() + ":" + std::to_string(at.source().begin.line) + ": " + msg);
+    };
+    const std::string prefix = airport["name"].value_or(std::string{});
+    const auto* list = airport["runway"].as_array();
+    if (list == nullptr || list->empty()) {
+        errors.push_back(f.string() + ": no [[runway]]");
+        return;
+    }
+    for (const auto& node : *list) {
+        const auto* rt = node.as_table();
+        const auto* ends = rt != nullptr ? (*rt)["end"].as_array() : nullptr;
+        const auto width = rt != nullptr ? (*rt)["width_ft"].value<double>() : std::nullopt;
+        if (rt == nullptr || !(*rt)["name"].is_string() || !width || !(*width > 0.0) ||
+            ends == nullptr || ends->size() != 2) {
+            bad(node, "a [[runway]] needs name, width_ft and two [[runway.end]]");
+            continue;
+        }
+        Runway rw;
+        const std::string name = (*rt)["name"].value_or(std::string{});
+        rw.name = prefix.empty() ? name : prefix + " " + name;
+        rw.width_m = *width * 0.3048;
+        rw.length_m = (*rt)["length_ft"].value_or(0.0) * 0.3048;
+        bool ok = true;
+        for (std::size_t i = 0; i < 2; ++i) {
+            const auto* et = (*ends)[i].as_table();
+            const auto lat = et != nullptr
+                                 ? parse_degrees_minutes((*et)["lat"].value_or(std::string{}), true)
+                                 : std::nullopt;
+            const auto lon =
+                et != nullptr ? parse_degrees_minutes((*et)["lon"].value_or(std::string{}), false)
+                              : std::nullopt;
+            const auto elev = et != nullptr ? (*et)["elevation_ft"].value<double>() : std::nullopt;
+            if (et == nullptr || !(*et)["id"].is_string() || !lat || !lon || !elev) {
+                bad((*ends)[i],
+                    "a [[runway.end]] needs id, lat and lon (\"34-39.167130N\", "
+                    "\"086-46.926028W\") and elevation_ft");
+                ok = false;
+                continue;
+            }
+            rw.ends[i] = {(*et)["id"].value_or(std::string{}), *lat, *lon, *elev * 0.3048};
+        }
+        if (ok) {
+            runways.push_back(std::move(rw));
+        }
+    }
 }
 
 }  // namespace
@@ -246,72 +309,14 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
             error(runways.node()->source(), "[runways] blend_m is from 0 to 1000");
         }
         s.runway_blend_m = blend.value_or(s.runway_blend_m);
+        std::set<fs::path> seen;
         for (const fs::path& f : paths(runways["airport"], "runways.airport")) {
-            const auto t = read_text(f);
-            if (!t) {
+            if (!seen.insert(f.lexically_normal()).second) {
+                error(runways.node()->source(), f.string() + " is listed twice");
+            } else if (const auto t = read_text(f)) {
+                parse_airport(*t, f, s.runways, r.errors);
+            } else {
                 error(runways.node()->source(), "cannot read " + f.string());
-            }
-            toml::table airport;
-            bool parsed = false;
-            if (t) {
-                try {
-                    airport = toml::parse(*t, f.string());
-                    parsed = true;
-                } catch (const toml::parse_error& e) {
-                    r.errors.push_back(f.string() + ":" + std::to_string(e.source().begin.line) +
-                                       ": " + std::string(e.description()));
-                }
-            }
-            const auto bad = [&](const toml::node& at, const std::string& msg) {
-                r.errors.push_back(f.string() + ":" + std::to_string(at.source().begin.line) +
-                                   ": " + msg);
-            };
-            const auto* list = airport["runway"].as_array();
-            if (parsed && (list == nullptr || list->empty())) {
-                r.errors.push_back(f.string() + ": no [[runway]]");
-            }
-            if (list != nullptr) {
-                for (const auto& node : *list) {
-                    const auto* rt = node.as_table();
-                    const auto* ends = rt != nullptr ? (*rt)["end"].as_array() : nullptr;
-                    const auto width =
-                        rt != nullptr ? (*rt)["width_ft"].value<double>() : std::nullopt;
-                    if (rt == nullptr || !(*rt)["name"].is_string() || !width || !(*width > 0.0) ||
-                        ends == nullptr || ends->size() != 2) {
-                        bad(node, "a [[runway]] needs name, width_ft and two [[runway.end]]");
-                        continue;
-                    }
-                    Runway rw;
-                    rw.name = (*rt)["name"].value_or(std::string{});
-                    rw.width_m = *width * 0.3048;
-                    rw.length_m = (*rt)["length_ft"].value_or(0.0) * 0.3048;
-                    bool ok = true;
-                    for (std::size_t i = 0; i < 2; ++i) {
-                        const auto* et = (*ends)[i].as_table();
-                        const auto lat =
-                            et != nullptr
-                                ? parse_degrees_minutes((*et)["lat"].value_or(std::string{}), true)
-                                : std::nullopt;
-                        const auto lon =
-                            et != nullptr
-                                ? parse_degrees_minutes((*et)["lon"].value_or(std::string{}), false)
-                                : std::nullopt;
-                        const auto elev =
-                            et != nullptr ? (*et)["elevation_ft"].value<double>() : std::nullopt;
-                        if (et == nullptr || !(*et)["id"].is_string() || !lat || !lon || !elev) {
-                            bad((*ends)[i],
-                                "a [[runway.end]] needs id, lat and lon (\"34-39.167130N\", "
-                                "\"086-46.926028W\") and elevation_ft");
-                            ok = false;
-                            continue;
-                        }
-                        rw.ends[i] = {(*et)["id"].value_or(std::string{}), *lat, *lon,
-                                      *elev * 0.3048};
-                    }
-                    if (ok) {
-                        s.runways.push_back(std::move(rw));
-                    }
-                }
             }
         }
     }
@@ -319,13 +324,16 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
     if (const auto placements = root["placements"]; placements.is_table()) {
         CompileSettings::Placements pl;
         pl.models = path(placements["models"], "placements.models");
+        std::set<fs::path> seen;
         for (const fs::path& file : paths(placements["file"], "placements.file")) {
-            if (const auto t = read_text(file)) {
+            if (!seen.insert(file.lexically_normal()).second) {
+                error(placements.node()->source(), file.string() + " is listed twice");
+            } else if (const auto t = read_text(file)) {
                 PlacementFileResult read = parse_placement_file(*t, file);
                 r.errors.insert(r.errors.end(), read.errors.begin(), read.errors.end());
-                for (auto& p : read.placements) {
-                    pl.placements.push_back(std::move(p));
-                }
+                pl.placements.insert(pl.placements.end(),
+                                     std::make_move_iterator(read.placements.begin()),
+                                     std::make_move_iterator(read.placements.end()));
             } else {
                 error(placements.node()->source(), "cannot read " + file.string());
             }
@@ -338,6 +346,13 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
                 error(l->source(), "[placements] level must be the root level, for now (#48)");
             } else {
                 pl.level = static_cast<std::uint8_t>(*level);
+            }
+        }
+        // The same model at the same point twice: a slip, two buildings in one.
+        std::set<std::tuple<std::string, double, double>> placed;
+        for (const PlacementSpec& p : pl.placements) {
+            if (!placed.emplace(p.model, p.lat_deg, p.lon_deg).second) {
+                r.errors.push_back(p.where + ": '" + p.model + "' is placed there already");
             }
         }
         s.placements = std::move(pl);

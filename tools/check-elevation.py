@@ -53,6 +53,14 @@ TOL_SLOPE_CHANGE = 0.003  # along a runway: between 5 m chords (0.3%), a wheel's
 TOL_BLEND_JUMP = 0.02   # the blend's change in (database - sources) per 0.5 m
 
 
+def file_list(value, what):
+    """A settings file name, or a list of them, as the compiler takes it."""
+    files = [value] if isinstance(value, str) else value
+    if not isinstance(files, list) or not files or not all(isinstance(f, str) and f for f in files):
+        sys.exit(f"{what}: needs a file name or a list of them")
+    return files
+
+
 def degrees_minutes(text):
     """ "34-39.167130N", "086-46.926028W": as the FAA publishes them."""
     d, m = text[:-1].split("-")
@@ -88,8 +96,8 @@ class Runway:
     (positive to the right, looking along it), in the tangent plane at its
     middle."""
 
-    def __init__(self, t):
-        self.name = t["name"]
+    def __init__(self, t, airport=""):
+        self.name = f"{airport} {t['name']}" if airport else t["name"]  # as the compiler names it
         self.width = t["width_ft"] * FT
         self.ends = [(e["id"], degrees_minutes(e["lat"]), degrees_minutes(e["lon"]),
                       e["elevation_ft"]) for e in t["end"]]
@@ -290,11 +298,10 @@ class Sources:
         # Each airport: its runways, and its field elevation if published.
         self.runways, self.fields, self.blend = [], [], 0.0
         if "runways" in s:
-            files = s["runways"]["airport"]
-            for name in [files] if isinstance(files, str) else files:
+            for name in file_list(s["runways"]["airport"], "[runways] airport"):
                 with open(base / name, "rb") as f:
                     airport = tomllib.load(f)
-                runways = [Runway(t) for t in airport["runway"]]
+                runways = [Runway(t, airport.get("name", "")) for t in airport["runway"]]
                 self.runways += runways
                 if "field_elevation_ft" in airport:
                     self.fields.append((airport.get("name", name), airport["field_elevation_ft"],

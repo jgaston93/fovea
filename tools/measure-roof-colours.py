@@ -26,6 +26,14 @@ from osgeo import gdal, osr
 gdal.UseExceptions()
 
 
+def file_list(value, what):
+    """A settings file name, or a list of them, as the compiler takes it."""
+    files = [value] if isinstance(value, str) else value
+    if not isinstance(files, list) or not files or not all(isinstance(f, str) and f for f in files):
+        sys.exit(f"{what}: needs a file name or a list of them")
+    return files
+
+
 def model_bounds(path):
     """(x0, x1, z0, z1) of a .glb's positions, from its accessors' min and max."""
     data = Path(path).read_bytes()
@@ -71,9 +79,8 @@ def main():
     geo.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
     to_src = osr.CoordinateTransformation(geo, srs)
     gt = vrt.GetGeoTransform()
-    files = s["placements"]["file"]
     placements = []
-    for name in [files] if isinstance(files, str) else files:
+    for name in file_list(s["placements"]["file"], "[placements] file"):
         with open(base / name, "rb") as f:
             placements += tomllib.load(f)["placement"]
     models = base / s["placements"]["models"]

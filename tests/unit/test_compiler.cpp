@@ -1319,6 +1319,18 @@ TEST(CompilerRunways, AirportFileMistakesAreRefused) {
     std::string none = good;
     none.replace(none.find("airport = \"airport.toml\""), 24, "airport = []");
     EXPECT_FALSE(parse_settings(none, "s.toml", dir).errors.empty());
+    std::string twice = good;
+    twice.replace(twice.find("airport = \"airport.toml\""), 24,
+                  "airport = [\"airport.toml\", \"./airport.toml\"]");
+    const auto dup = parse_settings(twice, "s.toml", dir);
+    ASSERT_FALSE(dup.errors.empty());
+    EXPECT_NE(dup.errors[0].find("listed twice"), std::string::npos) << dup.errors[0];
+    // Runways are named with their airport's name, when the file has one.
+    std::ofstream(dir / "airport2.toml") << "name = \"KXYZ\"\n" << airport;
+    const auto named = parse_settings(two, "s.toml", dir);
+    ASSERT_TRUE(named.settings.has_value()) << (named.errors.empty() ? "" : named.errors[0]);
+    EXPECT_EQ(named.settings->runways[1].name, "KXYZ 18R/36L");
+    fs::remove(dir / "airport2.toml");
     std::string bad_blend = good + "blend_m = -1.0\n";
     EXPECT_FALSE(parse_settings(bad_blend, "s.toml", dir).errors.empty());
     fs::remove(dir / "airport.toml");
@@ -1406,6 +1418,39 @@ TEST(CompilerPlacements, HeadingsAreTakenIntoZeroTo360) {
     const auto bad = parse_placement_file("[[placement]]\nmodel = \"a\"\nlat = 1.0\n", "p.toml");
     ASSERT_FALSE(bad.errors.empty());
     EXPECT_NE(bad.errors[0].find("p.toml:1"), std::string::npos) << bad.errors[0];
+}
+
+TEST(CompilerPlacements, SeveralFilesAddUpAndRepeatsAreRefused) {
+    const fs::path dir = test_root() / "placement_files";
+    fs::create_directories(dir / "cache" / "dem");
+    std::ofstream(dir / "cache" / "dem" / "a.tif") << "x";
+    const std::string good =
+        "name = \"t\"\narea = { south = 1.0, north = 2.0, west = 3.0, east = 4.0 }\n"
+        "output = \"db\"\n[levels]\nroot = 3\nfinest = 5\n"
+        "[elevation]\nsamples = 65\ncache = \"cache\"\n"
+        "sources = [\"dem/a.tif\"]\ngeoid = \"geoid/g.tif\"\n"
+        "[placements]\nmodels = \"models\"\n";
+    const auto one = [](const std::string& model, double lat) {
+        return "[[placement]]\nmodel = \"" + model + "\"\nlat = " + std::to_string(lat) +
+               "\nlon = 3.5\nheading = 0.0\n";
+    };
+    std::ofstream(dir / "a.toml") << one("x", 1.5) << one("y", 1.6);
+    std::ofstream(dir / "b.toml") << one("z", 1.7);
+    const auto both = parse_settings(good + "file = [\"a.toml\", \"b.toml\"]\n", "s.toml", dir);
+    ASSERT_TRUE(both.settings.has_value()) << (both.errors.empty() ? "" : both.errors[0]);
+    ASSERT_EQ(both.settings->placements->placements.size(), 3U);  // every file's, in order
+    EXPECT_EQ(both.settings->placements->placements[2].model, "z");
+    const auto twice = parse_settings(good + "file = [\"a.toml\", \"a.toml\"]\n", "s.toml", dir);
+    ASSERT_FALSE(twice.errors.empty());
+    EXPECT_NE(twice.errors[0].find("listed twice"), std::string::npos) << twice.errors[0];
+    std::ofstream(dir / "b.toml") << one("x", 1.5);  // the same as a.toml's first
+    const auto again = parse_settings(good + "file = [\"a.toml\", \"b.toml\"]\n", "s.toml", dir);
+    ASSERT_FALSE(again.errors.empty());
+    EXPECT_NE(again.errors[0].find("placed there already"), std::string::npos) << again.errors[0];
+    EXPECT_NE(parse_settings(good + "file = [\"a.toml\", \"none.toml\"]\n", "s.toml", dir)
+                  .errors.front()
+                  .find("cannot read"),
+              std::string::npos);
 }
 
 TEST(CompilerPlacements, MistakesAreRefused) {
