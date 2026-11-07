@@ -1,0 +1,38 @@
+# A straight-in approach to KHSV runway 36L (milestone 3 step 5): from 6 km
+# out on the extended centreline, down a 3 degree glide path to 15 m over
+# the threshold, then along the runway at that height. Run Fovea with
+# config/khsv.toml, then:
+#   cigi-test-host tools/cigi-test-host/scripts/khsv-approach.toml
+#
+# The runway, from the FAA's data (AirNav, 2026-11-07): 36L's threshold at
+# 34.618171 N, 86.782791 W, 186.3 m (611.2 ft); 18R's 3.84 km on, true
+# heading 0.9 degrees.
+
+[ig]
+address = "127.0.0.1"
+port = 8004
+
+[host]
+port = 8005
+rate_hz = 60.0
+
+[start]
+lat = 34.564088
+lon = -86.783860
+alt = 515.7      # 15 m over the threshold plus 6 km at 3 degrees
+heading = 0.9
+speed = 70.0
+
+[flight]
+loop = true
+
+[[segment]]
+kind = "straight"
+duration = 85.7  # 6 km at 70 m/s
+speed = 70.0
+climb = -3.67    # 3 degrees at 70 m/s
+
+[[segment]]
+kind = "straight"
+duration = 55.0  # the length of the runway
+speed = 70.0

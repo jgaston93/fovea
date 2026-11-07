@@ -353,5 +353,42 @@ TEST(Config, ErrorFormatsAsSourceLineColumn) {
     EXPECT_EQ(e.to_string(), "a.toml:3:7: bad");
 }
 
+TEST(Config, TerrainIsOptionalAndChecked) {
+    const auto none = parse(kMinimal);
+    ASSERT_TRUE(none.ok());
+    EXPECT_FALSE(none.config->terrain.has_value());
+
+    const auto r = parse(kMinimal +
+                         "[terrain]\ndatabase = \"db/khsv\"\nmax_level = 15\n"
+                         "pixel_error = 2.5\n");
+    ASSERT_TRUE(r.ok()) << r.errors[0].to_string();
+    ASSERT_TRUE(r.config->terrain.has_value());
+    EXPECT_EQ(r.config->terrain->database, std::filesystem::path("db/khsv"));  // as written
+    EXPECT_EQ(r.config->terrain->max_level, 15);
+    EXPECT_DOUBLE_EQ(r.config->terrain->pixel_error, 2.5);
+    const auto defaults = parse(kMinimal + "[terrain]\ndatabase = \"db\"\n");
+    ASSERT_TRUE(defaults.ok());
+    EXPECT_EQ(defaults.config->terrain->max_level, 30);
+    EXPECT_DOUBLE_EQ(defaults.config->terrain->pixel_error, 1.0);
+
+    // Line 8 is [terrain]'s first key.
+    expect_one_error(parse(kMinimal + "[terrain]\nmax_level = 3\n"), 7, "database");
+    expect_one_error(parse(kMinimal + "[terrain]\ndatabase = \"\"\n"), 8, "must name a directory");
+    expect_one_error(parse(kMinimal + "[terrain]\ndatabase = \"db\"\nmax_level = 31\n"), 9,
+                     "max_level");
+    expect_one_error(parse(kMinimal + "[terrain]\ndatabase = \"db\"\npixel_error = 0\n"), 9,
+                     "pixel_error");
+    expect_one_error(parse(kMinimal + "[terrain]\ndatabase = \"db\"\nlevel = 3\n"), 9, "level");
+}
+
+TEST(Config, TerrainDatabaseIsRelativeToTheConfigFile) {
+    // config/khsv.toml names "../data/db/khsv": from the repository root.
+    const auto r = load_display_config(FOVEA_SOURCE_DIR "/config/khsv.toml");
+    ASSERT_TRUE(r.ok()) << r.errors[0].to_string();
+    ASSERT_TRUE(r.config->terrain.has_value());
+    EXPECT_EQ(r.config->terrain->database.lexically_normal(),
+              std::filesystem::path(FOVEA_SOURCE_DIR "/data/db/khsv").lexically_normal());
+}
+
 }  // namespace
 }  // namespace fovea

@@ -19,6 +19,7 @@ add_executable(fovea_unit_tests
     unit/test_scene.cpp
     unit/test_terrain.cpp
     unit/test_terrain_database.cpp
+    unit/test_terrain_lod.cpp
     unit/test_time.cpp
     unit/test_toolchain.cpp
     unit/test_view.cpp)
@@ -41,7 +42,8 @@ add_executable(fovea_gpu_tests
     unit/test_display_clock.cpp
     unit/test_frame_loop.cpp
     unit/test_golden.cpp
-    unit/test_renderer.cpp)
+    unit/test_renderer.cpp
+    unit/test_terrain_render.cpp)
 target_include_directories(fovea_gpu_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(fovea_gpu_tests PRIVATE fovea::render GTest::gtest_main)
 target_compile_definitions(fovea_gpu_tests PRIVATE FOVEA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")

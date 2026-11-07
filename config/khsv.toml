@@ -1,0 +1,48 @@
+# The desk's three monitors over the KHSV terrain database (milestone 3
+# step 5), flown by the CIGI test host:
+#   fovea --overlay config/khsv.toml
+#   cigi-test-host tools/cigi-test-host/scripts/khsv-approach.toml
+# The database comes from tools/fetch-sources.py and fovea-compiler
+# (CLAUDE.md); it is not in the repository.
+
+[display]
+presenter = "multi_swapchain"
+target_hz = 60
+near_m = 0.5
+
+[[channel]]
+name = "left"
+monitor = 0                     # Dell P2724DE, 2560x1440 landscape
+render_extent = [2560, 1440]
+view_rotation = { yaw = -40.0, pitch = 0.0, roll = 0.0 }
+frustum = { left = -30.0, right = 30.0, top = 18.0, bottom = -18.0 }    # covers yaw -70..-10
+
+[[channel]]
+name = "middle"
+monitor = 2                     # Samsung LF24T35, 1080x1920 portrait
+render_extent = [1080, 1920]
+view_rotation = { yaw = 5.0, pitch = 0.0, roll = 0.0 }
+frustum = { left = -15.0, right = 15.0, top = 25.5, bottom = -25.5 }    # covers yaw -10..20
+
+[[channel]]
+name = "right"
+monitor = 1                     # Samsung LF24T35, 1080x1920 portrait
+render_extent = [1080, 1920]
+view_rotation = { yaw = 35.0, pitch = 0.0, roll = 0.0 }
+frustum = { left = -15.0, right = 15.0, top = 25.5, bottom = -25.5 }    # covers yaw 20..50
+
+# Beyond the database the grid stays, at KHSV's field elevation.
+[reference_scene]
+grid_spacing_m = 100.0
+origin = { lat = 34.6372, lon = -86.7751, alt = 191.7 }   # KHSV's reference point, 628.9 ft
+
+[terrain]
+database = "../data/db/khsv"
+
+[host]
+protocol = "cigi"
+port = 8004
+listen_address = "127.0.0.1"
+host_address = "127.0.0.1"
+host_port = 8005
+geoid_height_m = -28.25      # GEOID18 at KHSV: the database's heights are ellipsoidal

@@ -18,7 +18,7 @@ set(rule_core "${gpu}|${gdal}|fovea/(terrain|platform|net|render)/")
 set(rule_terrain "${gpu}|${gdal}|fovea/(platform|net|render)/")
 set(rule_net "${gpu}|${gdal}|fovea/(terrain|platform|render)/")
 set(rule_platform "${gdal}|fovea/(terrain|net|render)/")
-set(rule_render "${gdal}|fovea/(terrain|net)/")
+set(rule_render "${gdal}|fovea/net/")
 
 set(violations "")
 foreach(lib IN ITEMS core terrain net platform render)

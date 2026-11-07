@@ -33,8 +33,11 @@
 #include "fovea/render/renderer.hpp"
 #include "overlay_ui.hpp"
 #include "shaders/kFsScene.hpp"
+#include "shaders/kFsTerrain.hpp"
 #include "shaders/kFsTonemap.hpp"
 #include "shaders/kVsFullscreen.hpp"
+#include "shaders/kVsTerrain.hpp"
+#include "terrain.hpp"
 
 namespace fovea {
 
@@ -47,6 +50,8 @@ constexpr VkFormat kSwapchainFormat = VK_FORMAT_B8G8R8A8_UNORM;
 constexpr VkFormat kOffscreenFormat = VK_FORMAT_R8G8B8A8_UNORM;
 // Linear, scene-referred light values (foundational decision 3).
 constexpr VkFormat kHdrFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+// Reverse-Z: cleared to 0 (infinitely far), nearer is greater.
+constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
 constexpr const char* kValidationLayer = "VK_LAYER_KHRONOS_validation";
 
 // volk keeps the Vulkan entry points in process-wide variables, so a second
@@ -277,6 +282,9 @@ struct HdrTarget {
     VmaAllocation memory = nullptr;
     VkImageView view = VK_NULL_HANDLE;
     VkDescriptorSet set = VK_NULL_HANDLE;  // the tone-map pass samples it through this
+    VkImage depth = VK_NULL_HANDLE;        // the scene's depth, for terrain
+    VmaAllocation depth_memory = nullptr;
+    VkImageView depth_view = VK_NULL_HANDLE;
 };
 
 struct Swapchain {
@@ -348,6 +356,12 @@ struct Renderer::Impl {
     VkPipeline scene_pipeline = VK_NULL_HANDLE;
     std::vector<std::pair<VkFormat, VkPipeline>> tonemap_pipelines;
 
+    // Terrain, once loaded (milestone 3 step 5).
+    std::unique_ptr<TerrainGpu> terrain;
+    bool bc_textures = false;     // textureCompressionBC enabled
+    float max_anisotropy = 0.0F;  // 0: samplerAnisotropy not enabled
+    std::uint32_t terrain_drawn = 0;
+
     // Timing: two timestamps per output per frame in flight.
     VkQueryPool timestamps = VK_NULL_HANDLE;
     double timestamp_period_ns = 0.0;                         // 0: no timestamps on this queue
@@ -395,10 +409,11 @@ struct Renderer::Impl {
     void create_offscreen(OffscreenOutput o);
     void create_scene_resources(std::span<const VkExtent2D> render_extents);
     VkShaderModule make_module(std::span<const std::uint32_t> spirv) const;
-    VkPipeline make_pipeline(VkPipelineLayout layout, VkShaderModule fragment,
-                             VkFormat format) const;
+    VkPipeline make_pipeline(VkPipelineLayout layout, VkShaderModule fragment, VkFormat format,
+                             VkFormat depth = VK_FORMAT_UNDEFINED) const;
     VkPipeline tonemap_pipeline(VkFormat format);
-    VkImageView make_view(VkImage image, VkFormat format) const;
+    VkImageView make_view(VkImage image, VkFormat format,
+                          VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) const;
     void claim();
     void size_scratch();
     void create_timestamps();
@@ -408,7 +423,7 @@ struct Renderer::Impl {
     }
     Frame& begin_frame();
     std::uint32_t draw(const DrawRequest& request);
-    void record_scene(VkCommandBuffer cmd, std::size_t i, const SceneView& view);
+    void record_scene(VkCommandBuffer cmd, std::size_t slot, std::size_t i, const SceneView& view);
 };
 
 void Renderer::Impl::create_instance(const std::vector<std::string>& extensions,
@@ -535,6 +550,20 @@ void Renderer::Impl::create_device(bool present) {
         }
     }
 
+    // Optional: BC textures (terrain imagery, D-017) and anisotropic
+    // filtering, where the GPU has them.
+    VkPhysicalDeviceFeatures have{};
+    vkGetPhysicalDeviceFeatures(physical.physical_device, &have);
+    VkPhysicalDeviceFeatures want{};
+    want.textureCompressionBC = have.textureCompressionBC;
+    want.samplerAnisotropy = have.samplerAnisotropy;
+    if (physical.enable_features_if_present(want)) {
+        bc_textures = want.textureCompressionBC == VK_TRUE;
+        max_anisotropy = want.samplerAnisotropy == VK_TRUE
+                             ? physical.properties.limits.maxSamplerAnisotropy
+                             : 0.0F;
+    }
+
     auto built = vkb::DeviceBuilder(physical).build();
     if (!built) {
         fail("cannot create the Vulkan device: " + built.error().message());
@@ -609,13 +638,14 @@ void Renderer::Impl::create_frames() {
     }
 }
 
-VkImageView Renderer::Impl::make_view(VkImage image, VkFormat format) const {
+VkImageView Renderer::Impl::make_view(VkImage image, VkFormat format,
+                                      VkImageAspectFlags aspect) const {
     VkImageViewCreateInfo vci{};
     vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     vci.image = image;
     vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vci.format = format;
-    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vci.subresourceRange = {aspect, 0, 1, 0, 1};
     VkImageView view = VK_NULL_HANDLE;
     check(vkCreateImageView(device.device, &vci, nullptr, &view), "vkCreateImageView");
     return view;
@@ -724,7 +754,7 @@ VkShaderModule Renderer::Impl::make_module(std::span<const std::uint32_t> spirv)
 }
 
 VkPipeline Renderer::Impl::make_pipeline(VkPipelineLayout layout, VkShaderModule fragment,
-                                         VkFormat format) const {
+                                         VkFormat format, VkFormat depth) const {
     std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -769,6 +799,10 @@ VkPipeline Renderer::Impl::make_pipeline(VkPipelineLayout layout, VkShaderModule
     rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachmentFormats = &format;
+    rendering.depthAttachmentFormat = depth;
+    // With a depth attachment, the fullscreen passes neither test nor write it.
+    VkPipelineDepthStencilStateCreateInfo depth_state{};
+    depth_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
 
     VkGraphicsPipelineCreateInfo ci{};
     ci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -780,6 +814,7 @@ VkPipeline Renderer::Impl::make_pipeline(VkPipelineLayout layout, VkShaderModule
     ci.pViewportState = &viewport;
     ci.pRasterizationState = &raster;
     ci.pMultisampleState = &multisample;
+    ci.pDepthStencilState = depth != VK_FORMAT_UNDEFINED ? &depth_state : nullptr;
     ci.pColorBlendState = &blend;
     ci.pDynamicState = &dynamic;
     ci.layout = layout;
@@ -854,7 +889,7 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     check(vkCreatePipelineLayout(device.device, &tonemap_lci, nullptr, &tonemap_layout),
           "vkCreatePipelineLayout");
 
-    scene_pipeline = make_pipeline(scene_layout, fs_scene, kHdrFormat);
+    scene_pipeline = make_pipeline(scene_layout, fs_scene, kHdrFormat, kDepthFormat);
     (void)tonemap_pipeline(kOffscreenFormat);
     for (const Swapchain& s : swapchains) {
         if (s.chain.swapchain != VK_NULL_HANDLE) {
@@ -880,6 +915,11 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
         check(vmaCreateImage(allocator, &ici, &aci, &t.image, &t.memory, nullptr),
               "vmaCreateImage");
         t.view = make_view(t.image, kHdrFormat);
+        ici.format = kDepthFormat;
+        ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        check(vmaCreateImage(allocator, &ici, &aci, &t.depth, &t.depth_memory, nullptr),
+              "vmaCreateImage (depth)");
+        t.depth_view = make_view(t.depth, kDepthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
         VkDescriptorSetAllocateInfo ai{};
         ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         ai.descriptorPool = descriptor_pool;
@@ -968,8 +1008,10 @@ Frame& Renderer::Impl::begin_frame() {
     return f;
 }
 
-// The scene for output i into its HDR target, ready for the tone-map pass.
-void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t i, const SceneView& view) {
+// The scene for output i into its HDR target, ready for the tone-map pass:
+// the reference scene (sky and grid), then any terrain over it.
+void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::size_t i,
+                                  const SceneView& view) {
     const HdrTarget& t = hdr[i];
     // After the previous frame's tone-map pass read this target (write after
     // read: an execution dependency is enough).
@@ -985,7 +1027,61 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t i, const Scen
     push.eye_offset_m[0] = view.eye_offset_m.x;
     push.eye_offset_m[1] = view.eye_offset_m.y;
     vkCmdPushConstants(cmd, scene_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
-    draw_fullscreen(cmd, t.view, t.extent);
+    // The depth buffer, cleared each frame: after the previous frame's
+    // tests and writes to it.
+    VkImageMemoryBarrier2 db{};
+    db.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    db.srcStageMask =
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    db.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    db.dstStageMask = db.srcStageMask;
+    db.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                       VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    db.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    db.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    db.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    db.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    db.image = t.depth;
+    db.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    VkDependencyInfo dep{};
+    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &db;
+    vkCmdPipelineBarrier2(cmd, &dep);
+
+    VkRenderingAttachmentInfo colour{};
+    colour.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colour.imageView = t.view;
+    colour.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colour.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;  // the sky writes every pixel
+    colour.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingAttachmentInfo depth{};
+    depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depth.imageView = t.depth_view;
+    depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.clearValue.depthStencil = {0.0F, 0};
+    VkRenderingInfo pass{};
+    pass.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    pass.renderArea = {{0, 0}, t.extent};
+    pass.layerCount = 1;
+    pass.colorAttachmentCount = 1;
+    pass.pColorAttachments = &colour;
+    pass.pDepthAttachment = &depth;
+    vkCmdBeginRendering(cmd, &pass);
+    const VkViewport viewport{
+        0.0F, 0.0F, static_cast<float>(t.extent.width), static_cast<float>(t.extent.height),
+        0.0F, 1.0F};
+    const VkRect2D scissor{{0, 0}, t.extent};
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    if (terrain) {
+        terrain_drawn += terrain->record(cmd, static_cast<std::uint32_t>(slot),
+                                         static_cast<std::uint32_t>(i), view, t.extent);
+    }
+    vkCmdEndRendering(cmd);
     transition(cmd, t.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -997,6 +1093,7 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
     const auto started = now();  // fovea::now(), the monotonic clock
     const std::size_t slot = frame_number % kFramesInFlight;
     Frame& f = begin_frame();
+    terrain_drawn = 0;
 
     // Acquire an image from every swapchain that has a drawable size.
     std::fill(image_index.begin(), image_index.end(), UINT32_MAX);
@@ -1091,7 +1188,7 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
         Swapchain& s = swapchains[i];
         VkImage image = s.images[image_index[i]];  // a handle, copied
         if (request.scene) {
-            record_scene(f.cmd, i, i < request.views.size() ? request.views[i] : SceneView{});
+            record_scene(f.cmd, slot, i, i < request.views.size() ? request.views[i] : SceneView{});
             transition(f.cmd, image, VK_IMAGE_LAYOUT_UNDEFINED,
                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, first_use, 0,
                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1147,7 +1244,7 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
         stamp(swapchains.size() + i, 0);
         // After the previous frame's copy out of this image (write after read).
         if (request.scene) {
-            record_scene(f.cmd, i, i < request.views.size() ? request.views[i] : SceneView{});
+            record_scene(f.cmd, slot, i, i < request.views.size() ? request.views[i] : SceneView{});
             transition(f.cmd, o.image, VK_IMAGE_LAYOUT_UNDEFINED,
                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                        VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, 0,
@@ -1288,9 +1385,12 @@ Renderer::Impl::~Impl() {
             vmaDestroyBuffer(allocator, o.readback, o.readback_memory);
             vmaDestroyImage(allocator, o.image, o.image_memory);
         }
+        terrain.reset();
         for (HdrTarget& t : hdr) {
             vkDestroyImageView(device.device, t.view, nullptr);
             vmaDestroyImage(allocator, t.image, t.memory);
+            vkDestroyImageView(device.device, t.depth_view, nullptr);
+            vmaDestroyImage(allocator, t.depth, t.depth_memory);
         }
         vkDestroyQueryPool(device.device, timestamps, nullptr);
         for (const auto& [format, p] : tonemap_pipelines) {
@@ -1400,6 +1500,39 @@ std::uint32_t Renderer::draw_clear_frame(std::span<const Rgb8> colours) {
 std::uint32_t Renderer::draw_scene_frame(std::span<const SceneView> views,
                                          const OverlayContent* overlay) {
     return impl_->draw({{}, views, true, overlay});
+}
+
+TerrainLoad Renderer::load_terrain(const TerrainDatabase& database, const TerrainOptions& options) {
+    Impl& m = *impl_;
+    if (m.terrain) {
+        fail("load_terrain: terrain is already loaded");
+    }
+    check(vkDeviceWaitIdle(m.device.device), "vkDeviceWaitIdle");
+    const GpuContext gpu{m.physical.physical_device,
+                         m.device.device,
+                         m.allocator,
+                         m.queue,
+                         m.queue_family,
+                         m.bc_textures,
+                         m.max_anisotropy};
+    VkShaderModule vs = m.make_module(kVsTerrain);
+    VkShaderModule fs = m.make_module(kFsTerrain);
+    TerrainLoad report;
+    try {
+        m.terrain = TerrainGpu::load(gpu, database, options, kFramesInFlight, m.output_total(), vs,
+                                     fs, kHdrFormat, kDepthFormat, report);
+    } catch (...) {
+        vkDestroyShaderModule(m.device.device, vs, nullptr);
+        vkDestroyShaderModule(m.device.device, fs, nullptr);
+        throw;
+    }
+    vkDestroyShaderModule(m.device.device, vs, nullptr);
+    vkDestroyShaderModule(m.device.device, fs, nullptr);
+    return report;
+}
+
+std::uint32_t Renderer::terrain_tiles_drawn() const {
+    return impl_->terrain_drawn;
 }
 
 void Renderer::enable_overlay(std::uint32_t output) {

@@ -22,7 +22,7 @@ function(fovea_add_shader target source entry stage name)
         COMMAND ${CMAKE_COMMAND} -E make_directory "${out_dir}"
         COMMAND "${FOVEA_SLANGC}" "${source}" -target spirv -profile spirv_1_6
                 -entry ${entry} -stage ${stage} -matrix-layout-column-major
-                -warnings-as-errors all -o "${spv}"
+                -warnings-as-errors all ${ARGN} -o "${spv}"
         COMMAND ${CMAKE_COMMAND} -DSPV=${spv} -DHPP=${hpp} -DNAME=${name}
                 -P "${FOVEA_SHADER_EMBED}"
         DEPENDS "${source}" "${FOVEA_SHADER_EMBED}"

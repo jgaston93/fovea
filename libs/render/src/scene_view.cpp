@@ -92,6 +92,13 @@ SceneView scene_view(const ViewDesc& view, const ReferenceScene& scene, const Gr
                           static_cast<float>(east - std::round(east / cell) * cell), 0.0F);
     v.grid_spacing_m = static_cast<float>(cell);
     v.exposure = static_cast<float>(std::exp2(scene.exposure_ev));
+    v.eye_ecef = eye.ecef;
+    const DMat4 ecef_to_eye(glm::transpose(glm::mat3_cast(eye.to_ecef)));
+    v.ecef_to_clip =
+        Mat4(off_axis_projection(view.projection.frustum, view.projection.near_m) * ecef_to_eye);
+    const Frustum& f = view.projection.frustum;
+    v.tan_height = static_cast<float>(std::tan(glm::radians(f.top_deg)) -
+                                      std::tan(glm::radians(f.bottom_deg)));
     return v;
 }
 

@@ -329,6 +329,29 @@ void parse_reference_scene(Parser& p, const toml::table& t, ReferenceScene& out)
     }
 }
 
+void parse_terrain(Parser& p, const toml::table& t, TerrainConfig& out) {
+    p.check_keys(t, {"database", "max_level", "pixel_error"}, "terrain");
+    if (const auto* n = p.required(t, "database", "terrain")) {
+        if (auto v = p.string(*n, "terrain.database")) {
+            if (v->empty()) {
+                p.error(n->source(), "'terrain.database' must name a directory");
+            }
+            out.database = std::filesystem::path(std::u8string(v->begin(), v->end()));
+        }
+    }
+    if (const auto* n = t.get("max_level")) {
+        if (auto v = p.integer(*n, "terrain.max_level", 0, 30)) {
+            out.max_level = static_cast<int>(*v);
+        }
+    }
+    if (const auto* n = t.get("pixel_error")) {
+        if (auto v = p.number(*n, "terrain.pixel_error")) {
+            check_range(p, *n, "terrain.pixel_error", *v, 0.0, 1000.0, true);
+            out.pixel_error = *v;
+        }
+    }
+}
+
 void check_frustum(Parser& p, const toml::node& node, const std::string& path, const Frustum& f) {
     const auto in_range = [](double deg) { return deg > -90.0 && deg < 90.0; };
     for (const auto& [name, deg] :
@@ -459,7 +482,12 @@ ConfigResult parse_display_config(std::string_view text, std::string_view source
     }
 
     DisplayConfig config;
-    p.check_keys(root, {"display", "channel", "reference_scene", "host"}, "");
+    p.check_keys(root, {"display", "channel", "reference_scene", "host", "terrain"}, "");
+    if (const auto* n = root.get("terrain")) {
+        if (const auto* t = p.table(*n, "terrain")) {
+            parse_terrain(p, *t, config.terrain.emplace());
+        }
+    }
     if (const auto* n = root.get("host")) {
         if (const auto* t = p.table(*n, "host")) {
             parse_host(p, *t, config.host.emplace());
@@ -525,7 +553,11 @@ ConfigResult load_display_config(const std::filesystem::path& file) {
     if (in.bad()) {
         return {std::nullopt, {{name, 0, 0, "cannot read the file"}}};
     }
-    return parse_display_config(text.str(), name);
+    ConfigResult r = parse_display_config(text.str(), name);
+    if (r.config && r.config->terrain && r.config->terrain->database.is_relative()) {
+        r.config->terrain->database = file.parent_path() / r.config->terrain->database;
+    }
+    return r;
 }
 
 }  // namespace fovea

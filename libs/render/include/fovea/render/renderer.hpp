@@ -17,6 +17,7 @@
 #include "fovea/core/scene.hpp"
 #include "fovea/platform/platform.hpp"
 #include "fovea/render/view.hpp"
+#include "fovea/terrain/database.hpp"
 
 namespace fovea {
 
@@ -72,6 +73,16 @@ struct SceneView {
     float grid_spacing_m = 10.0F;
     Vec3 eye_offset_m{0.0F};  // the eye's offset in the level frame (z unused)
     float exposure = 1.0F;    // linear multiplier before tone mapping
+
+    // For terrain (milestone 3 step 5). The eye in ECEF, in double: tiles
+    // are placed relative to it on the CPU, so the GPU sees only small
+    // offsets. ECEF directions to clip space: the eye's rotation and the
+    // projection, for positions relative to the eye. The projection's
+    // vertical extent in tangents (top minus bottom), for screen-space
+    // error.
+    DVec3 eye_ecef{0.0};
+    Mat4 ecef_to_clip{1.0F};
+    float tan_height = 1.0F;
 };
 
 // The reference scene for a view with no host: its body level and facing
@@ -123,6 +134,19 @@ Pose pose_at(const EntityState& entity, LocalTime at, bool allowed = true);
 // A view's heading: the direction of its centre ray in the level frame,
 // degrees clockwise from north.
 double view_heading_deg(const SceneView& view);
+
+// Terrain (milestone 3 step 5): which tiles load, and when they split.
+struct TerrainOptions {
+    int max_level = 30;        // tiles finer than this aren't loaded
+    double pixel_error = 1.0;  // a tile splits where its error shows as more (D-016)
+};
+
+struct TerrainLoad {
+    std::size_t tiles = 0;
+    std::size_t bytes = 0;  // heights and imagery uploaded
+    double seconds = 0.0;
+    std::vector<std::string> problems;  // tiles skipped or drawn without imagery, and why
+};
 
 // Up to this many outputs get GPU timings.
 inline constexpr std::size_t kMaxTimedOutputs = 8;
@@ -212,6 +236,19 @@ public:
     // never uploads: ImGui's backend would block the render thread with
     // vkQueueWaitIdle, so the overlay is left out of that frame instead.
     std::uint64_t overlay_skipped_frames() const;
+
+    // Loads a terrain database onto the GPU: every tile down to
+    // options.max_level, up front (milestone 3 step 5; paging follows in
+    // step 6). From then on draw_scene_frame draws the terrain in every
+    // view, over the reference scene's sky and grid. Init time: reads the
+    // tiles and waits for their uploads. Tiles that can't be used are
+    // skipped and listed. Throws std::runtime_error when nothing loads or
+    // the GPU can't bind that many tiles; once loaded, it can't be loaded
+    // again.
+    TerrainLoad load_terrain(const TerrainDatabase& database, const TerrainOptions& options = {});
+
+    // Terrain tiles drawn in the last frame, over all outputs.
+    std::uint32_t terrain_tiles_drawn() const;
 
     // Offscreen outputs only: the last frame's pixels, RGBA8, row by row.
     // Waits for the GPU to finish it.
