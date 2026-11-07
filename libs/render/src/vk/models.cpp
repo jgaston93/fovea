@@ -140,7 +140,7 @@ ModelGpu::ModelGpu(const GpuContext& gpu, std::filesystem::path database_dir,
     // Each distinct model once, in name order.
     std::map<std::string, std::uint32_t> index;
     for (const Placement& p : placements) {
-        index.emplace(p.model, 0);
+        index.emplace(p.model, 0U);
     }
     for (auto& [name, i] : index) {
         i = static_cast<std::uint32_t>(models_.size());
