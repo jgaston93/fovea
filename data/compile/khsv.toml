@@ -50,18 +50,18 @@ credit = "GEOID18: NOAA National Geodetic Survey"
 # The runways smoothed in the elevation (D-022), from the FAA's data,
 # blending into the ground over 20 m beyond them.
 [runways]
-airport = "../airports/khsv.toml"
+airport = ["../airports/khsv.toml", "../airports/khua.toml"]
 blend_m = 20.0
 
-# The KHSV landmarks (milestone 4 step 4): generic massing models, built by
-# data/models/khsv_landmarks.py, placed in the root tiles (D-026).
+# The KHSV and KHUA landmarks (milestone 4 steps 4 to 6): generic models,
+# built by data/models/airport_landmarks.py, placed in the root tiles (D-026).
 [placements]
-file = "../placements/khsv.toml"
+file = ["../placements/khsv.toml", "../placements/khua.toml"]
 models = "../models"
 
 [[credit]]
 layer = "elevation"
-name = "FAA airport data (KHSV runways)"
+name = "FAA airport data (KHSV and KHUA runways)"
 credit = "Runways: Federal Aviation Administration"
 
 [[credit]]

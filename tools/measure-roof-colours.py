@@ -71,8 +71,11 @@ def main():
     geo.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
     to_src = osr.CoordinateTransformation(geo, srs)
     gt = vrt.GetGeoTransform()
-    with open(base / s["placements"]["file"], "rb") as f:
-        placements = tomllib.load(f)["placement"]
+    files = s["placements"]["file"]
+    placements = []
+    for name in [files] if isinstance(files, str) else files:
+        with open(base / name, "rb") as f:
+            placements += tomllib.load(f)["placement"]
     models = base / s["placements"]["models"]
     for p in placements:
         x0, x1, z0, z1 = model_bounds(models / (p["model"] + ".glb"))

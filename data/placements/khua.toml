@@ -1,0 +1,72 @@
+# The KHUA (Redstone Army Airfield) landmarks (milestone 4 step 6, D-026):
+# each a model in data/models (built by airport_landmarks.py) at a point and
+# true heading (degrees clockwise from north; the model's front, its depth,
+# along it). Points are the footprints' centres, read off the NAIP 2023
+# imagery (to a few metres); the buildings stand square to the runway
+# (349.5 degrees, from the FAA's runway ends). The compiler sets each on the
+# lowest ground under its footprint.
+
+# The big hangars round the west apron.
+[[placement]]
+model = "khua_hangar_45x168"
+lat = 34.67355
+lon = -86.68956
+heading = 349.5
+
+[[placement]]
+model = "khua_hangar_52x262"
+lat = 34.67159
+lon = -86.68662
+heading = 349.5
+
+[[placement]]
+model = "khua_hangar_57x222"
+lat = 34.67073
+lon = -86.68767
+heading = 349.5
+
+
+# Smaller buildings by them.
+[[placement]]
+model = "khua_hangar_50x32"
+lat = 34.67259
+lon = -86.68873
+heading = 349.5
+
+[[placement]]
+model = "khua_hangar_55x32"
+lat = 34.67209
+lon = -86.68983
+heading = 349.5
+
+[[placement]]
+model = "khua_ops_52x18"
+lat = 34.66979
+lon = -86.68668
+heading = 349.5
+
+
+# Hangars east of the runway.
+[[placement]]
+model = "khua_hangar_40x36"
+lat = 34.67671
+lon = -86.68211
+heading = 349.5
+
+[[placement]]
+model = "khua_hangar_45x40"
+lat = 34.67453
+lon = -86.68163
+heading = 349.5
+
+[[placement]]
+model = "khua_hangar_55x50"
+lat = 34.67333
+lon = -86.68138
+heading = 349.5
+
+[[placement]]
+model = "khua_hangar_60x55"
+lat = 34.67018
+lon = -86.68030
+heading = 349.5

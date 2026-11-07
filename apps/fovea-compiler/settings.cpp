@@ -81,6 +81,26 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
         return base / *v;
     };
     s.output = path(root["output"], "output");
+    // A file, or a list of them.
+    const auto paths = [&](toml::node_view<toml::node> n, const char* what) {
+        std::vector<fs::path> out;
+        if (const auto* a = n.as_array()) {
+            for (const auto& e : *a) {
+                const auto v = e.value<std::string>();
+                if (!v || v->empty()) {
+                    error(e.source(), std::string("'") + what + "' lists file names");
+                    continue;
+                }
+                out.push_back(base / *v);
+            }
+            if (a->empty()) {
+                error(a->source(), std::string("'") + what + "' lists no file");
+            }
+        } else if (fs::path one = path(n, what); !one.empty()) {
+            out.push_back(std::move(one));
+        }
+        return out;
+    };
 
     // The area: a table here, or the [area] of another file (the sources).
     toml::table area_file;
@@ -226,67 +246,71 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
             error(runways.node()->source(), "[runways] blend_m is from 0 to 1000");
         }
         s.runway_blend_m = blend.value_or(s.runway_blend_m);
-        const fs::path f = path(runways["airport"], "runways.airport");
-        const auto t = f.empty() ? std::nullopt : read_text(f);
-        if (!f.empty() && !t) {
-            error(runways.node()->source(), "cannot read " + f.string());
-        }
-        toml::table airport;
-        bool parsed = false;
-        if (t) {
-            try {
-                airport = toml::parse(*t, f.string());
-                parsed = true;
-            } catch (const toml::parse_error& e) {
-                r.errors.push_back(f.string() + ":" + std::to_string(e.source().begin.line) + ": " +
-                                   std::string(e.description()));
+        for (const fs::path& f : paths(runways["airport"], "runways.airport")) {
+            const auto t = read_text(f);
+            if (!t) {
+                error(runways.node()->source(), "cannot read " + f.string());
             }
-        }
-        const auto bad = [&](const toml::node& at, const std::string& msg) {
-            r.errors.push_back(f.string() + ":" + std::to_string(at.source().begin.line) + ": " +
-                               msg);
-        };
-        const auto* list = airport["runway"].as_array();
-        if (parsed && (list == nullptr || list->empty())) {
-            r.errors.push_back(f.string() + ": no [[runway]]");
-        }
-        if (list != nullptr) {
-            for (const auto& node : *list) {
-                const auto* rt = node.as_table();
-                const auto* ends = rt != nullptr ? (*rt)["end"].as_array() : nullptr;
-                const auto width = rt != nullptr ? (*rt)["width_ft"].value<double>() : std::nullopt;
-                if (rt == nullptr || !(*rt)["name"].is_string() || !width || !(*width > 0.0) ||
-                    ends == nullptr || ends->size() != 2) {
-                    bad(node, "a [[runway]] needs name, width_ft and two [[runway.end]]");
-                    continue;
+            toml::table airport;
+            bool parsed = false;
+            if (t) {
+                try {
+                    airport = toml::parse(*t, f.string());
+                    parsed = true;
+                } catch (const toml::parse_error& e) {
+                    r.errors.push_back(f.string() + ":" + std::to_string(e.source().begin.line) +
+                                       ": " + std::string(e.description()));
                 }
-                Runway rw;
-                rw.name = (*rt)["name"].value_or(std::string{});
-                rw.width_m = *width * 0.3048;
-                rw.length_m = (*rt)["length_ft"].value_or(0.0) * 0.3048;
-                bool ok = true;
-                for (std::size_t i = 0; i < 2; ++i) {
-                    const auto* et = (*ends)[i].as_table();
-                    const auto lat = et != nullptr ? parse_degrees_minutes(
-                                                         (*et)["lat"].value_or(std::string{}), true)
-                                                   : std::nullopt;
-                    const auto lon =
-                        et != nullptr
-                            ? parse_degrees_minutes((*et)["lon"].value_or(std::string{}), false)
-                            : std::nullopt;
-                    const auto elev =
-                        et != nullptr ? (*et)["elevation_ft"].value<double>() : std::nullopt;
-                    if (et == nullptr || !(*et)["id"].is_string() || !lat || !lon || !elev) {
-                        bad((*ends)[i],
-                            "a [[runway.end]] needs id, lat and lon (\"34-39.167130N\", "
-                            "\"086-46.926028W\") and elevation_ft");
-                        ok = false;
+            }
+            const auto bad = [&](const toml::node& at, const std::string& msg) {
+                r.errors.push_back(f.string() + ":" + std::to_string(at.source().begin.line) +
+                                   ": " + msg);
+            };
+            const auto* list = airport["runway"].as_array();
+            if (parsed && (list == nullptr || list->empty())) {
+                r.errors.push_back(f.string() + ": no [[runway]]");
+            }
+            if (list != nullptr) {
+                for (const auto& node : *list) {
+                    const auto* rt = node.as_table();
+                    const auto* ends = rt != nullptr ? (*rt)["end"].as_array() : nullptr;
+                    const auto width =
+                        rt != nullptr ? (*rt)["width_ft"].value<double>() : std::nullopt;
+                    if (rt == nullptr || !(*rt)["name"].is_string() || !width || !(*width > 0.0) ||
+                        ends == nullptr || ends->size() != 2) {
+                        bad(node, "a [[runway]] needs name, width_ft and two [[runway.end]]");
                         continue;
                     }
-                    rw.ends[i] = {(*et)["id"].value_or(std::string{}), *lat, *lon, *elev * 0.3048};
-                }
-                if (ok) {
-                    s.runways.push_back(std::move(rw));
+                    Runway rw;
+                    rw.name = (*rt)["name"].value_or(std::string{});
+                    rw.width_m = *width * 0.3048;
+                    rw.length_m = (*rt)["length_ft"].value_or(0.0) * 0.3048;
+                    bool ok = true;
+                    for (std::size_t i = 0; i < 2; ++i) {
+                        const auto* et = (*ends)[i].as_table();
+                        const auto lat =
+                            et != nullptr
+                                ? parse_degrees_minutes((*et)["lat"].value_or(std::string{}), true)
+                                : std::nullopt;
+                        const auto lon =
+                            et != nullptr
+                                ? parse_degrees_minutes((*et)["lon"].value_or(std::string{}), false)
+                                : std::nullopt;
+                        const auto elev =
+                            et != nullptr ? (*et)["elevation_ft"].value<double>() : std::nullopt;
+                        if (et == nullptr || !(*et)["id"].is_string() || !lat || !lon || !elev) {
+                            bad((*ends)[i],
+                                "a [[runway.end]] needs id, lat and lon (\"34-39.167130N\", "
+                                "\"086-46.926028W\") and elevation_ft");
+                            ok = false;
+                            continue;
+                        }
+                        rw.ends[i] = {(*et)["id"].value_or(std::string{}), *lat, *lon,
+                                      *elev * 0.3048};
+                    }
+                    if (ok) {
+                        s.runways.push_back(std::move(rw));
+                    }
                 }
             }
         }
@@ -294,14 +318,17 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
 
     if (const auto placements = root["placements"]; placements.is_table()) {
         CompileSettings::Placements pl;
-        const fs::path file = path(placements["file"], "placements.file");
         pl.models = path(placements["models"], "placements.models");
-        if (const auto t = file.empty() ? std::nullopt : read_text(file)) {
-            PlacementFileResult read = parse_placement_file(*t, file);
-            r.errors.insert(r.errors.end(), read.errors.begin(), read.errors.end());
-            pl.placements = std::move(read.placements);
-        } else if (!file.empty()) {
-            error(placements.node()->source(), "cannot read " + file.string());
+        for (const fs::path& file : paths(placements["file"], "placements.file")) {
+            if (const auto t = read_text(file)) {
+                PlacementFileResult read = parse_placement_file(*t, file);
+                r.errors.insert(r.errors.end(), read.errors.begin(), read.errors.end());
+                for (auto& p : read.placements) {
+                    pl.placements.push_back(std::move(p));
+                }
+            } else {
+                error(placements.node()->source(), "cannot read " + file.string());
+            }
         }
         // The runtime draws placements from the root tiles only, for now
         // (#48): any other level would compile and never show.

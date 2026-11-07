@@ -1,0 +1,41 @@
+# Low over Redstone Army Airfield (KHUA, milestone 4 step 6): about 70 m
+# over the field at 50 m/s, north along runway 17/35 from 1.5 km short of
+# its south end, past the hangars east of it, a tight left turn back (about
+# 290 m round), and south along the big hangars of the west apron; level at
+# the end; once (about 2.5 minutes). For judging KHUA's runway and
+# landmarks. Run Fovea with config/khsv.toml, then:
+#   cigi-test-host tools/cigi-test-host/scripts/khua-low.toml
+
+[ig]
+address = "127.0.0.1"
+port = 8004
+
+[host]
+port = 8005
+rate_hz = 60.0
+
+[start]
+lat = 34.6555
+lon = -86.6796
+alt = 280.0      # about 70 m over the field (685.4 ft)
+heading = 349.5  # the runway's
+speed = 50.0
+
+[flight]
+loop = false
+
+[[segment]]
+kind = "straight"   # north along the runway, 3.5 km
+duration = 70.0
+speed = 50.0
+
+[[segment]]
+kind = "turn"       # left, back to the south (about 570 m west)
+duration = 18.0
+speed = 50.0
+turn_rate = -10.0
+
+[[segment]]
+kind = "straight"   # south along the west apron's hangars; level
+duration = 60.0
+speed = 50.0
