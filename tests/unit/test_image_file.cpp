@@ -47,6 +47,23 @@ TEST(ImageFile, MissingOrBadFilesReadAsNothing) {
     std::filesystem::remove(file);
 }
 
+TEST(ImageFile, DecodesPngAndJpegInMemoryWithinASize) {
+    const RgbaImage img = gradient(40, 24);
+    const auto png = decode_image(encode_png(img));
+    ASSERT_TRUE(png.has_value());
+    EXPECT_EQ(png->pixels, img.pixels);
+    const auto jpeg = decode_image(encode_jpeg(img, 95));
+    ASSERT_TRUE(jpeg.has_value());
+    EXPECT_EQ(jpeg->width, 40U);
+    EXPECT_EQ(jpeg->height, 24U);
+    EXPECT_LT(compare_images(img, *jpeg, 12).fraction_over, 0.01);  // lossy, but close
+    EXPECT_FALSE(decode_image(encode_png(img), 39).has_value());     // wider than allowed
+    EXPECT_TRUE(decode_image(encode_png(img), 40).has_value());
+    const std::vector<std::uint8_t> junk{1, 2, 3};
+    EXPECT_FALSE(decode_image(junk).has_value());
+    EXPECT_TRUE(encode_png(RgbaImage{}).empty());
+}
+
 TEST(ImageFile, CompareCountsPixelsOverTheThreshold) {
     const RgbaImage a = gradient(10, 10);
     RgbaImage b = a;

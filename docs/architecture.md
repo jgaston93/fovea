@@ -11,6 +11,7 @@ apps/
 libs/
   core/               math, time, logging, config, lock-free containers, SceneState
   terrain/            database reader + TerrainQuery (CPU-only, no Vulkan)
+  models/             glTF (.glb) model reader (CPU-only, no Vulkan; D-023)
   platform/           SDL3 windows, monitors, input, high-res timers, thread setup
   net/                UDP transport + CIGI codec + CIGI→SceneState adapter
   render/             Vulkan device, Views, Presenters, frame graph, shaders
@@ -30,6 +31,7 @@ Arrows mean "depends on". The graph has no cycles, and CMake enforces it through
 ```
 core      ← (nothing; std, glm, toml++ and stb_image only)
 terrain   ← core
+models    ← core            (+ cgltf, private)
 platform  ← core            (+ SDL3, private)
 net       ← core
 render    ← core, platform, terrain  (+ volk, VMA, vk-bootstrap, Dear ImGui, private; the terrain paging thread)
@@ -40,7 +42,7 @@ tools/cigi-test-host ← core, net
 ```
 
 Rules:
-- `core` and `terrain` never include Vulkan, SDL or GDAL headers. That lets a host link `terrain` to answer height-of-terrain queries from the same database the IG displays.
+- `core`, `terrain` and `models` never include Vulkan, SDL or GDAL headers. That lets a host link `terrain` to answer height-of-terrain queries from the same database the IG displays, and tests read models without a GPU. The renderer takes on `models` when it draws them (milestone 4 step 3).
 - `net` never includes renderer headers. It writes only `SceneState`.
 - `render` never includes `net` headers. It reads only `SceneState`. That boundary is what keeps the renderer protocol-neutral.
 - Third-party dependencies are linked `PRIVATE` wherever their types don't appear in public headers.

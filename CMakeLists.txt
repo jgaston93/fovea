@@ -23,6 +23,7 @@ include(FoveaShaders)
 
 add_subdirectory(libs/core)
 add_subdirectory(libs/terrain)
+add_subdirectory(libs/models)
 add_subdirectory(libs/platform)
 add_subdirectory(libs/net)
 add_subdirectory(libs/render)
