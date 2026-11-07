@@ -1309,7 +1309,13 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
     std::array<VkCommandBufferSubmitInfo, kMaxUploadsInAFrame + 1> cmds{};
     std::uint32_t cmd_count = 0;
     if (terrain && request.scene) {
-        for (const VkCommandBufferSubmitInfo& u : terrain->uploads()) {
+        const auto uploads = terrain->uploads();
+        // Never past the array, whatever the terrain hands over.
+        if (uploads.size() >= cmds.size()) {
+            fail("terrain: " + std::to_string(uploads.size()) + " uploads in a frame, room for " +
+                 std::to_string(cmds.size() - 1));
+        }
+        for (const VkCommandBufferSubmitInfo& u : uploads) {
             cmds[cmd_count++] = u;
         }
     }
