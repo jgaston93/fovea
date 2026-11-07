@@ -1,6 +1,8 @@
 # A straight-in approach to KHSV runway 36L (milestone 3 step 5): from 6 km
 # out on the extended centreline, down a 3 degree glide path to 15 m over
-# the threshold, then along the runway at that height. Run Fovea with
+# the threshold, along the runway at that height, then a climb away; once,
+# then holding there (a loop would replay the descent from the runway's
+# end, into the ground). Run Fovea with
 # config/khsv.toml, then:
 #   cigi-test-host tools/cigi-test-host/scripts/khsv-approach.toml
 #
@@ -24,7 +26,7 @@ heading = 0.9
 speed = 70.0
 
 [flight]
-loop = true
+loop = false
 
 [[segment]]
 kind = "straight"
@@ -36,3 +38,9 @@ climb = -3.67    # 3 degrees at 70 m/s
 kind = "straight"
 duration = 55.0  # the length of the runway
 speed = 70.0
+
+[[segment]]
+kind = "straight"
+duration = 40.0  # climbing away at about 5 degrees
+speed = 70.0
+climb = 6.0
