@@ -191,6 +191,14 @@ void print_summary(const fovea::FrameSummary& s) {
         std::printf("  GPU, output %u: mean %.3f ms, max %.3f ms\n", i, s.gpu_mean_ms[i],
                     s.gpu_max_ms[i]);
     }
+    if (s.tiles_resident_max > 0) {
+        std::printf(
+            "  terrain: up to %u tiles resident, %llu uploaded; %llu frames drew %llu tiles "
+            "coarser than wanted (paging behind)\n",
+            s.tiles_resident_max, static_cast<unsigned long long>(s.tile_uploads),
+            static_cast<unsigned long long>(s.frames_with_misses),
+            static_cast<unsigned long long>(s.tile_misses));
+    }
     if (s.entity_frames > 0) {
         std::printf(
             "  host samples at frame start: %.2f ms old on the host's clock, %.2f ms "
@@ -265,9 +273,12 @@ bool load_terrain(fovea::Renderer& renderer, const fovea::DisplayConfig& config,
     if (between_tiles) {
         options.progress = [&](std::size_t, std::size_t) { between_tiles(); };
     }
-    const fovea::TerrainLoad load = renderer.load_terrain(*db, options);
-    std::printf("Terrain: %s, %zu tiles (%.2f GB) in %.1f s\n", t.database.string().c_str(),
-                load.tiles, static_cast<double>(load.bytes) / 1e9, load.seconds);
+    options.max_tiles = t.max_tiles;
+    options.budget_bytes = static_cast<std::size_t>(t.budget_mb) << 20;
+    const fovea::TerrainLoad load = renderer.load_terrain(std::move(db), options);
+    std::printf("Terrain: %s, %zu root tiles (%.2f GB) in %.1f s; the rest paged\n",
+                t.database.string().c_str(), load.tiles, static_cast<double>(load.bytes) / 1e9,
+                load.seconds);
     const std::size_t shown = std::min<std::size_t>(load.problems.size(), 10);
     for (std::size_t i = 0; i < shown; ++i) {
         std::printf("  %s\n", load.problems[i].c_str());

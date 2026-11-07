@@ -5,6 +5,7 @@ add_library(fovea_render STATIC
     src/display_clock.cpp
     src/frame_loop.cpp
     src/scene_view.cpp
+    src/terrain_cache.cpp
     src/terrain_lod.cpp
     src/view.cpp
     src/vk/overlay_ui.cpp

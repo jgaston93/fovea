@@ -136,21 +136,40 @@ Pose pose_at(const EntityState& entity, LocalTime at, bool allowed = true);
 // degrees clockwise from north.
 double view_heading_deg(const SceneView& view);
 
-// Terrain (milestone 3 step 5): which tiles load, and when they split.
+// Terrain (milestone 3 steps 5 and 6): which tiles load, when they split,
+// and how much of the GPU they may take.
 struct TerrainOptions {
-    int max_level = 30;        // tiles finer than this aren't loaded
-    double pixel_error = 1.0;  // a tile splits where its error shows as more (D-016)
+    int max_level = 30;              // tiles finer than this aren't loaded
+    double pixel_error = 1.0;        // a tile splits where its error shows as more (D-016)
+    std::uint32_t max_tiles = 4096;  // resident at once, roots included
+    std::size_t budget_bytes = std::size_t{2} << 30;  // their heights and imagery
     // Called after each tile loads (tiles loaded, tiles there could be),
     // on the loading thread: a window's events can be handled there, so a
     // long load doesn't leave it unresponsive.
     std::function<void(std::size_t, std::size_t)> progress;
 };
 
+// What load_terrain did up front: the roots.
 struct TerrainLoad {
     std::size_t tiles = 0;
     std::size_t bytes = 0;  // heights and imagery uploaded
     double seconds = 0.0;
     std::vector<std::string> problems;  // tiles skipped or drawn without imagery, and why
+};
+
+// The terrain in one frame (step 6), for the stats log and overlay.
+struct TerrainStats {
+    std::uint32_t drawn = 0;     // tiles drawn, over all outputs
+    std::uint32_t resident = 0;  // on the GPU
+    std::uint32_t loading = 0;   // asked for, not yet arrived
+    std::uint32_t uploads = 0;   // arrived this frame
+    std::uint32_t requests = 0;  // asked for this frame
+    // Tiles drawn coarser than pixel_error because their children aren't
+    // there yet: what paging hasn't kept up with (drawn anyway: never a hole).
+    std::uint32_t misses = 0;
+    std::size_t bytes = 0;  // GPU memory the tiles take
+    std::uint64_t evictions = 0;
+    std::uint64_t failures = 0;  // tiles that couldn't be loaded (skipped)
 };
 
 // Up to this many outputs get GPU timings.
@@ -182,6 +201,7 @@ struct OverlayContent {
     std::array<float, kMaxTimedOutputs> gpu_ms{};  // the latest GPU times per output
     std::string_view note;                         // an optional extra line
     float host_age_ms = -1.0F;  // the host's newest sample, at frame start; negative: no host
+    TerrainStats terrain;       // the last frame's; all zero without terrain
 };
 
 // One Renderer at a time (Vulkan entry points are process-wide in volk);
@@ -242,18 +262,20 @@ public:
     // vkQueueWaitIdle, so the overlay is left out of that frame instead.
     std::uint64_t overlay_skipped_frames() const;
 
-    // Loads a terrain database onto the GPU: every tile down to
-    // options.max_level, up front (milestone 3 step 5; paging follows in
-    // step 6). From then on draw_scene_frame draws the terrain in every
-    // view, over the reference scene's sky and grid. Init time: reads the
-    // tiles and waits for their uploads. Tiles that can't be used are
-    // skipped and listed. Throws std::runtime_error when nothing loads or
-    // the GPU can't bind that many tiles; once loaded, it can't be loaded
+    // Draws a terrain database from now on, in every view, over the
+    // reference scene's sky and grid. The roots are loaded here (init time:
+    // read, and their uploads waited for); every other tile is paged in as
+    // views want it (step 6), by a paging thread this starts, which reads
+    // the database (so the renderer keeps it). Roots that can't be used are
+    // skipped and listed. Throws std::runtime_error when no root loads or
+    // the GPU can't bind options.max_tiles; once loaded, it can't be loaded
     // again.
-    TerrainLoad load_terrain(const TerrainDatabase& database, const TerrainOptions& options = {});
+    TerrainLoad load_terrain(std::unique_ptr<TerrainDatabase> database,
+                             const TerrainOptions& options = {});
 
-    // Terrain tiles drawn in the last frame, over all outputs.
-    std::uint32_t terrain_tiles_drawn() const;
+    // The terrain in the last frame drawn (zeros without terrain).
+    const TerrainStats& terrain_stats() const;
+    std::uint32_t terrain_tiles_drawn() const { return terrain_stats().drawn; }
 
     // Offscreen outputs only: the last frame's pixels, RGBA8, row by row.
     // Waits for the GPU to finish it.

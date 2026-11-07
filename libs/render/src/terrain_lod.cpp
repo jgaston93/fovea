@@ -34,14 +34,22 @@ bool sphere_visible(const Mat4& ecef_to_clip, const DVec3& centre_rel_eye, doubl
 std::size_t select_tiles(std::span<const LodTile> tiles, std::span<const std::uint32_t> roots,
                          const LodView& view, std::span<std::uint32_t> stack,
                          std::span<std::uint32_t> out) {
+    return select_tiles(tiles, roots, view, stack, out, {}).drawn;
+}
+
+TileSelection select_tiles(std::span<const LodTile> tiles, std::span<const std::uint32_t> roots,
+                           const LodView& view, std::span<std::uint32_t> stack,
+                           std::span<std::uint32_t> out, std::span<std::uint32_t> wants,
+                           std::span<std::uint32_t> split) {
+    TileSelection sel;
     std::size_t top = 0;
-    std::size_t count = 0;
     // Roots pushed in reverse, so they come off in order.
     for (std::size_t i = roots.size(); i-- > 0;) {
         if (top < stack.size()) {
             stack[top++] = roots[i];
         }
     }
+    const double request_error = view.request_error > 0.0 ? view.request_error : view.pixel_error;
     while (top > 0) {
         const std::uint32_t t = stack[--top];
         const LodTile& tile = tiles[t];
@@ -52,18 +60,34 @@ std::size_t select_tiles(std::span<const LodTile> tiles, std::span<const std::ui
         const bool all_children = std::none_of(tile.children.begin(), tile.children.end(),
                                                [](std::uint32_t k) { return k == kNoTile; });
         const double distance = glm::length(c) - tile.radius_m;
-        if (all_children && top + 4 <= stack.size() &&
-            screen_error_px(tile.error_m, distance, view.pixels_per_tangent) > view.pixel_error) {
+        const double error = screen_error_px(tile.error_m, distance, view.pixels_per_tangent);
+        if (all_children && top + 4 <= stack.size() && error > view.pixel_error) {
+            if (sel.split < split.size()) {
+                split[sel.split++] = t;
+            }
             for (std::size_t k = 4; k-- > 0;) {
                 stack[top++] = tile.children[k];
             }
             continue;
         }
-        if (count < out.size()) {
-            out[count++] = t;
+        if (sel.drawn < out.size()) {
+            out[sel.drawn++] = t;
+        }
+        if (tile.error_m > 0.0) {
+            double ahead = distance;
+            if (view.lookahead_ecef) {
+                ahead = std::min(
+                    ahead, glm::length(tile.centre_ecef - *view.lookahead_ecef) - tile.radius_m);
+            }
+            if (screen_error_px(tile.error_m, ahead, view.pixels_per_tangent) > request_error) {
+                if (sel.wanted < wants.size()) {
+                    wants[sel.wanted++] = t;
+                }
+                sel.misses += !all_children && error > view.pixel_error ? 1U : 0U;
+            }
         }
     }
-    return count;
+    return sel;
 }
 
 }  // namespace fovea

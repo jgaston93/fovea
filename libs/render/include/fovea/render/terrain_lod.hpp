@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 #include "fovea/core/math.hpp"
@@ -31,6 +32,26 @@ struct LodView {
     // Pixels per unit of tangent vertically: render height / tan_height.
     double pixels_per_tangent = 1.0;
     double pixel_error = 1.0;
+    // For paging (step 6): where the eye is expected to be shortly, and the
+    // error above which a tile's children are wanted (seen from either), so
+    // they load before they're needed. 0: request_error is pixel_error.
+    std::optional<DVec3> lookahead_ecef;
+    double request_error = 0.0;
+};
+
+struct TileSelection {
+    std::size_t drawn = 0;
+    // Tiles drawn whole whose children are wanted: they should split, or
+    // soon will (their error past request_error), whether the children are
+    // there yet or not (those that are must stay). As many as fit in
+    // `wants`.
+    std::size_t wanted = 0;
+    // Of those, the ones drawn coarser than pixel_error now because their
+    // children aren't all there.
+    std::size_t misses = 0;
+    // Tiles that split (their children used, whether in view or not), as
+    // many as fit in `split`.
+    std::size_t split = 0;
 };
 
 // Error `error_m` seen from `distance_m` away, in pixels.
@@ -48,5 +69,11 @@ bool sphere_visible(const Mat4& ecef_to_clip, const DVec3& centre_rel_eye, doubl
 std::size_t select_tiles(std::span<const LodTile> tiles, std::span<const std::uint32_t> roots,
                          const LodView& view, std::span<std::uint32_t> stack,
                          std::span<std::uint32_t> out);
+// The same, also listing the tiles whose children are wanted (most wanted
+// first is the caller's to sort: `wants` is in drawing order).
+TileSelection select_tiles(std::span<const LodTile> tiles, std::span<const std::uint32_t> roots,
+                           const LodView& view, std::span<std::uint32_t> stack,
+                           std::span<std::uint32_t> out, std::span<std::uint32_t> wants,
+                           std::span<std::uint32_t> split = {});
 
 }  // namespace fovea

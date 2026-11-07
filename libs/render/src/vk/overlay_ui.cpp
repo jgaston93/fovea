@@ -21,6 +21,12 @@ void build_overlay_ui(const OverlayContent& c) {
     if (c.host_age_ms >= 0.0F) {
         ImGui::Text("Host sample %.1f ms old", static_cast<double>(c.host_age_ms));
     }
+    if (c.terrain.resident > 0) {
+        ImGui::Text("Terrain %u drawn, %u resident (%.0f MB), %u loading", c.terrain.drawn,
+                    c.terrain.resident, static_cast<double>(c.terrain.bytes) / 1048576.0,
+                    c.terrain.loading);
+        ImGui::Text("  %u uploads, %u misses", c.terrain.uploads, c.terrain.misses);
+    }
     if (!c.note.empty()) {
         ImGui::TextUnformatted(c.note.data(), c.note.data() + c.note.size());
     }

@@ -192,5 +192,45 @@ TEST(TerrainLod, StopsAtTheScratchSpaceItIsGiven) {
     EXPECT_EQ(select_tiles(t.tiles, t.roots, view_from(-30.0), stack, out), 3U);
 }
 
+TEST(TerrainLod, ListsTilesWhoseChildrenAreWantedAndCountsMisses) {
+    Tree t = make_tree();
+    // Only the roots and their children "loaded": nothing below level 15.
+    for (std::size_t i = 0; i < t.keys.size(); ++i) {
+        if (t.keys[i].level >= kRoot + 1) {
+            t.tiles[i].children = {kNoTile, kNoTile, kNoTile, kNoTile};
+        }
+    }
+    LodView v = view_from(-30.0);
+    v.pixel_error = 16.0;  // so some tiles in view don't want their children yet
+    std::vector<std::uint32_t> stack(t.tiles.size());
+    std::vector<std::uint32_t> out(t.tiles.size());
+    std::vector<std::uint32_t> wants(t.tiles.size());
+    const TileSelection sel = select_tiles(t.tiles, t.roots, v, stack, out, wants);
+    ASSERT_GT(sel.wanted, 0U);
+    EXPECT_GT(sel.misses, 0U);
+    EXPECT_LE(sel.misses, sel.wanted);
+    for (std::size_t i = 0; i < sel.wanted; ++i) {
+        // Drawn, and at the level whose children are missing.
+        EXPECT_NE(
+            std::find(out.begin(), out.begin() + static_cast<std::ptrdiff_t>(sel.drawn), wants[i]),
+            out.begin() + static_cast<std::ptrdiff_t>(sel.drawn));
+        EXPECT_EQ(t.keys[wants[i]].level, kRoot + 1);
+    }
+    // Asking for children before they're needed asks for more; so does
+    // looking ahead to where the eye is going (a kilometre on, northwards).
+    v.request_error = 4.0;
+    const TileSelection eager = select_tiles(t.tiles, t.roots, v, stack, out, wants);
+    EXPECT_GT(eager.wanted, sel.wanted);
+    EXPECT_EQ(eager.misses, sel.misses);  // misses are against pixel_error alone
+    v.request_error = 0.0;
+    v.lookahead_ecef = v.eye_ecef + ned_to_ecef(34.637, -86.775) * DVec3(1000.0, 0.0, 0.0);
+    EXPECT_GE(select_tiles(t.tiles, t.roots, v, stack, out, wants).wanted, sel.wanted);
+    // With every tile loaded, nothing is wanted that can't be had.
+    const Tree full = make_tree();
+    const TileSelection all =
+        select_tiles(full.tiles, full.roots, view_from(-30.0), stack, out, wants);
+    EXPECT_EQ(all.misses, 0U);
+}
+
 }  // namespace
 }  // namespace fovea

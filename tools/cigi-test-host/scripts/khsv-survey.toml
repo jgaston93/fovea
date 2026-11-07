@@ -1,0 +1,62 @@
+# Paging over KHSV (milestone 3 step 6): a rectangle about 18 x 9 km over
+# the database's western half and the airport, at 500 m (about 150 m over
+# its highest ground, 300 over the airfield) and 150 m/s, once round (7
+# minutes). Run Fovea with config/khsv.toml (--stats to log each frame's
+# paging), then:
+#   cigi-test-host tools/cigi-test-host/scripts/khsv-survey.toml
+
+[ig]
+address = "127.0.0.1"
+port = 8004
+
+[host]
+port = 8005
+rate_hz = 60.0
+
+[start]
+lat = 34.560
+lon = -86.870
+alt = 500.0
+heading = 0.0
+speed = 150.0
+
+[flight]
+loop = false
+
+[[segment]]
+kind = "straight"   # north, 18 km
+duration = 120.0
+speed = 150.0
+
+[[segment]]
+kind = "turn"       # right, to the east
+duration = 15.0
+speed = 150.0
+turn_rate = 6.0
+
+[[segment]]
+kind = "straight"   # east, 9 km
+duration = 60.0
+speed = 150.0
+
+[[segment]]
+kind = "turn"       # right, to the south
+duration = 15.0
+speed = 150.0
+turn_rate = 6.0
+
+[[segment]]
+kind = "straight"   # south, over the airport
+duration = 120.0
+speed = 150.0
+
+[[segment]]
+kind = "turn"       # right, to the west
+duration = 15.0
+speed = 150.0
+turn_rate = 6.0
+
+[[segment]]
+kind = "straight"   # west, back
+duration = 60.0
+speed = 150.0

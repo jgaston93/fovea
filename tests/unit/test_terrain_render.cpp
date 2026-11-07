@@ -5,6 +5,7 @@
 // catches any other change.
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -12,9 +13,11 @@
 #include <fstream>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -25,6 +28,7 @@
 #include "fovea/terrain/database.hpp"
 #include "fovea/terrain/tile_file.hpp"
 #include "fovea/terrain/tile_key.hpp"
+#include "support/alloc_counter.hpp"
 
 namespace fovea {
 namespace {
@@ -139,10 +143,18 @@ fs::path write_db(const std::string& name, const Spec& s) {
     return dir;
 }
 
-std::unique_ptr<Renderer> make_renderer(std::uint32_t w, std::uint32_t h) {
+struct RenderOptionsNoValidation {
+    RendererOptions options{Validation::off};
+};
+
+std::unique_ptr<Renderer> make_renderer(std::uint32_t w, std::uint32_t h,
+                                        std::optional<RendererOptions> given = std::nullopt) {
     RendererOptions options;
     if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
         options.validation = Validation::required;
+    }
+    if (given) {
+        options = *given;
     }
     try {
         return Renderer::offscreen(std::vector<OffscreenOutput>{{w, h}}, options);
@@ -159,6 +171,26 @@ std::unique_ptr<Renderer> make_renderer(std::uint32_t w, std::uint32_t h) {
     if (!(r)) {                                                 \
         GTEST_SKIP() << "no Vulkan 1.3 driver on this machine"; \
     }
+
+// Draws `views` until paging settles: nothing asked for, loading, arriving
+// or drawn coarser than wanted for a few frames. Returns the frames drawn
+// (max_frames if it never settles).
+int settle(Renderer& r, const std::vector<SceneView>& views, int max_frames = 600) {
+    int quiet = 0;
+    for (int f = 1; f <= max_frames; ++f) {
+        r.draw_scene_frame(views);
+        const TerrainStats& s = r.terrain_stats();
+        quiet =
+            s.requests == 0 && s.loading == 0 && s.uploads == 0 && s.misses == 0 ? quiet + 1 : 0;
+        if (quiet >= 3) {
+            return f;
+        }
+        if (s.loading > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));  // the paging thread's turn
+        }
+    }
+    return max_frames;
+}
 
 std::unique_ptr<TerrainDatabase> open_db(const fs::path& dir) {
     std::unique_ptr<TerrainDatabase> db;
@@ -245,19 +277,19 @@ TEST(TerrainRender, FlatGroundShowsWhereTheProjectionPutsIt) {
     double lat0 = 0.0;
     double lon0 = 0.0;
     const Spec s = quadrant_spec([](double, double) { return 120.0; }, &lat0, &lon0);
-    const auto db = open_db(write_db("flat", s));
+    const fs::path dir = write_db("flat", s);
     constexpr std::uint32_t kSize = 256;
     RENDERER_OR_SKIP(r, kSize, kSize);
-    const TerrainLoad load = r->load_terrain(*db);
-    EXPECT_EQ(load.tiles, 5U);
+    const TerrainLoad load = r->load_terrain(open_db(dir));
+    EXPECT_EQ(load.tiles, 1U);  // the root; the rest is paged
     EXPECT_TRUE(load.problems.empty()) << load.problems[0];
     // Looking straight down from 300 m, 40 m south-west of the corner.
     const DMat3 ned = ned_to_ecef(lat0, lon0);
     const Geodetic eye_at =
         ecef_to_geodetic(geodetic_to_ecef({lat0, lon0, 120.0}) + ned * DVec3(-40.0, -40.0, 0.0));
     const SceneView v = view_at({eye_at.lat_deg, eye_at.lon_deg, 120.0}, 300.0, -90.0);
-    r->draw_scene_frame(std::vector<SceneView>{v});
-    EXPECT_GT(r->terrain_tiles_drawn(), 0U);
+    EXPECT_LT(settle(*r, {v}), 600);
+    EXPECT_GT(r->terrain_tiles_drawn(), 1U);  // children paged in
     EXPECT_EQ(r->validation_messages(), 0U);
     const auto px = r->read_back_rgba(0);
     expect_corner_at(px, kSize, project(v, {lat0, lon0, 120.0}, kSize, kSize), true);
@@ -274,16 +306,16 @@ TEST(TerrainRender, HeightsLiftTheGroundWhereTheyShould) {
         return 150.0 + 0.1 * (lat - la) * 111000.0;  // about 1 in 10
     };
     const Spec s = quadrant_spec(rise, &lat0, &lon0);
-    const auto db = open_db(write_db("slope", s));
+    const fs::path dir = write_db("slope", s);
     constexpr std::uint32_t kSize = 256;
     RENDERER_OR_SKIP(r, kSize, kSize);
-    (void)r->load_terrain(*db);
+    (void)r->load_terrain(open_db(dir));
     const double h0 = rise(lat0, lon0);
     const DMat3 ned = ned_to_ecef(lat0, lon0);
     const Geodetic eye_at =
         ecef_to_geodetic(geodetic_to_ecef({lat0, lon0, h0}) + ned * DVec3(-200.0, 0.0, 0.0));
     const SceneView v = view_at({eye_at.lat_deg, eye_at.lon_deg, h0}, 200.0, -45.0);
-    r->draw_scene_frame(std::vector<SceneView>{v});
+    EXPECT_LT(settle(*r, {v}), 600);
     EXPECT_EQ(r->validation_messages(), 0U);
     const auto px = r->read_back_rgba(0);
     const glm::dvec2 at = project(v, {lat0, lon0, h0}, kSize, kSize);
@@ -294,35 +326,39 @@ TEST(TerrainRender, HeightsLiftTheGroundWhereTheyShould) {
     EXPECT_GT(std::abs(project(v, {lat0, lon0, 0.0}, kSize, kSize).y - at.y), 20.0);
 }
 
-TEST(TerrainRender, LoadingSkipsDamagedTilesAndStopsAtMaxLevel) {
+TEST(TerrainRender, PagingSkipsDamagedTilesAndStopsAtMaxLevel) {
     double lat0 = 0.0;
     double lon0 = 0.0;
     const Spec s = quadrant_spec([](double, double) { return 120.0; }, &lat0, &lon0);
     const fs::path dir = write_db("damaged", s);
     const TileKey broken = children(s.root_key)[2];
     std::ofstream(dir / tile_path(broken), std::ios::binary | std::ios::trunc) << "not a tile";
-    const auto db = open_db(dir);
     RENDERER_OR_SKIP(r, 64, 64);
-    const TerrainLoad load = r->load_terrain(*db);
-    EXPECT_EQ(load.tiles, 4U);
-    ASSERT_EQ(load.problems.size(), 1U);
-    EXPECT_NE(load.problems[0].find(to_string(broken)), std::string::npos) << load.problems[0];
-    // The root can't split (a child is missing), and is drawn whole.
-    r->draw_scene_frame(std::vector<SceneView>{view_at({lat0, lon0, 120.0}, 100.0, -90.0)});
+    const TerrainLoad load = r->load_terrain(open_db(dir));
+    EXPECT_EQ(load.tiles, 1U);
+    EXPECT_TRUE(load.problems.empty());
+    // The root can't split (a child failed to load), and is drawn whole.
+    const std::vector<SceneView> v{view_at({lat0, lon0, 120.0}, 100.0, -90.0)};
+    (void)settle(*r, v, 120);  // never quiet: the root misses its children for good
+    EXPECT_EQ(r->terrain_stats().failures, 1U);
+    EXPECT_EQ(r->terrain_stats().resident, 4U);  // the root and the three that loaded
     EXPECT_EQ(r->terrain_tiles_drawn(), 1U);
     EXPECT_EQ(r->validation_messages(), 0U);
-    EXPECT_THROW((void)r->load_terrain(*db), std::runtime_error);  // once only
+    EXPECT_THROW((void)r->load_terrain(open_db(dir)), std::runtime_error);  // once only
 
     r.reset();  // one Renderer at a time
     RENDERER_OR_SKIP(r2, 64, 64);
     TerrainOptions only_roots;
     only_roots.max_level = 15;
-    EXPECT_EQ(r2->load_terrain(*db, only_roots).tiles, 1U);
+    EXPECT_EQ(r2->load_terrain(open_db(dir), only_roots).tiles, 1U);
+    (void)settle(*r2, v, 120);
+    EXPECT_EQ(r2->terrain_stats().resident, 1U);  // nothing finer asked for
+    EXPECT_EQ(r2->terrain_stats().failures, 0U);
 }
 
 TEST(TerrainRender, ADamagedMiddleTileLeavesItsAncestorToCoverItsChildren) {
-    // Three levels; one level-16 tile damaged. Its grandparent can't split
-    // and covers everything: its children must not be drawn over it too.
+    // Three levels; one level-16 tile damaged. Its parent can't split and
+    // covers everything; nothing below the damaged tile is asked for.
     double lat0 = 0.0;
     double lon0 = 0.0;
     Spec s = quadrant_spec([](double, double) { return 120.0; }, &lat0, &lon0);
@@ -331,14 +367,117 @@ TEST(TerrainRender, ADamagedMiddleTileLeavesItsAncestorToCoverItsChildren) {
     const fs::path dir = write_db("damaged_middle", s);
     const TileKey broken = children(s.root_key)[0];
     std::ofstream(dir / tile_path(broken), std::ios::binary | std::ios::trunc) << "not a tile";
-    const auto db = open_db(dir);
     RENDERER_OR_SKIP(r, 64, 64);
-    const TerrainLoad load = r->load_terrain(*db);
-    EXPECT_EQ(load.tiles, 1U + 3U + 16U);
+    (void)r->load_terrain(open_db(dir));
     const GeoBounds b = tile_bounds(broken);
-    r->draw_scene_frame(std::vector<SceneView>{view_at(
-        {(b.south_deg + b.north_deg) / 2, (b.west_deg + b.east_deg) / 2, 120.0}, 300.0, -90.0)});
+    (void)settle(*r,
+                 {view_at({(b.south_deg + b.north_deg) / 2, (b.west_deg + b.east_deg) / 2, 120.0},
+                          300.0, -90.0)},
+                 120);
     EXPECT_EQ(r->terrain_tiles_drawn(), 1U);  // the root alone
+    EXPECT_EQ(r->terrain_stats().resident, 4U);
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
+TEST(TerrainRender, PagingKeepsUpAcrossAFlightWithNoHolesOrAllocation) {
+    // Four levels, one colour everywhere; room for 56 tiles of 85: enough
+    // for any one view, not for the whole flight.
+    Spec s;
+    s.finest = 18;
+    s.texels = 32;
+    s.root_key = tile_at(34.637, -86.775, s.root);
+    s.height = [](double, double) { return 120.0; };
+    s.colour = [](double, double) { return Rgb{220, 30, 220}; };
+    const fs::path dir = write_db("flight", s);
+    constexpr std::uint32_t kSize = 64;
+    RenderOptionsNoValidation no_validation;  // the layer allocates on the calling thread
+    auto r = make_renderer(kSize, kSize, no_validation.options);
+    if (!r) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    TerrainOptions options;
+    options.max_tiles = 56;
+    (void)r->load_terrain(open_db(dir), options);
+    // Straight down from 120 m, south to north across the root tile, well
+    // inside it (the view covers about 140 m).
+    const GeoBounds b = tile_bounds(s.root_key);
+    const double lon = (b.west_deg + b.east_deg) / 2;
+    const auto at = [&](double f) {
+        const double lat = b.south_deg + (0.2 + 0.6 * f) * (b.north_deg - b.south_deg);
+        return std::vector<SceneView>{view_at({lat, lon, 120.0}, 120.0, -90.0)};
+    };
+    std::uint32_t most_resident = 0;
+    std::uint64_t allocations = 0;
+    std::uint64_t uploads = 0;
+    constexpr int kFrames = 400;
+    for (int f = 0; f <= kFrames; ++f) {
+        const auto views = at(static_cast<double>(f) / kFrames);
+        {
+            const test::AllocationCounter counter;
+            r->draw_scene_frame(views);
+            allocations += f > 10 ? counter.count() : 0;  // after the first frames' set-up
+        }
+        const TerrainStats& st = r->terrain_stats();
+        most_resident = std::max(most_resident, st.resident + st.loading);
+        uploads += st.uploads;
+        ASSERT_GE(st.drawn, 1U);
+        // Every pixel is terrain: some tile always covers the ground.
+        const auto px = r->read_back_rgba(0);
+        for (std::size_t i = 0; i < px.size(); i += 4) {
+            ASSERT_GT(px[i], 150) << "frame " << f << ": a pixel that isn't terrain";
+            ASSERT_LT(px[i + 1], 100) << "frame " << f;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));  // the paging thread's turn
+    }
+    EXPECT_EQ(allocations, 0U);
+    EXPECT_LE(most_resident, 56U);
+    EXPECT_GT(r->terrain_stats().evictions, 0U);
+    EXPECT_GT(uploads, 56U);
+    // Stopped at the end: paging catches up, and nothing is drawn coarser
+    // than wanted.
+    (void)settle(*r, at(1.0));
+    EXPECT_EQ(r->terrain_stats().misses, 0U);
+}
+
+TEST(TerrainRender, TooSmallACacheMissesTilesWithoutThrashing) {
+    // Room for 40 tiles where the view wants more: some tiles stay coarser
+    // than wanted (misses), and nothing is evicted and loaded again and
+    // again to chase them.
+    Spec s;
+    s.finest = 18;
+    s.texels = 32;
+    s.root_key = tile_at(34.637, -86.775, s.root);
+    s.height = [](double, double) { return 120.0; };
+    s.colour = [](double, double) { return Rgb{220, 30, 220}; };
+    const fs::path dir = write_db("small_cache", s);
+    RENDERER_OR_SKIP(r, 64, 64);
+    TerrainOptions options;
+    options.max_tiles = 40;
+    (void)r->load_terrain(open_db(dir), options);
+    // Across the tile and stopped, as in the flight above: what was loaded
+    // on the way competes with what the view now wants.
+    const GeoBounds b = tile_bounds(s.root_key);
+    const double lon = (b.west_deg + b.east_deg) / 2;
+    const auto at = [&](double f) {
+        const double lat = b.south_deg + (0.2 + 0.6 * f) * (b.north_deg - b.south_deg);
+        return std::vector<SceneView>{view_at({lat, lon, 120.0}, 120.0, -90.0)};
+    };
+    for (int f = 0; f <= 200; ++f) {
+        r->draw_scene_frame(at(static_cast<double>(f) / 200.0));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const std::vector<SceneView> v = at(1.0);
+    (void)settle(*r, v, 300);
+    const std::uint64_t evictions = r->terrain_stats().evictions;
+    std::uint64_t uploads = 0;
+    for (int f = 0; f < 120; ++f) {
+        r->draw_scene_frame(v);
+        uploads += r->terrain_stats().uploads;
+    }
+    EXPECT_GT(r->terrain_stats().misses, 0U);
+    EXPECT_EQ(r->terrain_stats().evictions, evictions);
+    EXPECT_EQ(uploads, 0U);
+    EXPECT_LE(r->terrain_stats().resident, 40U);
     EXPECT_EQ(r->validation_messages(), 0U);
 }
 
@@ -366,13 +505,13 @@ TEST(TerrainRender, HillsMatchTheGoldenImage) {
         return Rgb{wave(std::sin(lat * 9000.0)), wave(std::cos(lon * 7000.0)),
                    wave(std::sin((lat + lon) * 5000.0))};
     };
-    const auto db = open_db(write_db("hills", s));
+    const fs::path dir = write_db("hills", s);
     constexpr std::uint32_t kW = 320;
     constexpr std::uint32_t kH = 200;
     RENDERER_OR_SKIP(r, kW, kH);
-    (void)r->load_terrain(*db);
+    (void)r->load_terrain(open_db(dir));
     const SceneView v = view_at({b.south_deg + 0.0004, clon, 150.0}, 250.0, -30.0, 10.0);
-    r->draw_scene_frame(std::vector<SceneView>{v});
+    EXPECT_LT(settle(*r, {v}), 600);
     EXPECT_EQ(r->validation_messages(), 0U);
     const RgbaImage image{kW, kH, r->read_back_rgba(0)};
     const fs::path file = FOVEA_SOURCE_DIR "/tests/data/golden/terrain_hills.png";

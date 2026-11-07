@@ -1,20 +1,28 @@
 #pragma once
 
-// Terrain on the GPU (milestone 3 step 5): a database's tiles uploaded up
-// front (heights and imagery as images in two bindless arrays, plus each
-// tile's control points), and each frame the tiles each view picks
-// (terrain_lod.hpp) drawn as instances of one grid.
+// Terrain on the GPU (milestone 3 steps 5 and 6). The roots are loaded up
+// front; every other tile is paged: each frame each view picks tiles from
+// what's resident (terrain_lod.hpp) and asks for the children it wants,
+// including those it will want shortly where the eye is heading; a paging
+// thread reads them, makes their images and records their uploads; the
+// render thread submits those ahead of its own frame and links the tiles in
+// (terrain_cache.hpp). The render thread never waits for the paging thread
+// or the disk. Tiles are drawn as instances of one grid, their heights and
+// imagery in two bindless arrays indexed by cache slot.
 
 #include <volk.h>
 
 #include <vk_mem_alloc.h>
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <span>
 #include <vector>
 
+#include "fovea/core/time.hpp"
 #include "fovea/render/renderer.hpp"
+#include "fovea/render/terrain_cache.hpp"
 #include "fovea/render/terrain_lod.hpp"
 #include "fovea/terrain/database.hpp"
 
@@ -28,29 +36,52 @@ struct GpuContext {
     std::uint32_t queue_family = 0;
     bool bc_textures = false;     // textureCompressionBC enabled
     float max_anisotropy = 0.0F;  // 0: samplerAnisotropy not enabled
+    // Signalled by every frame's submit with the frame's number plus one:
+    // the paging thread reads it to reuse what a frame's uploads used.
+    VkSemaphore timeline = VK_NULL_HANDLE;
 };
+
+// Most uploads submitted with one frame: bounds the render thread's work.
+inline constexpr std::uint32_t kMaxUploadsPerFrame = 16;
+
+class Pager;
 
 class TerrainGpu {
 public:
-    // Reads and uploads every tile down to options.max_level, waiting for
-    // the uploads (init time). `slots` x `outputs` regions of draw records,
-    // one per frame in flight and output. Throws std::runtime_error.
-    static std::unique_ptr<TerrainGpu> load(const GpuContext& gpu, const TerrainDatabase& db,
+    // Opens the paging: loads and uploads the roots (waiting, init time),
+    // and starts the paging thread. `slots` x `outputs` regions of draw
+    // records, one per frame in flight and output. Throws
+    // std::runtime_error.
+    static std::unique_ptr<TerrainGpu> load(const GpuContext& gpu,
+                                            std::unique_ptr<TerrainDatabase> db,
                                             const TerrainOptions& options, std::uint32_t slots,
                                             std::uint32_t outputs, VkShaderModule vertex,
                                             VkShaderModule fragment, VkFormat colour,
                                             VkFormat depth, TerrainLoad& report);
-    ~TerrainGpu();
+    ~TerrainGpu();  // stops the paging thread; the GPU must be idle
     TerrainGpu(const TerrainGpu&) = delete;
     TerrainGpu& operator=(const TerrainGpu&) = delete;
 
+    // At the start of each frame (numbered from 1), with the newest frame
+    // the GPU has finished: frees slots retired before it, and takes in
+    // tiles the paging thread has ready. Their uploads must be submitted
+    // ahead of this frame's commands (uploads()), and submitted() called
+    // with the timeline value that submission signals.
+    void begin_frame(std::uint64_t frame, std::uint64_t completed);
+    std::span<const VkCommandBufferSubmitInfo> uploads() const {
+        return {upload_infos_.data(), upload_count_};
+    }
+    void submitted(std::uint64_t timeline_value);
+
     // Picks and draws one view's tiles, inside a rendering pass with the
-    // colour and depth formats given to load. No allocation. Returns the
-    // number of tiles drawn.
+    // colour and depth formats given to load, and asks for the tiles it
+    // wants. No allocation. Returns the number of tiles drawn.
     std::uint32_t record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
                          const SceneView& view, VkExtent2D extent);
 
-private:
+    // This frame's numbers so far (reset by begin_frame).
+    const TerrainStats& stats() const { return stats_; }
+
     struct Image {
         VkImage image = VK_NULL_HANDLE;
         VmaAllocation memory = nullptr;
@@ -62,33 +93,56 @@ private:
         void* mapped = nullptr;
     };
 
-    explicit TerrainGpu(const GpuContext& gpu) : gpu_(gpu) {}
+private:
+    friend class Pager;
+
+    explicit TerrainGpu(const GpuContext& gpu);
     Buffer make_buffer(VkDeviceSize size, VkBufferUsageFlags usage, bool host) const;
     void destroy(Buffer& b) const;
     void destroy(Image& i) const;
+    void write_descriptors(std::uint32_t slot, VkImageView heights, VkImageView imagery);
+    void request_children(const SceneView& view, const TileSelection& sel,
+                          double pixels_per_tangent);
 
     GpuContext gpu_;
+    std::unique_ptr<TerrainDatabase> db_;
     double pixel_error_ = 1.0;
+    int max_level_ = 30;
     std::uint32_t samples_ = 0;
     std::uint32_t index_count_ = 0;
     std::uint32_t outputs_ = 0;
+    std::size_t estimate_bytes_ = 0;  // a tile's GPU memory, before it's read
+    std::uint64_t frame_ = 0;
 
-    // Per tile, by index.
-    std::vector<LodTile> lod_;
-    std::vector<DVec3> origin_ecef_;  // the controls' origin
-    std::vector<float> skirt_m_;
-    std::vector<std::uint32_t> roots_;
+    std::unique_ptr<TileCache> cache_;
+    // Per slot: the images. The paging thread makes and replaces them for
+    // the slots it fills (a slot is only ever filled once it's free, so
+    // nothing on the GPU uses the old ones); roots' are made at load.
     std::vector<Image> heights_;
-    std::vector<Image> imagery_;  // empty images for tiles using the fallback
-    Image fallback_;              // grey, for tiles without imagery
+    std::vector<Image> imagery_;
+    Image fallback_;  // grey, for tiles without imagery
 
-    Buffer controls_;
+    Buffer controls_;  // per slot: 9 x 9 control points
     Buffer indices_;
-    Buffer draws_;  // host-visible: slots x outputs x tiles records
+    Buffer draws_;  // host-visible: slots x outputs x capacity records
 
-    // Scratch for select_tiles, sized once.
+    // Scratch, sized once.
     std::vector<std::uint32_t> stack_;
     std::vector<std::uint32_t> selected_;
+    std::vector<std::uint32_t> wants_;
+    std::vector<std::uint32_t> split_;
+    std::vector<double> want_priority_;
+    std::vector<std::uint32_t> want_order_;
+    std::array<VkCommandBufferSubmitInfo, kMaxUploadsPerFrame> upload_infos_{};
+    std::array<std::uint32_t, kMaxUploadsPerFrame> upload_batches_{};
+    std::uint32_t upload_count_ = 0;
+    // Per output: the eye last frame and when, for where it's heading.
+    std::vector<DVec3> last_eye_;
+    std::vector<LocalTime> last_eye_at_;
+    std::vector<bool> has_last_eye_;
+
+    TerrainStats stats_;
+    std::unique_ptr<Pager> pager_;
 
     VkSampler sampler_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;

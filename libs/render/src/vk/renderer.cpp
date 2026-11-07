@@ -374,9 +374,9 @@ struct Renderer::Impl {
 
     // Terrain, once loaded (milestone 3 step 5).
     std::unique_ptr<TerrainGpu> terrain;
-    bool bc_textures = false;     // textureCompressionBC enabled
-    float max_anisotropy = 0.0F;  // 0: samplerAnisotropy not enabled
-    std::uint32_t terrain_drawn = 0;
+    bool bc_textures = false;               // textureCompressionBC enabled
+    float max_anisotropy = 0.0F;            // 0: samplerAnisotropy not enabled
+    VkSemaphore timeline = VK_NULL_HANDLE;  // signalled with frame_number + 1 by each frame
 
     // Timing: two timestamps per output per frame in flight.
     VkQueryPool timestamps = VK_NULL_HANDLE;
@@ -653,6 +653,14 @@ void Renderer::Impl::create_frames() {
             check(vkCreateSemaphore(device.device, &sem, nullptr, &s), "vkCreateSemaphore");
         }
     }
+    VkSemaphoreTypeCreateInfo type{};
+    type.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+    type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+    VkSemaphoreCreateInfo tci{};
+    tci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    tci.pNext = &type;
+    check(vkCreateSemaphore(device.device, &tci, nullptr, &timeline),
+          "vkCreateSemaphore (timeline)");
 }
 
 VkImageView Renderer::Impl::make_view(VkImage image, VkFormat format,
@@ -966,7 +974,7 @@ void Renderer::Impl::size_scratch() {
     const std::size_t n = swapchains.size();
     image_index.resize(n);
     waits.resize(n);
-    signals.resize(n);
+    signals.resize(n + 1);  // and the timeline
     present_chains.resize(n);
     present_indices.resize(n);
     present_waits.resize(n);
@@ -1069,8 +1077,8 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
     begin_pass(cmd, t.view, t.extent, t.depth_view);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     if (terrain) {
-        terrain_drawn += terrain->record(cmd, static_cast<std::uint32_t>(slot),
-                                         static_cast<std::uint32_t>(i), view, t.extent);
+        (void)terrain->record(cmd, static_cast<std::uint32_t>(slot), static_cast<std::uint32_t>(i),
+                              view, t.extent);
     }
     vkCmdEndRendering(cmd);
     transition(cmd, t.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -1084,7 +1092,13 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
     const auto started = now();  // fovea::now(), the monotonic clock
     const std::size_t slot = frame_number % kFramesInFlight;
     Frame& f = begin_frame();
-    terrain_drawn = 0;
+    if (terrain && request.scene) {
+        // Tiles the paging thread has ready, and slots of frames done.
+        std::uint64_t completed = 0;
+        check(vkGetSemaphoreCounterValue(device.device, timeline, &completed),
+              "vkGetSemaphoreCounterValue");
+        terrain->begin_frame(frame_number + 1, completed);
+    }
 
     // Acquire an image from every swapchain that has a drawable size.
     std::fill(image_index.begin(), image_index.end(), UINT32_MAX);
@@ -1277,22 +1291,41 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
     }
     check(vkEndCommandBuffer(f.cmd), "vkEndCommandBuffer");
 
-    VkCommandBufferSubmitInfo cmd{};
-    cmd.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-    cmd.commandBuffer = f.cmd;
+    // Terrain uploads first (the paging thread recorded them), then the
+    // frame: in one submit, so the frame's draws see the uploaded tiles.
+    std::array<VkCommandBufferSubmitInfo, kMaxUploadsPerFrame + 1> cmds{};
+    std::uint32_t cmd_count = 0;
+    if (terrain && request.scene) {
+        for (const VkCommandBufferSubmitInfo& u : terrain->uploads()) {
+            cmds[cmd_count++] = u;
+        }
+    }
+    cmds[cmd_count].sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    cmds[cmd_count].commandBuffer = f.cmd;
+    ++cmd_count;
+    // And the timeline: frame_number + 1 once this frame is done.
+    VkSemaphoreSubmitInfo& tl = signals[wait_count];
+    tl = {};
+    tl.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    tl.semaphore = timeline;
+    tl.value = frame_number + 1;
+    tl.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     VkSubmitInfo2 submit{};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
     submit.waitSemaphoreInfoCount = wait_count;
     submit.pWaitSemaphoreInfos = waits.data();
-    submit.commandBufferInfoCount = 1;
-    submit.pCommandBufferInfos = &cmd;
-    submit.signalSemaphoreInfoCount = wait_count;
+    submit.commandBufferInfoCount = cmd_count;
+    submit.pCommandBufferInfos = cmds.data();
+    submit.signalSemaphoreInfoCount = wait_count + 1;
     submit.pSignalSemaphoreInfos = signals.data();
     // Reset only now, with the commands recorded: a failure while recording
     // must not leave this frame's fence unsignalled for the next wait.
     check(vkResetFences(device.device, 1, &f.done), "vkResetFences");
     check(vkQueueSubmit2(queue, 1, &submit, f.done), "vkQueueSubmit2");
     slot_frame[slot] = frame_number;
+    if (terrain && request.scene) {
+        terrain->submitted(frame_number + 1);
+    }
 
     // Every acquired swapchain in one present call: the outputs flip
     // together as far as the driver allows (the display sync test measures
@@ -1377,6 +1410,7 @@ Renderer::Impl::~Impl() {
             vmaDestroyImage(allocator, o.image, o.image_memory);
         }
         terrain.reset();
+        vkDestroySemaphore(device.device, timeline, nullptr);
         for (HdrTarget& t : hdr) {
             vkDestroyImageView(device.device, t.view, nullptr);
             vmaDestroyImage(allocator, t.image, t.memory);
@@ -1493,7 +1527,8 @@ std::uint32_t Renderer::draw_scene_frame(std::span<const SceneView> views,
     return impl_->draw({{}, views, true, overlay});
 }
 
-TerrainLoad Renderer::load_terrain(const TerrainDatabase& database, const TerrainOptions& options) {
+TerrainLoad Renderer::load_terrain(std::unique_ptr<TerrainDatabase> database,
+                                   const TerrainOptions& options) {
     Impl& m = *impl_;
     if (m.terrain) {
         fail("load_terrain: terrain is already loaded");
@@ -1505,13 +1540,14 @@ TerrainLoad Renderer::load_terrain(const TerrainDatabase& database, const Terrai
                          m.queue,
                          m.queue_family,
                          m.bc_textures,
-                         m.max_anisotropy};
+                         m.max_anisotropy,
+                         m.timeline};
     VkShaderModule vs = m.make_module(kVsTerrain);
     VkShaderModule fs = m.make_module(kFsTerrain);
     TerrainLoad report;
     try {
-        m.terrain = TerrainGpu::load(gpu, database, options, kFramesInFlight, m.output_total(), vs,
-                                     fs, kHdrFormat, kDepthFormat, report);
+        m.terrain = TerrainGpu::load(gpu, std::move(database), options, kFramesInFlight,
+                                     m.output_total(), vs, fs, kHdrFormat, kDepthFormat, report);
     } catch (...) {
         vkDestroyShaderModule(m.device.device, vs, nullptr);
         vkDestroyShaderModule(m.device.device, fs, nullptr);
@@ -1522,8 +1558,9 @@ TerrainLoad Renderer::load_terrain(const TerrainDatabase& database, const Terrai
     return report;
 }
 
-std::uint32_t Renderer::terrain_tiles_drawn() const {
-    return impl_->terrain_drawn;
+const TerrainStats& Renderer::terrain_stats() const {
+    static const TerrainStats none;
+    return impl_->terrain ? impl_->terrain->stats() : none;
 }
 
 void Renderer::enable_overlay(std::uint32_t output) {

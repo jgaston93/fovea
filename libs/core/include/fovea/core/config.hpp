@@ -54,14 +54,17 @@ struct ReferenceScene {
     Geodetic origin;
 };
 
-// [terrain]: a terrain database to draw (milestone 3), every tile loaded up
-// front, down to max_level. Without it, the reference scene's grid only.
+// [terrain]: a terrain database to draw (milestone 3): its roots loaded up
+// front, the rest paged in as views need them, down to max_level. Without
+// it, the reference scene's grid only.
 struct TerrainConfig {
     // The database directory; a relative path is relative to the config
     // file (load_display_config resolves it; parse_display_config leaves it).
     std::filesystem::path database;
-    int max_level = 30;        // tiles finer than this aren't loaded
-    double pixel_error = 1.0;  // a tile splits where its error would show as more (D-016)
+    int max_level = 30;              // tiles finer than this aren't loaded
+    double pixel_error = 1.0;        // a tile splits where its error would show as more (D-016)
+    std::uint32_t max_tiles = 4096;  // on the GPU at once (paging, step 6)
+    std::uint32_t budget_mb = 2048;  // GPU memory the tiles may take
 };
 
 // [host]: where a host program's messages arrive. Without it, nothing
