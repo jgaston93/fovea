@@ -40,8 +40,8 @@ def srgb(c):
     return np.array(c[:3], dtype=np.float32) / 255.0
 
 
-def blank(w_m, h_m, colour):
-    img = np.ones((int(h_m * PX), int(w_m * PX), 4), dtype=np.float32)
+def blank(w_m, h_m, colour, px=PX):
+    img = np.ones((int(h_m * px), int(w_m * px), 4), dtype=np.float32)
     img[:, :, :3] = srgb(colour)
     return img
 
@@ -54,8 +54,9 @@ def office_facade(wall, glass_from=1.0, glass_to=2.6, bay=1.5):
     """4 m floors: a glass band with mullions every `bay` metres."""
     img = blank(6.0, 4.0, wall)
     a, b = int(glass_from * PX), int(glass_to * PX)
-    rows = np.linspace(1.0, 0.75, b - a)[:, None]
-    img[a:b, :, :3] = srgb((52, 64, 78)) * rows[:, :, None]
+    # Glass shows the sky: lighter up the pane, a blue-grey.
+    rows = np.linspace(0.8, 1.0, b - a)[:, None]
+    img[a:b, :, :3] = srgb((118, 138, 156)) * rows[:, :, None]
     for x in range(0, img.shape[1], int(bay * PX)):
         img[a:b, x:x + 2, :3] = srgb((70, 72, 74))
     img[0:3, :, :3] = srgb(shade(wall, 0.8))  # the floor slab's line
@@ -70,6 +71,34 @@ def corrugated(wall):
     return img
 
 
+def metal_wall(wall, eave, bay, feature):
+    """A metal-clad wall, one bay wide and the wall's full height (texture
+    coordinates run from the ground up, so it doesn't repeat upwards): ribs,
+    a darker band along the base, a trim under the eaves, and per bay
+    either a small window ("window") or a loading-dock door ("dock")."""
+    img = corrugated_texels(wall, bay, eave + 1.0)
+    img[0:int(1.2 * PX), :, :3] *= 0.72  # base band
+    t0 = int((eave - 0.5) * PX)
+    img[t0:int(eave * PX), :, :3] = srgb(shade(wall, 0.6))  # eave trim
+    mid = img.shape[1] // 2
+    if feature == "window":
+        y0, y1, half = int(1.8 * PX), int(2.8 * PX), int(0.7 * PX)
+        img[y0:y1, mid - half:mid + half, :3] = srgb((96, 112, 124))
+    elif feature == "dock":
+        y0, y1, half = int(1.2 * PX), int(4.2 * PX), int(1.5 * PX)
+        img[y0:y1, mid - half:mid + half, :3] = srgb(shade(wall, 0.62))
+        for y in range(y0, y1, int(0.5 * PX)):
+            img[y:y + 1, mid - half:mid + half, :3] *= 0.85
+    return img
+
+
+def corrugated_texels(wall, w_m, h_m):
+    img = blank(w_m, h_m, wall)
+    for x in range(img.shape[1]):
+        img[:, x, :3] *= 0.8 + 0.2 * (0.5 + 0.5 * math.cos(2 * math.pi * x / (0.25 * PX)))
+    return img
+
+
 def hangar_door(wall):
     """Door leaves 4 m wide, rails every 2 m."""
     img = blank(8.0, 4.0, shade(wall, 0.92))
@@ -81,11 +110,13 @@ def hangar_door(wall):
 
 
 def membrane(roof, seed):
-    """Roof membrane in 2 m strips, a little uneven."""
+    """Roof membrane in 2 m strips, a little uneven (16 texels a metre: a
+    roof is seen from tens of metres at least)."""
     rng = np.random.default_rng(seed)
-    img = blank(16.0, 16.0, roof)
-    img[:, :, :3] *= (0.96 + 0.04 * rng.random(img.shape[:2]))[:, :, None]
-    for x in range(0, img.shape[1], 2 * PX):
+    img = blank(8.0, 8.0, roof, px=16)
+    # Unevenness in steps of 1%: smooth enough, and small as a PNG.
+    img[:, :, :3] *= (0.96 + 0.01 * rng.integers(0, 5, img.shape[:2]))[:, :, None]
+    for x in range(0, img.shape[1], 2 * 16):
         img[:, x:x + 1, :3] *= 0.85
     return img
 
@@ -100,8 +131,8 @@ def standing_seam(roof):
 
 
 def cab_glass():
-    """A tower cab facet: dark glass, a frame round it."""
-    img = blank(2.0, 2.0, (40, 52, 60))
+    """A tower cab facet: tinted glass, a frame round it."""
+    img = blank(2.0, 2.0, (70, 90, 104))
     img[:, :4, :3] = srgb((180, 182, 184))
     img[:4, :, :3] = srgb((180, 182, 184))
     return img
@@ -277,12 +308,13 @@ def flat_roofed(name, w, d, h, facade="office", plant=True):
     behind a parapet, plant on the roof."""
     roof = roof_colour(ROOF[name])
     if facade == "glass":
-        walls = material("glass_wall", office_facade(GLASS_WALL, 0.4, 3.6, 2.0), 1, (6.0, 4.0))
+        walls = material("glass_wall", office_facade(GLASS_WALL, 0.8, 3.2, 2.0), 1, (6.0, 4.0))
     elif facade == "office":
         walls = material("office_wall", office_facade(WALL), 1, (6.0, 4.0))
     else:
-        walls = material("cargo_wall", corrugated(shade(roof, 0.9)), 2, (4.0, 4.0))
-    top = material("roof", membrane(roof, len(name)), 1, (16.0, 16.0))
+        walls = material("cargo_wall", metal_wall(shade(roof, 0.9), h, 4.5, "dock"), 2,
+                         (4.5, h + 1.0))
+    top = material("roof", membrane(roof, len(name)), 1, (8.0, 8.0))
     unit = material("plant", corrugated((150, 152, 150)), 2, (4.0, 4.0))
     m = Model(name)
     m.box(walls, top, 0, 0, w, d, 0, h)
@@ -294,7 +326,8 @@ def flat_roofed(name, w, d, h, facade="office", plant=True):
 
 def hangar(name, w, d, eave):
     roof = roof_colour(ROOF[name])
-    walls = material("hangar_wall", corrugated(shade(roof, 0.92)), 2, (4.0, 4.0))
+    walls = material("hangar_wall", metal_wall(shade(roof, 0.92), eave, 6.0, "window"), 2,
+                     (6.0, eave + 1.0))
     door = material("hangar_door", hangar_door(shade(roof, 0.92)), 2, (8.0, 4.0))
     top = material("hangar_roof", standing_seam(roof), 2, (4.8, 4.8))
     m = Model(name)
