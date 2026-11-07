@@ -178,12 +178,12 @@ The plan bakes hand-placed landmarks into tiles. A committed placement file per 
 
 ## D-027 Multisampling first, for anti-aliasing
 
-**Status:** Proposed (2026-11-07)
+**Status:** Accepted (2026-11-07)
 
 The scene pass renders with multisampling (MSAA), 4 samples by default, the count set per deployment in config (1, 2, 4 or 8, as the GPU allows). It smooths every geometric edge and thin geometry, in every view alike, with no history: nothing smears under fast motion, and the channels stay consistent with each other. Temporal anti-aliasing (TAA) would also smooth shading, but blends earlier frames, so it needs motion vectors for every moving object and blurs or ghosts under a simulator's fast, steady motion; post-process filters (FXAA, SMAA) only guess at edges from the final image and crawl on thin geometry. Texture aliasing is already handled by mip chains and anisotropic filtering. MSAA costs memory (about 180 MB for a 2560 x 1440 view at 4 samples) and bandwidth, measured on the desk. TAA or SMAA can follow as options if shading aliasing shows. Alpha-masked materials use alpha to coverage, their alpha sharpened about their own cutoff, so their cut-out edges are smoothed too and fall where authored.
 
 ## D-028 A weighted resolve before tone mapping
 
-**Status:** Proposed (2026-11-07)
+**Status:** Accepted (2026-11-07)
 
 Each pixel's colour is its samples' weighted mean in linear HDR, c = sum(c_i w_i) / sum(w_i) with w_i = 1 / (1 + L_i), L_i a sample's luminance (no weight is zero, so neither is the sum), by a resolve shader of Fovea's own, before the tone mapping pass. A plain average lets one very bright sample (a glint of the sun) swamp an edge, which then stays jagged once tone-mapped; the weighting keeps the edge's gradient. Point lights (airport lights) are drawn after the resolve, single-sampled and at least a pixel across, as the weighting would all but erase a light covering one sample, and it would flicker. The depth is resolved too (the nearest sample where the GPU can, else the first), for later passes such as haze.
