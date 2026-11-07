@@ -7,6 +7,7 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -124,12 +125,16 @@ std::vector<std::uint8_t> make_glb(const Spec& s) {
         }
     };
     const bool has_bin = s.buffer_uri.empty();
-    out.insert(out.end(), {'g', 'l', 'T', 'F'});
+    for (const char c : std::string_view("glTF")) {
+        out.push_back(static_cast<std::uint8_t>(c));
+    }
     u32(2);
     u32(static_cast<std::uint32_t>(12 + 8 + json.size() + (has_bin ? 8 + bin.size() : 0)));
     u32(static_cast<std::uint32_t>(json.size()));
     u32(0x4E4F534A);  // JSON
-    out.insert(out.end(), json.begin(), json.end());
+    for (const char c : json) {
+        out.push_back(static_cast<std::uint8_t>(c));
+    }
     if (has_bin) {
         u32(static_cast<std::uint32_t>(bin.size()));
         u32(0x004E4942);  // BIN
