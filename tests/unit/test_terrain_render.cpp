@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -359,6 +360,12 @@ TEST(TerrainRender, HillsMatchTheGoldenImage) {
     ASSERT_TRUE(golden.has_value()) << "missing " << file << " (FOVEA_UPDATE_GOLDEN=1 makes it)";
     const ImageDifference d = compare_images(image, *golden, 4);
     ASSERT_TRUE(d.same_size);
+    if (d.fraction_over > 0.01) {
+        // What this GPU drew, to look at beside the golden.
+        const fs::path actual = fs::temp_directory_path() / "terrain_hills.actual.png";
+        EXPECT_TRUE(write_png(actual, image));
+        std::printf("wrote %s\n", actual.string().c_str());
+    }
     // As the reference scene's goldens (test_golden.cpp), with room for
     // GPUs' texture filtering, which differs more than flat shading.
     EXPECT_LE(d.fraction_over, 0.01) << d.fraction_over * 100.0 << "% of pixels differ (mean "
