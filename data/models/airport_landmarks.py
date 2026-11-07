@@ -305,17 +305,19 @@ class Model:
                     self.quad_strip(side, lo, hi)
                     self.face(top, hi, uvs=[(0, 0), (1, 0), (1, 1), (0, 1)])
 
-    def arched_hangar(self, wall, door, roof, w, d, eave, rise, segments=12):
+    def arched_hangar(self, wall, door, roof, w, d, eave, rise, door_on="front", segments=12):
         """Walls to `eave`, an arched roof rising `rise` more across the
-        width, the door on the front (-Y) gable."""
+        width; the door on the front (-Y) gable, or along one long side
+        ("left", +X, or "right", -X), as long hangars open onto their apron."""
         y0, y1 = -d / 2, d / 2
         xs = [-w / 2 + w * k / segments for k in range(segments + 1)]
         arch = [(x, eave + rise * (1 - (2 * x / w) ** 2)) for x in xs]
         # Sides.
-        for x, y_a, y_b in [(-w / 2, y1, y0), (w / 2, y0, y1)]:
-            self.face(wall, [(x, y_a, -PLINTH), (x, y_b, -PLINTH), (x, y_b, eave), (x, y_a, eave)])
-        # Gables: front (the door) and back.
-        for y, mat, order in [(y0, door, 1), (y1, wall, -1)]:
+        for x, y_a, y_b, side in [(-w / 2, y1, y0, "right"), (w / 2, y0, y1, "left")]:
+            self.face(door if door_on == side else wall,
+                      [(x, y_a, -PLINTH), (x, y_b, -PLINTH), (x, y_b, eave), (x, y_a, eave)])
+        # Gables: front (the door, unless it's on a side) and back.
+        for y, mat, order in [(y0, door if door_on == "front" else wall, 1), (y1, wall, -1)]:
             pts = [(-w / 2, y, -PLINTH), (w / 2, y, -PLINTH)] + [(x, y, z) for x, z in reversed(arch)]
             self.face(mat, pts if order > 0 else list(reversed(pts)))
         # The roof, strip by strip.
@@ -425,7 +427,7 @@ def flat_roofed(name, w, d, h, facade="office", plant=True):
     return m
 
 
-def hangar(name, w, d, eave):
+def hangar(name, w, d, eave, door_on="front"):
     roof = roof_colour(ROOF[name])
     rise = min(w * 0.12, 6.0)
     height = eave + rise + 1.0  # to the gables' tops
@@ -436,7 +438,7 @@ def hangar(name, w, d, eave):
                     (16.0, height))
     top = material("hangar_roof", standing_seam(roof), 2, (4.8, 4.8))
     m = Model(name)
-    m.arched_hangar(walls, door, top, w, d, eave, rise)
+    m.arched_hangar(walls, door, top, w, d, eave, rise, door_on)
     return m
 
 
@@ -474,9 +476,11 @@ MODELS = {
     "khsv_warehouse": lambda n: flat_roofed(n, 215.0, 261.0, 13.0, "cargo"),
     # Redstone Army Airfield: the big hangars round the west apron, the
     # smaller ones east of the runway.
-    "khua_hangar_45x168": lambda n: hangar(n, 45.0, 168.0, 15.0),
-    "khua_hangar_52x262": lambda n: hangar(n, 52.0, 262.0, 15.0),
-    "khua_hangar_57x222": lambda n: hangar(n, 57.0, 222.0, 15.0),
+    # The long ones open along their apron side: east (their right, facing
+    # north) for the two west of the apron, west for the one east of it.
+    "khua_hangar_45x168": lambda n: hangar(n, 45.0, 168.0, 15.0, "right"),
+    "khua_hangar_52x262": lambda n: hangar(n, 52.0, 262.0, 15.0, "left"),
+    "khua_hangar_57x222": lambda n: hangar(n, 57.0, 222.0, 15.0, "right"),
     "khua_hangar_50x32": lambda n: hangar(n, 50.0, 32.0, 10.0),
     "khua_hangar_55x32": lambda n: hangar(n, 55.0, 32.0, 9.0),
     "khua_ops_52x18": lambda n: flat_roofed(n, 52.0, 18.0, 6.0),
