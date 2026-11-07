@@ -34,6 +34,8 @@ namespace fovea {
 // Most uploads submitted with one frame: bounds the render thread's work.
 inline constexpr std::uint32_t kMaxUploadsPerFrame = 16;
 inline constexpr std::uint32_t kMaxModelUploadsPerFrame = 4;
+// All of a frame's uploads: what uploads() can hold.
+inline constexpr std::uint32_t kMaxUploadsInAFrame = kMaxUploadsPerFrame + kMaxModelUploadsPerFrame;
 
 class Pager;
 
@@ -130,9 +132,8 @@ private:
     std::vector<std::uint32_t> split_;
     std::vector<double> want_priority_;
     std::vector<std::uint32_t> want_order_;
-    std::array<VkCommandBufferSubmitInfo, kMaxUploadsPerFrame + kMaxModelUploadsPerFrame>
-        upload_infos_{};
-    std::array<std::uint32_t, kMaxUploadsPerFrame + kMaxModelUploadsPerFrame> upload_batches_{};
+    std::array<VkCommandBufferSubmitInfo, kMaxUploadsInAFrame> upload_infos_{};
+    std::array<std::uint32_t, kMaxUploadsInAFrame> upload_batches_{};
     std::uint32_t upload_count_ = 0;
     // Per output: the eye last frame and when, for where it's heading.
     std::vector<DVec3> last_eye_;
