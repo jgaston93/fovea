@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -241,7 +242,9 @@ void print_host_stats(const fovea::CigiAdapter& adapter) {
 
 // The config's terrain database, if any, onto the GPU (milestone 3 step 5):
 // every tile, up front. False, after saying why, if it can't be used.
-bool load_terrain(fovea::Renderer& renderer, const fovea::DisplayConfig& config) {
+// `between_tiles` runs after each tile: windows handle their events there.
+bool load_terrain(fovea::Renderer& renderer, const fovea::DisplayConfig& config,
+                  const std::function<void()>& between_tiles = {}) {
     if (!config.terrain) {
         return true;
     }
@@ -256,7 +259,13 @@ bool load_terrain(fovea::Renderer& renderer, const fovea::DisplayConfig& config)
         }
         return false;
     }
-    const fovea::TerrainLoad load = renderer.load_terrain(*db, {t.max_level, t.pixel_error});
+    fovea::TerrainOptions options;
+    options.max_level = t.max_level;
+    options.pixel_error = t.pixel_error;
+    if (between_tiles) {
+        options.progress = [&](std::size_t, std::size_t) { between_tiles(); };
+    }
+    const fovea::TerrainLoad load = renderer.load_terrain(*db, options);
     std::printf("Terrain: %s, %zu tiles (%.2f GB) in %.1f s\n", t.database.string().c_str(),
                 load.tiles, static_cast<double>(load.bytes) / 1e9, load.seconds);
     const std::size_t shown = std::min<std::size_t>(load.problems.size(), 10);
@@ -396,8 +405,15 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         }
         renderer = fovea::Renderer::for_windows(platform, outputs);
         print_gpu(*renderer);
-        if (!options.clear && !load_terrain(*renderer, config)) {
+        // Loading takes a while (KHSV: tens of seconds): the windows keep
+        // answering the system meanwhile, and closing one ends the run.
+        bool quit = false;
+        if (!options.clear &&
+            !load_terrain(*renderer, config, [&] { quit = quit || platform.poll_events().quit; })) {
             return 1;
+        }
+        if (quit) {
+            return finish(*renderer);
         }
         std::printf("Pacing: %s\n", renderer->has_present_wait()
                                         ? "present wait (each frame starts after a vsync)"

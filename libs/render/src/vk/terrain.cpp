@@ -325,6 +325,26 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu, const Terrai
         upload_image(up, t->fallback_.image, at, 1);
     }
 
+    // How many tiles there can be, against what the GPU binds, before
+    // reading any: the arrays are update-after-bind (paging will add to
+    // them), so those limits apply.
+    std::size_t planned = 0;
+    for (const LevelTiles& level : m.levels) {
+        planned += level.level <= options.max_level ? level.count() : 0;
+    }
+    VkPhysicalDeviceVulkan12Properties p12{};
+    p12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES;
+    VkPhysicalDeviceProperties2 props{};
+    props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    props.pNext = &p12;
+    vkGetPhysicalDeviceProperties2(gpu.physical, &props);
+    if (planned > p12.maxPerStageDescriptorUpdateAfterBindSampledImages ||
+        planned * 2 > p12.maxDescriptorSetUpdateAfterBindSampledImages) {
+        fail("terrain: " + std::to_string(planned) + " tiles is more than this GPU binds (" +
+             std::to_string(p12.maxPerStageDescriptorUpdateAfterBindSampledImages) +
+             " images a stage); lower [terrain] max_level");
+    }
+
     // Every tile down to max_level, coarsest first.
     struct Loaded {
         TileKey key;
@@ -359,6 +379,10 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu, const Terrai
                                           std::string(imagery_format_name(imagery->format)));
                 imagery.reset();
             }
+            if (imagery && imagery->mips.size() > 16) {
+                report.problems.push_back(to_string(key) + ": more mips than 16");
+                imagery.reset();
+            }
             if (!imagery) {
                 ++no_imagery;
             }
@@ -380,7 +404,7 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu, const Terrai
                 const auto mips = static_cast<std::uint32_t>(imagery->mips.size());
                 im = make_image(vk_format(imagery->format), imagery->size, mips);
                 std::array<VkDeviceSize, 16> at{};
-                for (std::uint32_t k = 0; k < mips && k < at.size(); ++k) {
+                for (std::uint32_t k = 0; k < mips; ++k) {
                     at[k] = up.put(imagery->mips[k].data(), imagery->mips[k].size());
                 }
                 upload_image(up, im.image, std::span(at.data(), mips), imagery->size);
@@ -407,6 +431,9 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu, const Terrai
                 }
             }
             index.emplace(key, static_cast<std::uint32_t>(loaded.size()));
+            if (options.progress) {
+                options.progress(loaded.size() + 1, planned);
+            }
             t->origin_ecef_.push_back(origin);
             loaded.push_back({key, grid->min_m, grid->max_m, grid->error_m});
         }
@@ -420,10 +447,14 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu, const Terrai
                                   " tiles without usable imagery are drawn grey");
     }
 
-    // The tree: children where loaded, roots where no parent is. A crack
-    // between tiles of neighbouring levels is at most both their errors;
-    // each skirt hangs that far, and a metre more.
+    // The tree: children where loaded.
     const auto count = static_cast<std::uint32_t>(loaded.size());
+    float max_root_error = 0.0F;
+    for (const Loaded& l : loaded) {
+        if (l.key.level == loaded.front().key.level) {
+            max_root_error = std::max(max_root_error, l.error_m);
+        }
+    }
     t->lod_.resize(count);
     t->skirt_m_.resize(count);
     for (std::uint32_t i = 0; i < count; ++i) {
@@ -435,13 +466,20 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu, const Terrai
             const auto it = index.find(kids[k]);
             tile.children[k] = it != index.end() ? it->second : kNoTile;
         }
-        const auto up_key = parent(l.key);
-        const auto p = up_key ? index.find(*up_key) : index.end();
-        if (p == index.end()) {
+        // A root where no ancestor is loaded. Below a missing tile, its
+        // loaded descendants are unreachable: the nearest loaded ancestor
+        // can't split, and covers them.
+        bool covered = false;
+        for (auto a = parent(l.key); a && !covered; a = parent(*a)) {
+            covered = index.contains(*a);
+        }
+        if (!covered) {
             t->roots_.push_back(i);
         }
-        const float parent_error = p != index.end() ? loaded[p->second].error_m : l.error_m;
-        t->skirt_m_[i] = l.error_m + parent_error + 1.0F;
+        // A crack between this tile and any drawn neighbour is at most both
+        // their errors; the neighbour may be as coarse as a root, so each
+        // skirt hangs its own error and the largest root's, and a metre more.
+        t->skirt_m_[i] = l.error_m + max_root_error + 1.0F;
         // A sphere around the tile, skirt included: around the control
         // points at its lowest and highest.
         DVec3 lo(1e300);
@@ -516,14 +554,6 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu, const Terrai
 
     // Descriptors: one set, the heights and imagery as arrays indexed by
     // tile (descriptor indexing).
-    VkPhysicalDeviceProperties props{};
-    vkGetPhysicalDeviceProperties(gpu.physical, &props);
-    if (count > props.limits.maxPerStageDescriptorSampledImages ||
-        std::uint64_t{count} * 2 > props.limits.maxDescriptorSetSampledImages) {
-        fail("terrain: " + std::to_string(count) + " tiles is more than this GPU binds (" +
-             std::to_string(props.limits.maxPerStageDescriptorSampledImages) +
-             " images a stage); lower [terrain] max_level");
-    }
     VkSamplerCreateInfo sci{};
     sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     sci.magFilter = VK_FILTER_LINEAR;
@@ -546,8 +576,20 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu, const Terrai
     bindings[3] = {3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
     bindings[4] = {4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count, VK_SHADER_STAGE_FRAGMENT_BIT,
                    nullptr};
+    // The image arrays update after bind (paging, step 6, will fill
+    // entries while frames using the set are in flight) and may be
+    // partly bound.
+    constexpr VkDescriptorBindingFlags kArray =
+        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+    const std::array<VkDescriptorBindingFlags, 5> flags = {0, 0, 0, kArray, kArray};
+    VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info{};
+    flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+    flags_info.bindingCount = static_cast<std::uint32_t>(flags.size());
+    flags_info.pBindingFlags = flags.data();
     VkDescriptorSetLayoutCreateInfo lci{};
     lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    lci.pNext = &flags_info;
+    lci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
     lci.bindingCount = static_cast<std::uint32_t>(bindings.size());
     lci.pBindings = bindings.data();
     check(vkCreateDescriptorSetLayout(gpu.device, &lci, nullptr, &t->set_layout_),
@@ -558,6 +600,7 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu, const Terrai
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 2}};
     VkDescriptorPoolCreateInfo pci{};
     pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pci.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     pci.maxSets = 1;
     pci.poolSizeCount = static_cast<std::uint32_t>(sizes.size());
     pci.pPoolSizes = sizes.data();
