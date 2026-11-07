@@ -87,7 +87,11 @@ void parse_airport(const std::string& text, const fs::path& f, std::vector<Runwa
         }
         Runway rw;
         const std::string name = (*rt)["name"].value_or(std::string{});
-        rw.name = prefix.empty() ? name : prefix + " " + name;
+        rw.name = prefix;
+        if (!rw.name.empty()) {
+            rw.name += ' ';
+        }
+        rw.name += name;
         rw.width_m = *width * 0.3048;
         rw.length_m = (*rt)["length_ft"].value_or(0.0) * 0.3048;
         bool ok = true;
