@@ -31,10 +31,12 @@
 
 namespace fovea {
 
-// Most uploads submitted with one frame: bounds the render thread's work.
+// Most tiles, and most models, taken in one frame: bounds the render
+// thread's work.
 inline constexpr std::uint32_t kMaxUploadsPerFrame = 16;
 inline constexpr std::uint32_t kMaxModelUploadsPerFrame = 4;
-// All of a frame's uploads: what uploads() can hold.
+// All of a frame's uploads, tiles and models: what uploads() can hold, and
+// what a submit must have room for.
 inline constexpr std::uint32_t kMaxUploadsInAFrame = kMaxUploadsPerFrame + kMaxModelUploadsPerFrame;
 
 class Pager;
