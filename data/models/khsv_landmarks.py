@@ -1,129 +1,353 @@
-# Generic massing models of the KHSV landmarks (milestone 4 step 4, D-025):
-# the right footprint, height and colour, not detail. Footprints were read
-# off the NAIP 2023 imagery (to a few metres); heights are estimates, as the
-# imagery doesn't give them. Fovea's own work, under the repository's
-# licence. Builds each model and exports it as a .glb, run by Blender:
+# Generic models of the KHSV landmarks (milestone 4 steps 4 and 5, D-025):
+# the right footprint, height and colour, and generic detail (window bands,
+# doors, corrugated and ribbed metal, roof membranes, rooftop plant, arched
+# hangar roofs, a faceted tower cab), not any building's own. Footprints
+# were read off the NAIP 2023 imagery (to a few metres); roof colours are
+# the imagery's over each footprint (tools/measure-roof-colours.py); heights
+# are estimates, as the imagery doesn't give them. Fovea's own work, under
+# the repository's licence. Builds each model and exports it as a .glb, run
+# by Blender (5.2):
 #
 #   blender --background --factory-startup --python data/models/khsv_landmarks.py -- <out dir>
 #
 # Each model's ground line is at height 0 (glTF's y = 0), its front (glTF's
-# +Z, Blender's -Y) along the depth; width is across it. Every part reaches
+# +Z, Blender's -Y) along its depth; width is across it. Every wall reaches
 # PLINTH metres below the ground line, so a model placed at the lowest
 # ground under its footprint (the compiler's rule, D-026) is never left
-# floating where the ground falls away.
+# floating. Textures are made here (numpy), sized in metres on the model
+# (texture coordinates from positions), so windows are the same size on
+# every building.
 #
 # Each material names its Fovea material ID (a custom property, exported in
-# the glTF's extras): 1 roofs and walls, 2 metal (hangars), 3 glass.
+# the glTF's extras): 1 walls and roofs, 2 metal, 3 glass.
 
+import math
 import os
+import random
 import sys
 
 import bmesh
 import bpy
+import numpy as np
 
 PLINTH = 3.0
-
-MATERIALS = {
-    # name: (linear base colour, Fovea material)
-    "roof_white": ((0.62, 0.62, 0.60, 1.0), 1),
-    "roof_blue": ((0.06, 0.16, 0.38, 1.0), 1),
-    "concrete": ((0.42, 0.41, 0.39, 1.0), 1),
-    "metal": ((0.55, 0.57, 0.59, 1.0), 2),
-    "glass": ((0.05, 0.09, 0.12, 1.0), 3),
-}
+PX = 32  # texels a metre
 
 
-def box(w, d, h, material):
-    """A box `w` wide, `d` deep and `h` tall above the ground line."""
-    return ("box", w, d, h, material)
+# --- Textures (sRGB, row 0 at the bottom, as Blender keeps images) --------
+
+def srgb(c):
+    return np.array(c[:3], dtype=np.float32) / 255.0
 
 
-def cylinder(radius, z0, z1, material):
-    """An upright cylinder from height z0 to z1 (z0 at or below 0 reaches
-    the plinth)."""
-    return ("cylinder", radius, z0, z1, material)
+def blank(w_m, h_m, colour):
+    img = np.ones((int(h_m * PX), int(w_m * PX), 4), dtype=np.float32)
+    img[:, :, :3] = srgb(colour)
+    return img
 
 
-# name: parts. Widths across (x), depths front to back (y in Blender).
-MODELS = {
-    "khsv_terminal": [box(197.0, 128.0, 15.0, "roof_white")],
-    "khsv_terminal_hall": [box(180.0, 83.0, 12.0, "roof_blue")],
-    "khsv_concourse": [box(37.0, 210.0, 10.0, "roof_blue")],
-    "khsv_tower": [
-        cylinder(4.0, 0.0, 40.0, "concrete"),
-        cylinder(7.0, 40.0, 46.0, "glass"),
-        cylinder(7.5, 46.0, 47.5, "concrete"),
-    ],
-    "khsv_tower_base": [box(40.0, 26.0, 8.0, "concrete")],
-    "khsv_hangar_27x105": [box(27.0, 105.0, 12.0, "metal")],
-    "khsv_hangar_24x147": [box(24.0, 147.0, 12.0, "metal")],
-    "khsv_hangar_27x144": [box(27.0, 144.0, 12.0, "metal")],
-    "khsv_hangar_28x166": [box(28.0, 166.0, 12.0, "metal")],
-    "khsv_hangar_35x108": [box(35.0, 108.0, 14.0, "metal")],
-    "khsv_hangar_73x38": [box(73.0, 38.0, 14.0, "roof_blue")],
-    "khsv_hangar_72x100": [box(72.0, 100.0, 16.0, "metal")],
-    "khsv_hangar_60x108": [box(60.0, 108.0, 16.0, "metal")],
-    "khsv_cargo_42x194": [box(42.0, 194.0, 12.0, "roof_white")],
-    "khsv_cargo_53x115": [box(53.0, 115.0, 10.0, "roof_white")],
-    "khsv_cargo_70x261": [box(70.0, 261.0, 13.0, "roof_white")],
-    "khsv_warehouse": [box(215.0, 261.0, 13.0, "roof_white")],
-}
+def shade(c, f):
+    return tuple(min(255.0, max(0.0, v * f)) for v in c)
 
 
-def material(name):
-    m = bpy.data.materials.get(name)
-    if m is None:
-        colour, fovea = MATERIALS[name]
-        m = bpy.data.materials.new(name)
-        m.use_nodes = True
-        m.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = colour
-        m.node_tree.nodes["Principled BSDF"].inputs["Roughness"].default_value = 0.9
-        m.diffuse_color = colour
-        m["fovea_material"] = fovea
+def office_facade(wall, glass_from=1.0, glass_to=2.6, bay=1.5):
+    """4 m floors: a glass band with mullions every `bay` metres."""
+    img = blank(6.0, 4.0, wall)
+    a, b = int(glass_from * PX), int(glass_to * PX)
+    rows = np.linspace(1.0, 0.75, b - a)[:, None]
+    img[a:b, :, :3] = srgb((52, 64, 78)) * rows[:, :, None]
+    for x in range(0, img.shape[1], int(bay * PX)):
+        img[a:b, x:x + 2, :3] = srgb((70, 72, 74))
+    img[0:3, :, :3] = srgb(shade(wall, 0.8))  # the floor slab's line
+    return img
+
+
+def corrugated(wall):
+    """Vertical ribs every 0.25 m."""
+    img = blank(4.0, 4.0, wall)
+    for x in range(img.shape[1]):
+        img[:, x, :3] *= 0.86 + 0.14 * (0.5 + 0.5 * math.cos(2 * math.pi * x / (0.25 * PX)))
+    return img
+
+
+def hangar_door(wall):
+    """Door leaves 4 m wide, rails every 2 m."""
+    img = blank(8.0, 4.0, shade(wall, 0.92))
+    for x in range(0, img.shape[1], 4 * PX):
+        img[:, x:x + 3, :3] = srgb(shade(wall, 0.55))
+    for y in range(0, img.shape[0], 2 * PX):
+        img[y:y + 2, :, :3] = srgb(shade(wall, 0.7))
+    return img
+
+
+def membrane(roof, seed):
+    """Roof membrane in 2 m strips, a little uneven."""
+    rng = np.random.default_rng(seed)
+    img = blank(16.0, 16.0, roof)
+    img[:, :, :3] *= (0.96 + 0.04 * rng.random(img.shape[:2]))[:, :, None]
+    for x in range(0, img.shape[1], 2 * PX):
+        img[:, x:x + 1, :3] *= 0.85
+    return img
+
+
+def standing_seam(roof):
+    """Metal roofing, seams every 0.6 m."""
+    img = blank(4.8, 4.8, roof)
+    for x in range(0, img.shape[1], int(0.6 * PX)):
+        img[:, x:x + 2, :3] *= 0.8
+        img[:, x + 2:x + 3, :3] = np.minimum(img[:, x + 2:x + 3, :3] * 1.1, 1.0)
+    return img
+
+
+def cab_glass():
+    """A tower cab facet: dark glass, a frame round it."""
+    img = blank(2.0, 2.0, (40, 52, 60))
+    img[:, :4, :3] = srgb((180, 182, 184))
+    img[:4, :, :3] = srgb((180, 182, 184))
+    return img
+
+
+def plain(colour):
+    return blank(1.0, 1.0, colour)
+
+
+# --- Materials -------------------------------------------------------------
+
+def material(name, texels, fovea, size_m):
+    """A material showing `texels` (size_m[0] x size_m[1] metres)."""
+    m = bpy.data.materials.new(name)
+    try:
+        m.use_nodes = True  # always so from Blender 5.0
+    except AttributeError:
+        pass
+    img = bpy.data.images.new(name, texels.shape[1], texels.shape[0], alpha=False)
+    img.pixels.foreach_set(np.clip(texels, 0.0, 1.0).ravel())
+    img.pack()
+    nodes = m.node_tree.nodes
+    bsdf = nodes["Principled BSDF"]
+    tex = nodes.new("ShaderNodeTexImage")
+    tex.image = img
+    m.node_tree.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+    bsdf.inputs["Roughness"].default_value = 0.85
+    m["fovea_material"] = fovea
+    m["size_m"] = size_m
     return m
 
 
-def part_object(name, part):
-    bm = bmesh.new()
-    kind = part[0]
-    if kind == "box":
-        _, w, d, h, mat = part
-        z0, z1 = -PLINTH, h
-        bmesh.ops.create_cube(bm, size=1.0)
-        for v in bm.verts:
-            v.co.x *= w
-            v.co.y *= d
-            v.co.z = z0 + (v.co.z + 0.5) * (z1 - z0)
-    else:
-        _, radius, z0, z1, mat = part
+# --- Geometry --------------------------------------------------------------
+
+class Model:
+    """Faces by material; texture coordinates from positions, each face
+    projected on its own plane (walls: along and up; roofs: from above)."""
+
+    def __init__(self, name):
+        self.name = name
+        self.faces = {}  # material: [(points, projection)]
+
+    def face(self, mat, points, projection=None):
+        self.faces.setdefault(mat, []).append((points, projection))
+
+    def quad_strip(self, mat, ring_lo, ring_hi, closed=True):
+        """Walls between two rings of points (anticlockwise from above)."""
+        n = len(ring_lo)
+        for i in range(n if closed else n - 1):
+            j = (i + 1) % n
+            self.face(mat, [ring_lo[i], ring_lo[j], ring_hi[j], ring_hi[i]])
+
+    def box(self, wall, roof, cx, cy, w, d, z0, z1, front=None):
+        """A box from z0 to z1 (z0 <= 0 reaches the plinth); `front`, if
+        given, is the material of its front face (-Y)."""
         z0 = -PLINTH if z0 <= 0.0 else z0
-        bmesh.ops.create_cone(bm, cap_ends=True, cap_tris=False, segments=24, radius1=radius,
-                              radius2=radius, depth=z1 - z0)
-        for v in bm.verts:
-            v.co.z += (z0 + z1) / 2
-    mesh = bpy.data.meshes.new(name)
-    bm.to_mesh(mesh)
-    bm.free()
-    for p in mesh.polygons:
-        p.use_smooth = kind == "cylinder"  # flat faces on boxes, round sides on cylinders
-    mesh.materials.append(material(mat))
-    obj = bpy.data.objects.new(name, mesh)
-    bpy.context.scene.collection.objects.link(obj)
-    return obj
+        x0, x1, y0, y1 = cx - w / 2, cx + w / 2, cy - d / 2, cy + d / 2
+        lo = [(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0)]
+        hi = [(x, y, z1) for x, y, _ in lo]
+        for i in range(4):
+            j = (i + 1) % 4
+            self.face(front if (front and i == 0) else wall, [lo[i], lo[j], hi[j], hi[i]])
+        self.face(roof, hi, "top")
+        self.face(roof, list(reversed(lo)), "top")
+
+    def prism(self, wall, roof, cx, cy, r0, r1, z0, z1, sides, top=True, bottom=False):
+        """An upright prism (cylinder or frustum): radius r0 at z0, r1 at z1."""
+        z0 = -PLINTH if z0 <= 0.0 else z0
+        ring = lambda r, z: [(cx + r * math.cos(2 * math.pi * k / sides + math.pi / sides),
+                              cy + r * math.sin(2 * math.pi * k / sides + math.pi / sides), z)
+                             for k in range(sides)]
+        lo, hi = ring(r0, z0), ring(r1, z1)
+        self.quad_strip(wall, lo, hi)
+        if top:
+            self.face(roof, hi, "top")
+        if bottom:
+            self.face(roof, list(reversed(lo)), "top")
+
+    def parapet(self, wall, cx, cy, w, d, z, height=0.8, thick=0.4):
+        """A low wall round a flat roof's edge (its outside flush with the walls)."""
+        for (px, py, pw, pd) in [(cx, cy - d / 2 + thick / 2, w, thick),
+                                 (cx, cy + d / 2 - thick / 2, w, thick),
+                                 (cx - w / 2 + thick / 2, cy, thick, d - 2 * thick),
+                                 (cx + w / 2 - thick / 2, cy, thick, d - 2 * thick)]:
+            self.box(wall, wall, px, py, pw, pd, z, z + height)
+
+    def rooftop_plant(self, mat, cx, cy, w, d, z, seed, per_1000_m2=1.2):
+        """Air-handling units scattered over a flat roof, clear of its edges."""
+        rng = random.Random(seed)
+        for _ in range(max(1, int(w * d / 1000 * per_1000_m2))):
+            uw, ud, uh = rng.uniform(3, 7), rng.uniform(2, 5), rng.uniform(1.2, 2.5)
+            ux = cx + rng.uniform(-w / 2 + 4 + uw / 2, w / 2 - 4 - uw / 2)
+            uy = cy + rng.uniform(-d / 2 + 4 + ud / 2, d / 2 - 4 - ud / 2)
+            self.box(mat, mat, ux, uy, uw, ud, z, z + uh)
+
+    def arched_hangar(self, wall, door, roof, w, d, eave, rise, segments=12):
+        """Walls to `eave`, an arched roof rising `rise` more across the
+        width, the door on the front (-Y) gable."""
+        y0, y1 = -d / 2, d / 2
+        xs = [-w / 2 + w * k / segments for k in range(segments + 1)]
+        arch = [(x, eave + rise * (1 - (2 * x / w) ** 2)) for x in xs]
+        # Sides.
+        for x, y_a, y_b in [(-w / 2, y1, y0), (w / 2, y0, y1)]:
+            self.face(wall, [(x, y_a, -PLINTH), (x, y_b, -PLINTH), (x, y_b, eave), (x, y_a, eave)])
+        # Gables: front (the door) and back.
+        for y, mat, order in [(y0, door, 1), (y1, wall, -1)]:
+            pts = [(-w / 2, y, -PLINTH), (w / 2, y, -PLINTH)] + [(x, y, z) for x, z in reversed(arch)]
+            self.face(mat, pts if order > 0 else list(reversed(pts)))
+        # The roof, strip by strip.
+        for (xa, za), (xb, zb) in zip(arch, arch[1:]):
+            self.face(roof, [(xa, y0, za), (xb, y0, zb), (xb, y1, zb), (xa, y1, za)], "top")
+
+    def build(self):
+        for mat, faces in self.faces.items():
+            su, sv = mat["size_m"]
+            bm = bmesh.new()
+            uv = bm.loops.layers.uv.new("UVMap")
+            for points, projection in faces:
+                verts = [bm.verts.new(p) for p in points]
+                f = bm.faces.new(verts)
+                f.normal_update()
+                n = f.normal
+                top = projection == "top" or abs(n.z) > 0.7
+                if not top:
+                    t = (-n.y, n.x)  # along the wall, horizontal
+                    tl = math.hypot(*t) or 1.0
+                    t = (t[0] / tl, t[1] / tl)
+                for loop in f.loops:
+                    p = loop.vert.co
+                    loop[uv].uv = (p.x / su, p.y / sv) if top else ((p.x * t[0] + p.y * t[1]) / su, p.z / sv)
+            mesh = bpy.data.meshes.new(f"{self.name}_{mat.name}")
+            bm.to_mesh(mesh)
+            bm.free()
+            mesh.materials.append(mat)
+            obj = bpy.data.objects.new(mesh.name, mesh)
+            bpy.context.scene.collection.objects.link(obj)
 
 
-def build(name, parts, out_dir):
+# --- The landmarks -----------------------------------------------------------
+
+WALL = (196, 192, 184)    # light concrete and render
+GLASS_WALL = (150, 160, 168)
+
+
+def roof_colour(linear):
+    """The imagery's colour (linear), as sRGB 0-255."""
+    return tuple(255 * (12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055) for c in linear)
+
+
+# tools/measure-roof-colours.py data/compile/khsv.toml, 2026-11-07.
+ROOF = {
+    "khsv_terminal": (0.623, 0.661, 0.675),
+    "khsv_terminal_hall": (0.292, 0.404, 0.474),
+    "khsv_concourse": (0.259, 0.471, 0.619),
+    "khsv_tower_base": (0.795, 0.782, 0.755),
+    "khsv_hangar_27x105": (0.679, 0.725, 0.739),
+    "khsv_hangar_24x147": (0.839, 0.842, 0.826),
+    "khsv_hangar_27x144": (0.831, 0.849, 0.845),
+    "khsv_hangar_28x166": (0.637, 0.674, 0.675),
+    "khsv_hangar_35x108": (0.790, 0.809, 0.806),
+    "khsv_hangar_73x38": (0.287, 0.519, 0.637),
+    "khsv_warehouse": (0.873, 0.876, 0.866),
+    "khsv_cargo_42x194": (0.819, 0.792, 0.748),
+    "khsv_cargo_53x115": (0.692, 0.712, 0.706),
+    "khsv_cargo_70x261": (0.823, 0.812, 0.785),
+    "khsv_hangar_72x100": (0.663, 0.654, 0.628),
+    "khsv_hangar_60x108": (0.858, 0.872, 0.874),
+}
+
+
+def flat_roofed(name, w, d, h, facade="office", plant=True):
+    """An office, terminal or cargo building: a facade, a membrane roof
+    behind a parapet, plant on the roof."""
+    roof = roof_colour(ROOF[name])
+    if facade == "glass":
+        walls = material("glass_wall", office_facade(GLASS_WALL, 0.4, 3.6, 2.0), 1, (6.0, 4.0))
+    elif facade == "office":
+        walls = material("office_wall", office_facade(WALL), 1, (6.0, 4.0))
+    else:
+        walls = material("cargo_wall", corrugated(shade(roof, 0.9)), 2, (4.0, 4.0))
+    top = material("roof", membrane(roof, len(name)), 1, (16.0, 16.0))
+    unit = material("plant", corrugated((150, 152, 150)), 2, (4.0, 4.0))
+    m = Model(name)
+    m.box(walls, top, 0, 0, w, d, 0, h)
+    m.parapet(walls, 0, 0, w, d, h)
+    if plant:
+        m.rooftop_plant(unit, 0, 0, w, d, h, seed=name)
+    return m
+
+
+def hangar(name, w, d, eave):
+    roof = roof_colour(ROOF[name])
+    walls = material("hangar_wall", corrugated(shade(roof, 0.92)), 2, (4.0, 4.0))
+    door = material("hangar_door", hangar_door(shade(roof, 0.92)), 2, (8.0, 4.0))
+    top = material("hangar_roof", standing_seam(roof), 2, (4.8, 4.8))
+    m = Model(name)
+    m.arched_hangar(walls, door, top, w, d, eave, rise=min(w * 0.12, 6.0))
+    return m
+
+
+def tower(name):
+    concrete = material("concrete", plain((176, 172, 164)), 1, (1.0, 1.0))
+    glass = material("cab_glass", cab_glass(), 3, (2.0 * math.pi * 6.5 / 8, 5.0))
+    dark = material("roof_dark", plain((70, 72, 74)), 2, (1.0, 1.0))
+    m = Model(name)
+    m.prism(concrete, concrete, 0, 0, 3.5, 3.5, 0, 38.0, 16)        # the shaft
+    m.prism(concrete, concrete, 0, 0, 6.5, 6.5, 38.0, 40.0, 8, bottom=True)  # the deck
+    m.prism(glass, dark, 0, 0, 6.0, 7.0, 40.0, 45.0, 8, top=False)  # the cab, leaning out
+    m.prism(dark, dark, 0, 0, 7.6, 7.6, 45.0, 46.0, 8, bottom=True)  # its roof
+    m.box(dark, dark, 0, 0, 0.3, 0.3, 46.0, 52.0)                   # an antenna
+    return m
+
+
+MODELS = {
+    "khsv_terminal": lambda n: flat_roofed(n, 197.0, 128.0, 15.0),
+    "khsv_terminal_hall": lambda n: flat_roofed(n, 180.0, 83.0, 12.0, "glass"),
+    "khsv_concourse": lambda n: flat_roofed(n, 37.0, 210.0, 10.0, "glass", plant=False),
+    "khsv_tower": tower,
+    "khsv_tower_base": lambda n: flat_roofed(n, 40.0, 26.0, 8.0),
+    "khsv_hangar_27x105": lambda n: hangar(n, 27.0, 105.0, 10.0),
+    "khsv_hangar_24x147": lambda n: hangar(n, 24.0, 147.0, 10.0),
+    "khsv_hangar_27x144": lambda n: hangar(n, 27.0, 144.0, 10.0),
+    "khsv_hangar_28x166": lambda n: hangar(n, 28.0, 166.0, 10.0),
+    "khsv_hangar_35x108": lambda n: hangar(n, 35.0, 108.0, 11.0),
+    "khsv_hangar_73x38": lambda n: hangar(n, 73.0, 38.0, 10.0),
+    "khsv_hangar_72x100": lambda n: hangar(n, 72.0, 100.0, 12.0),
+    "khsv_hangar_60x108": lambda n: hangar(n, 60.0, 108.0, 12.0),
+    "khsv_cargo_42x194": lambda n: flat_roofed(n, 42.0, 194.0, 12.0, "cargo"),
+    "khsv_cargo_53x115": lambda n: flat_roofed(n, 53.0, 115.0, 10.0, "cargo"),
+    "khsv_cargo_70x261": lambda n: flat_roofed(n, 70.0, 261.0, 13.0, "cargo"),
+    "khsv_warehouse": lambda n: flat_roofed(n, 215.0, 261.0, 13.0, "cargo"),
+}
+
+
+def build(name, make, out_dir):
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    for i, part in enumerate(parts):
-        part_object(f"{name}_{i}", part)
+    make(name).build()
     bpy.ops.export_scene.gltf(
         filepath=os.path.join(out_dir, name + ".glb"),
         export_format="GLB",
         export_yup=True,
         export_extras=True,
         export_normals=True,
-        export_texcoords=False,
+        export_texcoords=True,
         export_materials="EXPORT",
+        export_image_format="AUTO",
         export_apply=True,
     )
 
@@ -131,8 +355,8 @@ def build(name, parts, out_dir):
 def main():
     out_dir = sys.argv[sys.argv.index("--") + 1]
     os.makedirs(out_dir, exist_ok=True)
-    for name, parts in MODELS.items():
-        build(name, parts, out_dir)
+    for name, make in MODELS.items():
+        build(name, make, out_dir)
     print(f"wrote {len(MODELS)} models to {out_dir}")
 
 
