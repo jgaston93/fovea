@@ -73,7 +73,7 @@ TileSelection select_tiles(std::span<const LodTile> tiles, std::span<const std::
         if (sel.drawn < out.size()) {
             out[sel.drawn++] = t;
         }
-        if (tile.error_m > 0.0) {
+        if (tile.can_split && tile.error_m > 0.0) {
             double ahead = distance;
             if (view.lookahead_ecef) {
                 ahead = std::min(

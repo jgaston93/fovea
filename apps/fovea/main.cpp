@@ -24,7 +24,6 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -214,6 +213,17 @@ void print_summary(const fovea::FrameSummary& s) {
 }
 
 int finish(const fovea::Renderer& r) {
+    // Paged terrain tiles that couldn't be used (drawn coarser instead).
+    const auto problems = r.terrain_problems();
+    if (!problems.empty()) {
+        std::printf("Terrain: %zu tiles couldn't be paged in:\n", problems.size());
+        for (std::size_t i = 0; i < std::min<std::size_t>(problems.size(), 10); ++i) {
+            std::printf("  %s\n", problems[i].c_str());
+        }
+        if (problems.size() > 10) {
+            std::printf("  ... and %zu more\n", problems.size() - 10);
+        }
+    }
     std::printf("%llu validation messages\n",
                 static_cast<unsigned long long>(r.validation_messages()));
     return r.validation_messages() == 0 ? 0 : 1;
@@ -248,11 +258,10 @@ void print_host_stats(const fovea::CigiAdapter& adapter) {
     }
 }
 
-// The config's terrain database, if any, onto the GPU (milestone 3 step 5):
-// every tile, up front. False, after saying why, if it can't be used.
-// `between_tiles` runs after each tile: windows handle their events there.
-bool load_terrain(fovea::Renderer& renderer, const fovea::DisplayConfig& config,
-                  const std::function<void()>& between_tiles = {}) {
+// The config's terrain database, if any (milestone 3 steps 5 and 6): its
+// roots loaded now, the rest paged in as views want them. False, after
+// saying why, if it can't be used.
+bool load_terrain(fovea::Renderer& renderer, const fovea::DisplayConfig& config) {
     if (!config.terrain) {
         return true;
     }
@@ -270,9 +279,6 @@ bool load_terrain(fovea::Renderer& renderer, const fovea::DisplayConfig& config,
     fovea::TerrainOptions options;
     options.max_level = t.max_level;
     options.pixel_error = t.pixel_error;
-    if (between_tiles) {
-        options.progress = [&](std::size_t, std::size_t) { between_tiles(); };
-    }
     options.max_tiles = t.max_tiles;
     options.budget_bytes = static_cast<std::size_t>(t.budget_mb) << 20;
     const fovea::TerrainLoad load = renderer.load_terrain(std::move(db), options);
@@ -416,15 +422,8 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         }
         renderer = fovea::Renderer::for_windows(platform, outputs);
         print_gpu(*renderer);
-        // Loading takes a while (KHSV: tens of seconds): the windows keep
-        // answering the system meanwhile, and closing one ends the run.
-        bool quit = false;
-        if (!options.clear &&
-            !load_terrain(*renderer, config, [&] { quit = quit || platform.poll_events().quit; })) {
+        if (!options.clear && !load_terrain(*renderer, config)) {
             return 1;
-        }
-        if (quit) {
-            return finish(*renderer);
         }
         std::printf("Pacing: %s\n", renderer->has_present_wait()
                                         ? "present wait (each frame starts after a vsync)"

@@ -118,14 +118,22 @@ private:
     std::size_t retired_bytes_ = 0;  // of stats_.bytes: freed once their frames finish
     TileCacheStats stats_;
     std::uint64_t last_frame_ = 0;
-    // Key to slot, open addressing (twice the slots, so never full).
+    // Key to slot, open addressing with linear probing and backward-shift
+    // deletion (twice the slots, so never full, and no tombstones to fill
+    // it up).
     struct Bucket {
         TileKey key;
-        std::uint32_t slot = kNoTile;  // kNoTile: empty; kTombstone: erased
+        std::uint32_t slot = kNoTile;  // kNoTile: empty
     };
     std::vector<Bucket> index_;
-    // Tiles that failed to load, likewise.
-    std::vector<TileKey> failed_;
+    // Tiles that failed to load: a set, open addressing likewise (entries
+    // never removed). At most `capacity` are remembered; any more are asked
+    // for again (a database that bad is reported anyway).
+    struct Failed {
+        TileKey key;
+        bool used = false;
+    };
+    std::vector<Failed> failed_;
     std::size_t failed_count_ = 0;
 };
 

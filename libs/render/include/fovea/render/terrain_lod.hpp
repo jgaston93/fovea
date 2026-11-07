@@ -21,6 +21,10 @@ struct LodTile {
     DVec3 centre_ecef{0.0};  // of a sphere around the tile, skirts included
     double radius_m = 0.0;
     double error_m = 0.0;  // the compiler's geometric error (0 at the finest level)
+    // Whether it has children that can be loaded (none past the database's
+    // finest level, nor past the configured max_level): only then are they
+    // wanted, or their absence a miss.
+    bool can_split = true;
     // South-west, south-east, north-west, north-east; kNoTile where a child
     // isn't loaded (then the tile never splits).
     std::array<std::uint32_t, 4> children{kNoTile, kNoTile, kNoTile, kNoTile};
