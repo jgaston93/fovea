@@ -17,11 +17,13 @@
 // material maps will use (fovea-plan.md: material IDs from day one).
 //
 // Read: triangles with positions and normals (texture coordinates where a
-// material has a texture), indexed or not, any accessor types (sparse too);
+// material has a texture), indexed or not, any accessor types (sparse
+// vertex data too, not sparse indices);
 // materials' base colour factor and texture (PNG or JPEG in the file),
 // alpha mode, double-sidedness. Refused, with a reason: anything else a file
 // requires (extensions it lists as required, other primitive modes,
-// external files), and limits past those below.
+// external files), skinned meshes (milestone 6), and limits past those
+// below.
 
 #include <array>
 #include <cstdint>
@@ -59,9 +61,15 @@ struct TextureLevel {
     std::vector<std::uint8_t> pixels;
 };
 
-struct ModelTexture {
+// An image, decoded once however many textures use it.
+struct ModelImage {
     std::vector<TextureLevel> levels;  // full chain, down to 1 x 1
     bool srgb = true;                  // base colour is
+};
+
+// An image and how it's sampled.
+struct ModelTexture {
+    std::uint32_t image = 0;  // into Model::images
     TextureWrap wrap_u = TextureWrap::repeat;
     TextureWrap wrap_v = TextureWrap::repeat;
 };
@@ -78,6 +86,7 @@ struct Model {
     std::vector<ModelPrimitive> primitives;
     std::vector<ModelMaterial> materials;
     std::vector<ModelTexture> textures;
+    std::vector<ModelImage> images;
     std::array<float, 3> min{};  // bounds of the vertices
     std::array<float, 3> max{};
 };
@@ -87,6 +96,7 @@ inline constexpr std::size_t kMaxModelBytes = std::size_t{256} << 20;
 inline constexpr std::uint32_t kMaxModelVertices = 1U << 24;
 inline constexpr std::uint32_t kMaxModelIndices = 3U << 24;
 inline constexpr std::uint32_t kMaxTextureSide = 8192;
+inline constexpr std::size_t kMaxImageBytes = std::size_t{1} << 30;  // decoded, mips included
 
 struct ModelResult {
     std::optional<Model> model;

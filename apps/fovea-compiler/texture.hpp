@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "fovea/core/colour.hpp"
+
 #include "fovea/terrain/tile_file.hpp"
 
 namespace fovea::compiler {
@@ -24,9 +26,6 @@ struct Rgba8Image {
         return &texels[(std::size_t{row} * size + column) * 4];
     }
 };
-
-float srgb_to_linear(std::uint8_t v);
-std::uint8_t linear_to_srgb(float v);  // rounded, clamped to 0-1
 
 // Half the size: each texel the average of four, in linear light.
 Rgba8Image half(const Rgba8Image& image);

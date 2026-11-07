@@ -5,7 +5,9 @@ find_package(Threads REQUIRED)
 # No Vulkan, SDL or GDAL here, ever.
 add_library(fovea_core STATIC
     src/attitude.cpp
+    src/colour.cpp
     src/config.cpp
+    src/file.cpp
     src/geodesy.cpp
     src/image_file.cpp
     src/ipv4.cpp

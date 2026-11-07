@@ -34,6 +34,9 @@ struct Spec {
     std::string node;  // more of the node: "\"matrix\":[...],"
     std::string top;   // more of the top level: "\"extensionsRequired\":[...],"
     std::string buffer_uri;
+    std::size_t buffer_bytes = 0;  // declared, if not the real size
+    bool sparse_indices = false;
+    bool shared_image = false;  // a second material, its texture the same image, clamped
 };
 
 std::vector<std::uint8_t> make_glb(const Spec& s) {
@@ -79,12 +82,27 @@ std::vector<std::uint8_t> make_glb(const Spec& s) {
     if (s.indexed) {
         const int i =
             accessor(add(s.indices.data(), s.indices.size() * 2), 5123, s.indices.size(), "SCALAR");
+        if (s.sparse_indices) {
+            // The last index replaced by itself, sparsely.
+            const std::uint16_t at = 2;
+            const std::uint16_t value = s.indices[2];
+            const int iv = add(&at, 2);
+            const int vv = add(&value, 2);
+            accessors.pop_back();
+            accessors +=
+                ",\"sparse\":{\"count\":1,\"indices\":{\"bufferView\":" + std::to_string(iv) +
+                ",\"componentType\":5123},\"values\":{\"bufferView\":" + std::to_string(vv) + "}}}";
+        }
         prim += ",\"indices\":" + std::to_string(i);
     }
+    const std::string shape = prim;
     if (s.with_material) {
         prim += ",\"material\":0";
     }
     prim += "}";
+    if (s.shared_image) {
+        prim += "," + shape + ",\"material\":1}";
+    }
     std::string material =
         "{\"name\":\"paint\",\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.5,0.25,1,1]";
     std::string images;
@@ -92,8 +110,8 @@ std::vector<std::uint8_t> make_glb(const Spec& s) {
         material += ",\"baseColorTexture\":{\"index\":0}";
         const int v = add(s.image.data(), s.image.size());
         images =
-            ",\"textures\":[{\"source\":0,\"sampler\":0}],"
-            "\"samplers\":[{\"wrapS\":33071,\"wrapT\":10497}],"
+            ",\"textures\":[{\"source\":0,\"sampler\":0},{\"source\":0,\"sampler\":1}],"
+            "\"samplers\":[{\"wrapS\":33071,\"wrapT\":10497},{\"wrapS\":10497,\"wrapT\":33071}],"
             "\"images\":[{\"bufferView\":" +
             std::to_string(v) + ",\"mimeType\":\"" + s.mime + "\"}]";
     }
@@ -102,10 +120,15 @@ std::vector<std::uint8_t> make_glb(const Spec& s) {
         material += ",\"extras\":" + s.extras;
     }
     material += "}";
+    if (s.shared_image) {
+        material += R"(,{"name":"trim","pbrMetallicRoughness":{"baseColorTexture":{"index":1}},)"
+                    R"("extras":{"fovea_material":9}})";
+    }
     while (bin.size() % 4 != 0) {
         bin.push_back(0);
     }
-    std::string buffer = "{\"byteLength\":" + std::to_string(bin.size());
+    std::string buffer =
+        "{\"byteLength\":" + std::to_string(s.buffer_bytes != 0 ? s.buffer_bytes : bin.size());
     if (!s.buffer_uri.empty()) {
         buffer += ",\"uri\":\"" + s.buffer_uri + "\"";
     }
@@ -194,15 +217,17 @@ TEST(Models, ReadsATexturedTriangle) {
     ASSERT_EQ(mat.base_colour_texture, 0U);
     ASSERT_EQ(m.textures.size(), 1U);
     const ModelTexture& t = m.textures[0];
+    ASSERT_EQ(m.images.size(), 1U);
+    const ModelImage& im = m.images[t.image];
     EXPECT_EQ(t.wrap_u, TextureWrap::clamp);
     EXPECT_EQ(t.wrap_v, TextureWrap::repeat);
-    ASSERT_EQ(t.levels.size(), 3U);  // 4, 2, 1
-    EXPECT_EQ(t.levels[0].pixels, quadrants().pixels);
-    EXPECT_EQ(t.levels[1].width, 2U);
+    ASSERT_EQ(im.levels.size(), 3U);  // 4, 2, 1
+    EXPECT_EQ(im.levels[0].pixels, quadrants().pixels);
+    EXPECT_EQ(im.levels[1].width, 2U);
     // The second level's top left texel is the red quarter's.
-    EXPECT_EQ(t.levels[1].pixels[0], 255);
-    EXPECT_EQ(t.levels[1].pixels[1], 0);
-    EXPECT_EQ(t.levels[2].width, 1U);
+    EXPECT_EQ(im.levels[1].pixels[0], 255);
+    EXPECT_EQ(im.levels[1].pixels[1], 0);
+    EXPECT_EQ(im.levels[2].width, 1U);
     EXPECT_EQ(m.min, (std::array<float, 3>{0, 0, 0}));
     EXPECT_EQ(m.max, (std::array<float, 3>{1, 1, 0}));
 }
@@ -214,12 +239,12 @@ TEST(Models, ReadsJpegTextures) {
     s.mime = "image/jpeg";
     const ModelResult r = read_glb(make_glb(s));
     ASSERT_TRUE(r.model.has_value()) << r.error;
-    const TextureLevel& base = r.model->textures[0].levels[0];
+    const TextureLevel& base = r.model->images[0].levels[0];
     EXPECT_EQ(base.width, 16U);
     EXPECT_EQ(base.height, 8U);
     EXPECT_NEAR(base.pixels[0], 128, 2);
-    EXPECT_EQ(base.pixels[3], 255);                     // opaque
-    EXPECT_EQ(r.model->textures[0].levels.size(), 5U);  // 16x8 to 1x1
+    EXPECT_EQ(base.pixels[3], 255);                   // opaque
+    EXPECT_EQ(r.model->images[0].levels.size(), 5U);  // 16x8 to 1x1
 }
 
 // Front faces' winding agrees with their vertex normals.
@@ -262,6 +287,24 @@ TEST(Models, NodeTransformsApplyAndMirroringKeepsTheFrontFaces) {
     EXPECT_NE(r.model->indices, (std::vector<std::uint32_t>{0, 1, 2}));
 }
 
+TEST(Models, AnImageSharedByTexturesIsDecodedOnce) {
+    Spec s = textured();
+    s.shared_image = true;
+    const ModelResult r = read_glb(make_glb(s));
+    ASSERT_TRUE(r.model.has_value()) << r.error;
+    const Model& m = *r.model;
+    ASSERT_EQ(m.materials.size(), 2U);
+    EXPECT_EQ(m.materials[1].fovea_material, 9);
+    ASSERT_EQ(m.textures.size(), 2U);
+    EXPECT_EQ(m.images.size(), 1U);
+    EXPECT_EQ(m.textures[0].image, m.textures[1].image);
+    EXPECT_EQ(m.textures[0].wrap_u, TextureWrap::clamp);
+    EXPECT_EQ(m.textures[1].wrap_u, TextureWrap::repeat);
+    EXPECT_EQ(m.textures[1].wrap_v, TextureWrap::clamp);
+    ASSERT_EQ(m.primitives.size(), 2U);
+    EXPECT_EQ(m.primitives[1].material, 1U);
+}
+
 TEST(Models, UnindexedTrianglesAreIndexedInOrder) {
     Spec s;
     s.indexed = false;
@@ -280,6 +323,14 @@ TEST(Models, MaterialsNeedAFoveaMaterialId) {
         s.extras = bad;
         EXPECT_NE(refused(s).find("material 'paint'"), std::string::npos) << bad;
     }
+    // Only the top level counts: a group of custom properties may hold
+    // its own.
+    s.extras = R"({"lod": {"fovea_material": 3}})";
+    EXPECT_NE(refused(s).find("fovea_material"), std::string::npos);
+    s.extras = R"({"lod": {"fovea_material": 3, "x": [1, "}"]}, "fovea_material": 12})";
+    const ModelResult nested = read_glb(make_glb(s));
+    ASSERT_TRUE(nested.model.has_value()) << nested.error;
+    EXPECT_EQ(nested.model->materials[0].fovea_material, 12);
     s.extras = R"({"note": "x", "fovea_material" : 255 })";
     const ModelResult r = read_glb(make_glb(s));
     ASSERT_TRUE(r.model.has_value()) << r.error;
@@ -318,6 +369,19 @@ TEST(Models, RefusesWhatItDoesNotRead) {
     s = {};
     s.indices = {0, 1};
     EXPECT_FALSE(read_glb(make_glb(s)).model.has_value());  // not whole triangles
+    s = {};
+    s.buffer_uri = "box.bin";
+    EXPECT_NE(refused(s).find("external file"), std::string::npos);
+    s = {};
+    s.sparse_indices = true;
+    EXPECT_NE(refused(s).find("sparse"), std::string::npos);
+    s = {};
+    s.buffer_bytes = std::size_t{1} << 40;  // a terabyte, declared
+    EXPECT_NE(refused(s).find("more bytes"), std::string::npos);
+    s = {};
+    s.node = R"("skin":0,)";
+    s.top = R"("skins":[{"joints":[0]}],)";
+    EXPECT_NE(refused(s).find("skinned"), std::string::npos);
     s = {};
     s.buffer_uri = "box.bin";
     EXPECT_NE(refused(s).find("external file"), std::string::npos);

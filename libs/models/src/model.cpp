@@ -3,12 +3,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <fstream>
 #include <memory>
 #include <unordered_map>
 
 #include <cgltf.h>
 
+#include "fovea/core/colour.hpp"
+#include "fovea/core/file.hpp"
 #include "fovea/core/image_file.hpp"
 #include "fovea/core/math.hpp"
 
@@ -45,41 +46,125 @@ std::string result_text(cgltf_result r) {
     }
 }
 
-// "fovea_material": an integer from 0 to 255, in a material's extras (a JSON
-// object, as cgltf keeps it).
+// A small walk over JSON text (cgltf keeps extras as text): enough to find
+// a top-level key's value, skipping everything else whole.
+class JsonWalk {
+public:
+    explicit JsonWalk(std::string_view text) : t_(text) {}
+
+    // The text of `key`'s value in the top-level object, or nothing.
+    std::optional<std::string_view> top_level(std::string_view key) {
+        space();
+        if (!take('{')) {
+            return std::nullopt;
+        }
+        for (;;) {
+            space();
+            const auto name = string();
+            space();
+            if (!name || !take(':')) {
+                return std::nullopt;
+            }
+            space();
+            const std::size_t start = i_;
+            if (!value()) {
+                return std::nullopt;
+            }
+            if (*name == key) {
+                return t_.substr(start, i_ - start);
+            }
+            space();
+            if (!take(',')) {
+                return std::nullopt;  // the end, '}', or malformed
+            }
+        }
+    }
+
+private:
+    static bool blank(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+    void space() {
+        while (i_ < t_.size() && blank(t_[i_])) {
+            ++i_;
+        }
+    }
+    bool take(char c) {
+        if (i_ < t_.size() && t_[i_] == c) {
+            ++i_;
+            return true;
+        }
+        return false;
+    }
+    // A string's raw contents (escapes kept: a key with one isn't ours).
+    std::optional<std::string_view> string() {
+        if (!take('"')) {
+            return std::nullopt;
+        }
+        const std::size_t start = i_;
+        while (i_ < t_.size() && t_[i_] != '"') {
+            i_ += t_[i_] == '\\' ? std::size_t{2} : std::size_t{1};
+        }
+        if (i_ >= t_.size()) {
+            return std::nullopt;
+        }
+        return t_.substr(start, i_++ - start);
+    }
+    bool value() {
+        if (i_ >= t_.size()) {
+            return false;
+        }
+        if (t_[i_] == '"') {
+            return string().has_value();
+        }
+        if (t_[i_] == '{' || t_[i_] == '[') {
+            int depth = 0;
+            while (i_ < t_.size()) {
+                const char c = t_[i_];
+                if (c == '"') {
+                    if (!string()) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (c == '{' || c == '[') {
+                    ++depth;
+                } else if (c == '}' || c == ']') {
+                    --depth;
+                }
+                ++i_;
+                if (depth == 0) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        const std::size_t start = i_;
+        while (i_ < t_.size() && t_[i_] != ',' && t_[i_] != '}' && t_[i_] != ']' &&
+               !blank(t_[i_])) {
+            ++i_;
+        }
+        return i_ > start;
+    }
+
+    std::string_view t_;
+    std::size_t i_ = 0;
+};
+
+// "fovea_material": an integer from 0 to 255, at the top level of a
+// material's extras.
 std::optional<int> fovea_material(const cgltf_extras& extras) {
     if (extras.data == nullptr) {
         return std::nullopt;
     }
-    const std::string_view text = extras.data;
-    constexpr std::string_view key = "\"fovea_material\"";
-    const auto at = text.find(key);
-    if (at == std::string_view::npos) {
+    const auto v = JsonWalk(extras.data).top_level("fovea_material");
+    if (!v || v->empty() || v->size() > 3 ||
+        !std::all_of(v->begin(), v->end(), [](char c) { return c >= '0' && c <= '9'; })) {
         return std::nullopt;
     }
-    std::size_t i = at + key.size();
-    const auto space = [&] {
-        while (i < text.size() &&
-               (text[i] == ' ' || text[i] == '\t' || text[i] == '\n' || text[i] == '\r')) {
-            ++i;
-        }
-    };
-    space();
-    if (i >= text.size() || text[i] != ':') {
-        return std::nullopt;
-    }
-    ++i;
-    space();
     int value = 0;
-    std::size_t digits = 0;
-    while (i < text.size() && text[i] >= '0' && text[i] <= '9' && digits < 4) {
-        value = value * 10 + (text[i] - '0');
-        ++i;
-        ++digits;
+    for (const char c : *v) {
+        value = value * 10 + (c - '0');
     }
-    // A whole number, nothing after it but the end of the value.
-    space();
-    if (digits == 0 || (i < text.size() && text[i] != ',' && text[i] != '}') || value > 255) {
+    if (value > 255) {
         return std::nullopt;
     }
     return value;
@@ -94,17 +179,6 @@ TextureWrap wrap(cgltf_wrap_mode m) {
         default:
             return TextureWrap::repeat;
     }
-}
-
-float to_linear(std::uint8_t v) {
-    const float c = static_cast<float>(v) / 255.0F;
-    return c <= 0.04045F ? c / 12.92F : std::pow((c + 0.055F) / 1.055F, 2.4F);
-}
-
-std::uint8_t to_srgb(float c) {
-    c = std::clamp(c, 0.0F, 1.0F);
-    const float s = c <= 0.0031308F ? c * 12.92F : 1.055F * std::pow(c, 1.0F / 2.4F) - 0.055F;
-    return static_cast<std::uint8_t>(std::lround(s * 255.0F));
 }
 
 class Reader {
@@ -205,39 +279,69 @@ private:
         if (const auto found = textures_.find(t); found != textures_.end()) {
             return found->second;
         }
-        const cgltf_image* image = t->image;
-        if (image == nullptr || image->buffer_view == nullptr) {
+        const auto img = image(t->image, m, what);
+        if (!img) {
+            return std::nullopt;
+        }
+        ModelTexture tex;
+        tex.image = *img;
+        if (t->sampler != nullptr) {
+            tex.wrap_u = wrap(t->sampler->wrap_s);
+            tex.wrap_v = wrap(t->sampler->wrap_t);
+        }
+        const auto index = static_cast<std::uint32_t>(m.textures.size());
+        m.textures.push_back(tex);
+        textures_.emplace(t, index);
+        return index;
+    }
+
+    // Each image decoded once, however many textures use it, within the
+    // budget for decoded images.
+    std::optional<std::uint32_t> image(const cgltf_image* img, Model& m, const std::string& what) {
+        if (const auto found = images_.find(img); found != images_.end()) {
+            return found->second;
+        }
+        if (img == nullptr || img->buffer_view == nullptr) {
             error_ = what + ": its texture's image isn't in the file";
             return std::nullopt;
         }
-        const std::uint8_t* bytes = cgltf_buffer_view_data(image->buffer_view);
+        const std::uint8_t* bytes = cgltf_buffer_view_data(img->buffer_view);
         if (bytes == nullptr) {
             error_ = what + ": its texture's image has no data";
             return std::nullopt;
         }
-        auto decoded = decode_image({bytes, image->buffer_view->size}, kMaxTextureSide);
+        auto decoded = decode_image({bytes, img->buffer_view->size}, kMaxTextureSide);
         if (!decoded) {
             error_ = what + ": its texture isn't a PNG or JPEG image of at most " +
                      std::to_string(kMaxTextureSide) + " pixels a side";
             return std::nullopt;
         }
-        ModelTexture tex;
-        tex.srgb = true;
-        if (t->sampler != nullptr) {
-            tex.wrap_u = wrap(t->sampler->wrap_s);
-            tex.wrap_v = wrap(t->sampler->wrap_t);
+        ModelImage out;
+        out.srgb = true;
+        out.levels =
+            make_mips({decoded->width, decoded->height, std::move(decoded->pixels)}, out.srgb);
+        for (const TextureLevel& l : out.levels) {
+            image_bytes_ += l.pixels.size();
         }
-        tex.levels =
-            make_mips({decoded->width, decoded->height, std::move(decoded->pixels)}, tex.srgb);
-        const auto index = static_cast<std::uint32_t>(m.textures.size());
-        m.textures.push_back(std::move(tex));
-        textures_.emplace(t, index);
+        if (image_bytes_ > kMaxImageBytes) {
+            error_ = what + ": the model's images take more than " +
+                     std::to_string(kMaxImageBytes >> 20) + " MB decoded";
+            return std::nullopt;
+        }
+        const auto index = static_cast<std::uint32_t>(m.images.size());
+        m.images.push_back(std::move(out));
+        images_.emplace(img, index);
         return index;
     }
 
     bool node(const cgltf_node* n, Model& m) {
         if (++depth_ > 64) {
             error_ = "nodes nested more than 64 deep";
+            return false;
+        }
+        if (n->mesh != nullptr && n->skin != nullptr) {
+            error_ = name_or(n->name, "node", static_cast<std::size_t>(n - d_->nodes)) +
+                     ": a skinned mesh (an armature's); skins aren't read yet";
             return false;
         }
         if (n->mesh != nullptr) {
@@ -335,6 +439,10 @@ private:
             }
             m.vertices.push_back(v);
         }
+        if (prim.indices != nullptr && prim.indices->is_sparse != 0) {
+            error_ = what + ": its indices are sparse (cgltf can't read those)";
+            return false;
+        }
         const std::size_t indices = prim.indices != nullptr ? prim.indices->count : count;
         if (indices % 3 != 0 || m.indices.size() + indices > kMaxModelIndices) {
             error_ = what + (indices % 3 != 0 ? ": its indices aren't whole triangles"
@@ -367,6 +475,8 @@ private:
     cgltf_data* d_;
     std::string error_;
     std::unordered_map<const cgltf_texture*, std::uint32_t> textures_;
+    std::unordered_map<const cgltf_image*, std::uint32_t> images_;
+    std::size_t image_bytes_ = 0;
     int depth_ = 0;
 };
 
@@ -393,7 +503,8 @@ std::vector<TextureLevel> make_mips(TextureLevel base, bool srgb) {
                     for (std::uint32_t xx = x0; xx < x1; ++xx) {
                         const std::uint8_t* px = &a.pixels[(std::size_t{yy} * a.width + xx) * 4];
                         for (std::size_t c = 0; c < 3; ++c) {
-                            sum[c] += srgb ? to_linear(px[c]) : static_cast<float>(px[c]) / 255.0F;
+                            sum[c] +=
+                                srgb ? srgb_to_linear(px[c]) : static_cast<float>(px[c]) / 255.0F;
                         }
                         sum[3] += static_cast<float>(px[3]) / 255.0F;
                     }
@@ -401,7 +512,7 @@ std::vector<TextureLevel> make_mips(TextureLevel base, bool srgb) {
                 const auto n = static_cast<float>((y1 - y0) * (x1 - x0));
                 std::uint8_t* out = &b.pixels[(std::size_t{y} * b.width + x) * 4];
                 for (std::size_t c = 0; c < 3; ++c) {
-                    out[c] = srgb ? to_srgb(sum[c] / n)
+                    out[c] = srgb ? linear_to_srgb(sum[c] / n)
                                   : static_cast<std::uint8_t>(
                                         std::lround(std::clamp(sum[c] / n, 0.0F, 1.0F) * 255.0F));
                 }
@@ -433,6 +544,12 @@ ModelResult read_glb(std::span<const std::uint8_t> bytes) {
         // External files are refused before cgltf would open them (data:
         // URIs it decodes itself).
         for (cgltf_size i = 0; i < data->buffers_count; ++i) {
+            // Larger than the file: refused before cgltf allocates it.
+            if (data->buffers[i].size > bytes.size()) {
+                r.error = name_or(data->buffers[i].name, "buffer", i) +
+                          ": declares more bytes than the file holds";
+                return r;
+            }
             const char* uri = data->buffers[i].uri;
             if (uri != nullptr && std::strncmp(uri, "data:", 5) != 0) {
                 r.error = name_or(data->buffers[i].name, "buffer", i) + ": an external file (" +
@@ -461,23 +578,13 @@ ModelResult read_glb(std::span<const std::uint8_t> bytes) {
 
 ModelResult read_model_file(const std::filesystem::path& file) {
     ModelResult r;
-    std::ifstream in(file, std::ios::binary | std::ios::ate);
-    if (!in) {
-        r.error = file.string() + ": cannot read";
+    std::string why;
+    const auto bytes = read_file(file, kMaxModelBytes, why);
+    if (!bytes) {
+        r.error = file.string() + ": " + why;
         return r;
     }
-    const std::streamoff size = in.tellg();
-    if (size < 0 || static_cast<std::uintmax_t>(size) > kMaxModelBytes) {
-        r.error = file.string() + ": larger than " + std::to_string(kMaxModelBytes >> 20) + " MB";
-        return r;
-    }
-    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
-    in.seekg(0);
-    if (!in.read(reinterpret_cast<char*>(bytes.data()), size)) {
-        r.error = file.string() + ": cannot read";
-        return r;
-    }
-    r = read_glb(bytes);
+    r = read_glb(*bytes);
     if (!r.model) {
         r.error = file.string() + ": " + r.error;
     }
