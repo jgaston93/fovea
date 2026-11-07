@@ -1,0 +1,40 @@
+# How fovea-compiler builds the KHSV database (milestone 3):
+#   ./build/release/apps/fovea-compiler/fovea-compiler data/compile/khsv.toml
+# from the sources tools/fetch-sources.py put in data/cache/khsv, into
+# data/db/khsv (git-ignored). Relative paths start from this file.
+
+name = "khsv"
+area = "../sources/khsv.toml"
+output = "../db/khsv"
+
+# Level 12 tiles are about 4.9 x 4.0 km here; 30 of them cover the area.
+# Level 16 tiles are about 300 x 250 m, with 1.2 x 1.0 m between samples:
+# the 1 m lidar's own spacing.
+[levels]
+root = 12
+finest = 16
+
+[elevation]
+samples = 257
+cache = "../cache/khsv"
+# Newest lidar first: where projects overlap, the newer one wins. The 1/3
+# arc-second DEM fills what no 1 m project covers.
+sources = [
+    "elevation_1m/*_AL_19County_B24.tif",       # 2024
+    "elevation_1m/*_AL_11County_B23.tif",       # 2023
+    "elevation_1m/*_AL_17County_2020_B20.tif",  # 2020
+    "elevation_1m/*_AL_NorthAL_2019_B19.tif",   # 2019
+    "elevation_1m/*_AL_25Co_B1_2017.tif",       # 2017
+    "elevation_10m/*.tif",
+]
+geoid = "geoid/us_noaa_g2018u0.tif"
+
+[[credit]]
+layer = "elevation"
+name = "USGS 3DEP 1 m lidar DEMs and 1/3 arc-second DEM"
+credit = "Elevation data: U.S. Geological Survey, 3D Elevation Program"
+
+[[credit]]
+layer = "elevation"
+name = "NOAA GEOID18"
+credit = "GEOID18: NOAA National Geodetic Survey"

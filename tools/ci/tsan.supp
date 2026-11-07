@@ -1,4 +1,4 @@
-# ThreadSanitizer suppressions for the GPU tests (the full-verification TSan
+# ThreadSanitizer suppressions for the GPU and compiler tests (the full-verification TSan
 # job). lavapipe, Mesa's CPU Vulkan driver, isn't built with TSan, so the
 # locking between its own worker threads reports as races (seen with Mesa
 # 25.2.8-0ubuntu0.24.04.4: a mutex locked on one driver thread while another
@@ -9,3 +9,10 @@
 # threads (the render thread, the logger, the queues) race without it, and are
 # still reported.
 race:libvulkan_lvp.so
+
+# GDAL (the terrain compiler's tests), likewise not TSan-built: its own
+# mutexes, taken in different orders on different threads, report as
+# potential deadlocks with both locks inside libgdal (seen with GDAL 3.8.4,
+# Ubuntu 24.04). Each worker opens its own datasets, which GDAL supports
+# from several threads. Races are not suppressed.
+deadlock:libgdal.so

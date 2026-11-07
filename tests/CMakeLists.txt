@@ -48,6 +48,15 @@ target_compile_definitions(fovea_gpu_tests PRIVATE FOVEA_SOURCE_DIR="${PROJECT_S
 fovea_target_defaults(fovea_gpu_tests)
 gtest_discover_tests(fovea_gpu_tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT 120)
 
+# The terrain compiler, where it is built (GDAL found; apps/fovea-compiler).
+if(TARGET fovea_compiler_lib)
+    add_executable(fovea_compiler_tests unit/test_compiler.cpp)
+    target_link_libraries(fovea_compiler_tests PRIVATE fovea_compiler_lib GDAL::GDAL
+                                                       GTest::gtest_main)
+    fovea_target_defaults(fovea_compiler_tests)
+    gtest_discover_tests(fovea_compiler_tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT 60)
+endif()
+
 # Library boundaries (architecture.md): the repository passes, and planted
 # violations (a GPU header, a GDAL header in a .inl, a fovea library outside
 # the graph, in .hpp/.inl/.h/.cpp files) are all caught.

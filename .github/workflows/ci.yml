@@ -49,11 +49,13 @@ jobs:
       # layer fails them instead of skipping.
       FOVEA_REQUIRE_VULKAN: "1"
       FOVEA_REQUIRE_VALIDATION: "1"
+      # The terrain compiler and its tests are built, not skipped (D-019).
+      FOVEA_REQUIRE_GDAL: "1"
     steps:
       - uses: actions/checkout@v5
-      - name: Install Ninja, ccache, SDL's X11 dependencies and lavapipe
+      - name: Install Ninja, ccache, SDL's X11 dependencies, lavapipe and GDAL
         timeout-minutes: 10
-        run: tools/ci/apt-install.sh ninja-build ccache libx11-dev libxext-dev libxrandr-dev mesa-vulkan-drivers libvulkan1 vulkan-validationlayers
+        run: tools/ci/apt-install.sh ninja-build ccache libx11-dev libxext-dev libxrandr-dev mesa-vulkan-drivers libvulkan1 vulkan-validationlayers libgdal-dev
       # Compiled objects (ours and the FetchContent dependencies) are reused
       # between runs; ccache only reuses an object when the compiler, flags
       # and preprocessed source match, so results are unchanged.
@@ -148,14 +150,16 @@ jobs:
           fetch-depth: 0  # the PR's base, for the changed files
       - name: Python tools compile and parse their data
         run: |
-          python3 -m py_compile tools/fetch-sources.py
-          python3 -c "import tomllib, json; tomllib.load(open('data/sources/khsv.toml', 'rb')); json.load(open('data/sources/khsv.lock.json'))"
+          python3 -m py_compile tools/fetch-sources.py tools/check-elevation.py
+          python3 -c "import tomllib, json; [tomllib.load(open(f, 'rb')) for f in ('data/sources/khsv.toml', 'data/compile/khsv.toml')]; json.load(open('data/sources/khsv.lock.json'))"
       - name: Install tools
         timeout-minutes: 10
-        run: tools/ci/apt-install.sh ninja-build clang-format-18 clang-tidy-18 libx11-dev libxext-dev libxrandr-dev
+        run: tools/ci/apt-install.sh ninja-build clang-format-18 clang-tidy-18 libx11-dev libxext-dev libxrandr-dev libgdal-dev
       - name: clang-format
         run: git ls-files '*.cpp' '*.hpp' | xargs --no-run-if-empty clang-format-18 --dry-run --Werror
       - name: Configure (for compile_commands.json)
+        env:
+          FOVEA_REQUIRE_GDAL: "1"  # the compiler's files are checked too
         run: cmake --preset debug
       # Shader headers are generated at build time; tidy needs them.
       - name: Generate the shader headers
