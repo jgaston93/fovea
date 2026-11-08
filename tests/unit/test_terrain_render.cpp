@@ -946,6 +946,30 @@ TEST(TerrainRender, AFullOvercastHidesTheSunAndLeavesOnlyItsDiffuseLight) {
     }
 }
 
+// A skybox's clouds leave the ground's light alone (step 6): painted on the
+// sky, fixed to no place, any shadows couldn't match them. Under a full
+// overcast drawn as a skybox, a post's shadow is as it is under a clear
+// sky.
+TEST(TerrainRender, ASkyboxsCloudsCastNoShadows) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    s.placements = {{"post", lat0, lon0, 120.0, 0.0F}};
+    s.models = {{"post", box_glb(0.5F, 20.0F, 0.5F, {1.0F, 1.0F, 1.0F, 1.0F}, "")}};
+    const fs::path dir = write_db("skybox_shadow", s);
+    constexpr std::uint32_t kSize = 96;
+    const SkyBodies sky = sun_at_elevation(lat0, lon0, 40.0);
+    const std::array<WeatherLayer, 1> overcast = {
+        WeatherLayer{WeatherKind::cloud, 1620.0, 400.0, 1.0, 1000.0}};
+    const SceneView down = view_at({lat0, lon0, 120.0}, 300.0, -90.0, 0.0, 6.0);
+    const auto clear = draw_weather(dir, down, kSize, sky, {}, CloudModel::skybox);
+    if (clear.empty()) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const auto under = draw_weather(dir, down, kSize, sky, overcast, CloudModel::skybox);
+    EXPECT_EQ(clear, under);
+}
+
 // Scattered cloud lets about its share of the sky through (step 6): seen
 // from below, 10 km up, in three places 100 km apart, a layer of coverage
 // c covers about c of the view: the pixels nearer a full overcast's than

@@ -82,10 +82,13 @@ constexpr double kCloudMaxDepth = 40.0;
 // share of level light the clouds above the eye leave, on average (for the
 // air and the fog: where they are lit matters less than how much); and the
 // cloud layers to draw, the farthest from the eye's height first (along any
-// ray that meets two, the one further in height is further away). No
-// allocation.
+// ray that meets two, the one further in height is further away). A
+// skybox's clouds, painted on the sky and fixed to no place, leave the
+// light alone: no shadows that couldn't match them, nor the light they'd
+// take from the ground and the air (cloud_count 0 turns under_clouds off).
+// No allocation.
 void fill_weather(ViewLighting& l, std::span<const WeatherLayer> weather, const DVec3& eye_ecef,
-                  double eye_height_m, const DVec3& up,
+                  double eye_height_m, const DVec3& up, CloudModel model,
                   FixedArray<std::uint32_t, kMaxWeatherLayers>& order) {
     l.eye_height_m = static_cast<float>(eye_height_m);
     l.up = {static_cast<float>(up.x), static_cast<float>(up.y), static_cast<float>(up.z)};
@@ -120,8 +123,11 @@ void fill_weather(ViewLighting& l, std::span<const WeatherLayer> weather, const 
                       static_cast<float>(extinction),
                       cloud ? static_cast<float>(std::clamp(w.coverage, 0.0, 1.0)) : -1.0F};
         if (cloud) {
-            ++l.cloud_count;
             (void)order.push_back(static_cast<std::uint32_t>(k));
+            if (model == CloudModel::skybox) {
+                continue;
+            }
+            ++l.cloud_count;
             if (w.base_m > eye_height_m) {
                 const double tau = std::min(kCloudExtinctionPerM * w.thickness_m, kCloudMaxDepth);
                 const double c = std::clamp(w.coverage, 0.0, 1.0);
@@ -1531,7 +1537,7 @@ void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
             terrain_casts[i] = false;
             l.shadow_light = 0;
         }
-        fill_weather(l, weather, view.eye_ecef, eye.alt_m, up, cloud_order[i]);
+        fill_weather(l, weather, view.eye_ecef, eye.alt_m, up, cloud_model, cloud_order[i]);
         const std::uint32_t at = lighting_offset(slot, i);
         std::memcpy(static_cast<std::uint8_t*>(lighting_mapped) + at, &l, sizeof(l));
         (void)vmaFlushAllocation(allocator, lighting_memory, at, sizeof(l));
