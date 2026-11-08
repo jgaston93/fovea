@@ -17,6 +17,7 @@
 #include "fovea/core/math.hpp"
 #include "fovea/core/scene.hpp"
 #include "fovea/platform/platform.hpp"
+#include "fovea/render/atmosphere.hpp"
 #include "fovea/render/view.hpp"
 #include "fovea/terrain/database.hpp"
 
@@ -34,6 +35,9 @@ struct RendererOptions {
     // 8, as the GPU can (every Vulkan GPU can do 4); a count it can't do
     // fails, naming those it can.
     std::uint32_t msaa = 4;
+    // The frame clock's rate ([display] target_hz): exposure adapts by a
+    // frame period each frame drawn (D-031).
+    double frame_rate_hz = 60.0;
 };
 
 struct GpuInfo {
@@ -256,6 +260,10 @@ public:
     // D-029): the frame loop sets them each frame from the scene's date and
     // time. Until then, those of EnvironmentState's default date and time.
     void set_sky(const SkyBodies& sky);
+
+    // The sky's tables and an output's light, as the last frame left them
+    // (milestone 6 step 2). For tests: waits for the GPU, and allocates.
+    SkyReadback read_back_sky(std::uint32_t output);
 
     // Shows the debug overlay (Dear ImGui) on one output, drawn after the
     // tone map whenever draw_scene_frame is given content. One output only,

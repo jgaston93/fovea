@@ -302,6 +302,7 @@ bool load_terrain(fovea::Renderer& renderer, const fovea::DisplayConfig& config)
 fovea::RendererOptions renderer_options(const fovea::DisplayConfig& config) {
     fovea::RendererOptions r;
     r.msaa = config.msaa;
+    r.frame_rate_hz = config.target_hz;
     return r;
 }
 

@@ -28,15 +28,9 @@ struct ModelPush {
 };
 [[vk::push_constant]] ConstantBuffer<ModelPush> push;
 
-// Each view's lighting (milestone 6, D-029), set 1: mirrored as ViewLighting
-// in gpu_context.hpp.
-struct ViewLighting {
-    float3 sun;      // towards the sun, ECEF axes
-    float moon_lit;  // the fraction of the moon's disc lit
-    float3 moon;     // towards the moon from the eye, ECEF axes
-    float sun_up;    // how much of the sun's disc is above the eye's horizon
-};
-[[vk::binding(0, 1)]] ConstantBuffer<ViewLighting> lighting;
+// Each view's lighting (milestone 6), set 1.
+#define FRAME_SET 1
+#include "include/frame.slang"
 
 [[vk::binding(0, 0)]] StructuredBuffer<ModelDraw> draws;
 [[vk::binding(1, 0)]] StructuredBuffer<Material> materials;
@@ -102,7 +96,7 @@ float4 fs_model(ModelVertex i, bool front: SV_IsFrontFace) : SV_Target {
     }
     // Both sides are drawn: a back face's normal is turned round.
     const float3 n = normalize(i.normal) * (front ? 1.0 : -1.0);
-    // The terrain's sun, and light from the sky everywhere.
-    const float sun = saturate(dot(n, lighting.sun)) * lighting.sun_up;
-    return float4(colour.rgb * (0.35 + 0.65 * sun), coverage);
+    // Lambertian under the sun and sky, pre-exposed (D-031).
+    const ViewSky s = view_sky[lighting.view];
+    return float4(colour.rgb * irradiance_on(n, s) * kInvPi * s.exposure, coverage);
 }

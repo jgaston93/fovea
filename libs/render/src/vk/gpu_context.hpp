@@ -33,13 +33,17 @@ struct GpuContext {
 };
 
 // What each view's shaders light with: mirrored as ViewLighting in
-// terrain.slang and model.slang (std140).
+// shaders/include/frame.slang (std140).
 struct ViewLighting {
     std::array<float, 3> sun{0.0F, 0.0F, 1.0F};   // towards the sun, ECEF axes
     float moon_lit = 0.0F;                        // the fraction of the moon's disc lit
     std::array<float, 3> moon{0.0F, 0.0F, 1.0F};  // towards the moon from the eye, ECEF axes
     float sun_up = 1.0F;  // how much of the sun's disc is above the eye's horizon
+    std::array<float, 3> sun_local{0.0F, 0.0F, -1.0F};  // the eye's level frame (x north, z down)
+    std::uint32_t view = 0;                             // the view's entries in the sky's arrays
+    float eye_radius_km = 0.0F;  // the atmosphere's bottom radius plus the eye's height
+    std::array<float, 3> unused{};
 };
-static_assert(sizeof(ViewLighting) == 32, "must match ViewLighting in the shaders");
+static_assert(sizeof(ViewLighting) == 64, "must match ViewLighting in frame.slang");
 
 }  // namespace fovea

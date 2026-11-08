@@ -1,11 +1,18 @@
 // The milestone 1 reference scene (step 6): a flat ground grid at the eye
-// height, a horizon line and a sky gradient, for checking each channel's
-// off-axis view and that lines continue across screens. No geometry: every
-// pixel turns its NDC back into a view ray through the inverse of the
-// channel's projection and shades what that ray sees.
+// height, a horizon line and the sky, for checking each channel's off-axis
+// view and that lines continue across screens. No geometry: every pixel
+// turns its NDC back into a view ray through the inverse of the channel's
+// projection and shades what that ray sees. The sky is the atmosphere's
+// (milestone 6 step 2): each view's sky-view table, and the sun's disc.
 //
 // Then a tone-map pass draws the linear HDR scene into the output (step 6
 // keeps scene-referred light values until here: foundational decision 3).
+
+#include "include/atmosphere.slang"
+// The frame set is set 1 of the scene pass: set 0 is the tone map's.
+#define FRAME_SET 1
+#include "include/frame.slang"
+[[vk::binding(3, 1)]] ConstantBuffer<Atmosphere> atmosphere;
 
 struct Fullscreen {
     float4 position : SV_Position;
@@ -38,9 +45,7 @@ struct ScenePush {
 };
 [[vk::push_constant]] ConstantBuffer<ScenePush> scene;
 
-static const float3 kSkyHorizon = float3(0.55, 0.65, 0.80);
-static const float3 kSkyZenith = float3(0.10, 0.22, 0.55);
-static const float3 kGround = float3(0.16, 0.18, 0.12);
+static const float3 kGround = float3(0.16, 0.18, 0.12);  // albedos, lit
 static const float3 kGridLine = float3(0.85, 0.85, 0.80);
 static const float3 kHorizonLine = float3(1.00, 0.85, 0.50);
 
@@ -55,6 +60,21 @@ float grid_lines(float2 g, float2 w_raw) {
     const float line = 1.0 - saturate(min(distance_px.x, distance_px.y));
     const float fade = saturate(1.0 - (max(w.x, w.y) - 0.15) * 4.0);
     return line * fade;
+}
+
+// The sky seen along a ray of the level frame (x north, y east, z down),
+// from the view's sky-view table: by its zenith angle, and its azimuth from
+// the sun's.
+float3 sky_radiance(float3 ray) {
+    const float zenith = acos(clamp(-ray.z, -1.0, 1.0));
+    const float2 h = ray.xy;
+    const float2 sun_h = lighting.sun_local.xy;
+    float azimuth = 0.0;
+    if (dot(h, h) > 1e-10 && dot(sun_h, sun_h) > 1e-10) {
+        azimuth = acos(clamp(dot(normalize(h), normalize(sun_h)), -1.0, 1.0));
+    }
+    const float2 uv = sky_view_uv(atmosphere, lighting.eye_radius, zenith, azimuth);
+    return sky_view_table.SampleLevel(float3(uv, float(lighting.view)), 0.0).rgb;
 }
 
 [shader("fragment")]
@@ -73,14 +93,25 @@ float4 fs_scene(Fullscreen i) : SV_Target {
     const float2 g = ground_m / scene.grid_spacing_m;
     const float2 g_width = fwidth(g);
     const float ray_z_width = fwidth(ray.z);
+    // The sun's disc: its edge a pixel wide.
+    const float sun_angle = acos(clamp(dot(ray, lighting.sun_local), -1.0, 1.0));
+    const float sun_width = max(fwidth(sun_angle), 1e-6);
 
+    const ViewSky s = view_sky[lighting.view];
     float3 colour;
     if (ray.z > 0.0) {
-        // Below the horizon: the ground plane, eye_height_m below the eye.
-        colour = lerp(kGround, kGridLine, grid_lines(g, g_width));
+        // Below the horizon: the ground plane, eye_height_m below the eye,
+        // lit as level ground.
+        const float3 e = s.sun_irradiance * saturate(-lighting.sun_local.z) + s.sky_irradiance;
+        colour = lerp(kGround, kGridLine, grid_lines(g, g_width)) * e * kInvPi * s.exposure;
     } else {
-        const float up = saturate(-ray.z);
-        colour = lerp(kSkyHorizon, kSkyZenith, sqrt(up));
+        colour = sky_radiance(ray) * s.exposure;
+        const float r = atmosphere.sun_angular_radius;
+        const float disc = saturate((r - sun_angle) / sun_width + 0.5);
+        // Its radiance: the irradiance it gives over the solid angle it
+        // covers. Kept within half floats (a low sun, bright against a
+        // dim sky, would pass their largest).
+        colour += disc * min(s.sun_irradiance * s.exposure / (kPi * r * r), float3(60000.0));
     }
     // The horizon line: where the ray is level, as wide as a grid line.
     const float level = abs(ray.z) / max(ray_z_width, 1e-6);

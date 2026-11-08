@@ -1,0 +1,287 @@
+// The sky (milestone 6 step 2, D-030, D-031): the GPU's tables against a CPU
+// integral of the same model, the sky's colours, the sun's disc, and the
+// exposure the views share.
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include "fovea/core/celestial.hpp"
+#include "fovea/core/geodesy.hpp"
+#include "fovea/render/renderer.hpp"
+#include "fovea/render/view.hpp"
+#include "support/atmosphere_reference.hpp"
+
+namespace fovea {
+namespace {
+
+std::unique_ptr<Renderer> make_offscreen(std::vector<OffscreenOutput> outputs) {
+    RendererOptions options;
+    if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
+        options.validation = Validation::required;
+    }
+    try {
+        return Renderer::offscreen(outputs, options);
+    } catch (const std::runtime_error& e) {
+        if (std::getenv("FOVEA_REQUIRE_VULKAN") != nullptr) {
+            ADD_FAILURE() << "no Vulkan: " << e.what();
+        }
+        return nullptr;
+    }
+}
+
+#define FOVEA_NEED_VULKAN(renderer)                             \
+    if ((renderer) == nullptr) {                                \
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine"; \
+    }
+
+// KHSV, 2 m up: the reference scene's eye there.
+constexpr Geodetic kKhsv{34.6372, -86.7751, 190.0};
+
+SceneView view_towards(double yaw_deg, double pitch_deg, std::uint32_t w, std::uint32_t h,
+                       double half_fov_deg = 30.0) {
+    ReferenceScene scene;
+    scene.origin = kKhsv;
+    scene.eye_height_m = 2.0;
+    ViewDesc v;
+    v.pose.rotation = {yaw_deg, pitch_deg, 0.0};
+    const double half_v = half_fov_deg * static_cast<double>(h) / static_cast<double>(w);
+    v.projection.frustum = {-half_fov_deg, half_fov_deg, half_v, -half_v};
+    return reference_scene_view(v, scene);
+}
+
+// The sun's zenith cosine, elevation and azimuth at the view's eye.
+struct SunAt {
+    double mu = 0.0;
+    double elevation_deg = 0.0;
+    double azimuth_deg = 0.0;
+};
+SunAt sun_at(const SceneView& v, const SkyBodies& sky) {
+    const Geodetic g = ecef_to_geodetic(v.eye_ecef);
+    const DVec3 ned = glm::transpose(ned_to_ecef(g.lat_deg, g.lon_deg)) * sky.sun;
+    SunAt s;
+    s.mu = -ned.z;
+    s.elevation_deg = glm::degrees(std::asin(-ned.z));
+    s.azimuth_deg = glm::degrees(std::atan2(ned.y, ned.x));
+    return s;
+}
+
+SkyBodies at_utc(unsigned month, unsigned day, double hours) {
+    return sky_bodies(julian_date(2026, month, day, hours * 3600.0));
+}
+
+double luminance(const std::array<float, 3>& c) {
+    return 0.2126 * static_cast<double>(c[0]) + 0.7152 * static_cast<double>(c[1]) +
+           0.0722 * static_cast<double>(c[2]);
+}
+
+std::array<double, 3> texel(const std::vector<float>& t, std::uint32_t w, std::uint32_t x,
+                            std::uint32_t y) {
+    const std::size_t i = (static_cast<std::size_t>(y) * w + x) * 4;
+    return {static_cast<double>(t[i]), static_cast<double>(t[i + 1]),
+            static_cast<double>(t[i + 2])};
+}
+
+TEST(Sky, TablesMatchACpuIntegralOfTheSameModel) {
+    auto r = make_offscreen({{64, 32}});
+    FOVEA_NEED_VULKAN(r);
+    const test::AtmosphereReference ref{Atmosphere{}};
+    const SceneView v = view_towards(0.0, 10.0, 64, 32);
+    const double eye_r =
+        Atmosphere{}.bottom_radius_km + ecef_to_geodetic(v.eye_ecef).alt_m / 1000.0;
+
+    // Every eighth transmittance texel: within 1% where light gets through.
+    r->draw_scene_frame(std::vector<SceneView>{v});
+    const SkyReadback first = r->read_back_sky(0);
+    double worst_t = 0.0;
+    for (std::uint32_t y = 0; y < kTransmittanceHeight; y += 4) {
+        for (std::uint32_t x = 0; x < kTransmittanceWidth; x += 8) {
+            const auto rm = ref.transmittance_r_mu((x + 0.5) / kTransmittanceWidth,
+                                                   (y + 0.5) / kTransmittanceHeight);
+            const test::Rgb want = ref.transmittance(rm[0], rm[1]);
+            const auto got = texel(first.transmittance, kTransmittanceWidth, x, y);
+            for (std::size_t c = 0; c < 3; ++c) {
+                if (want[c] > 0.01) {
+                    worst_t = std::max(worst_t, std::abs(got[c] - want[c]) / want[c]);
+                }
+            }
+        }
+    }
+    std::printf("transmittance: worst %.3f%%\n", worst_t * 100.0);
+    EXPECT_LT(worst_t, 0.01);
+
+    // The sky-view table at a high sun and a setting one: within 3% where
+    // the sky is more than a hundredth of its brightest.
+    for (const double hours : {17.0, 23.7}) {
+        const SkyBodies sky = at_utc(6, 21, hours);
+        r->set_sky(sky);
+        r->draw_scene_frame(std::vector<SceneView>{v});
+        const SkyReadback s = r->read_back_sky(0);
+        const double mu_s = sun_at(v, sky).mu;
+        double brightest = 0.0;
+        for (std::size_t i = 0; i < s.sky_view.size(); i += 4) {
+            brightest = std::max(brightest, static_cast<double>(s.sky_view[i + 2]));
+        }
+        double worst = 0.0;
+        for (std::uint32_t y = 0; y < kSkyViewHeight; y += 6) {
+            for (std::uint32_t x = 0; x < kSkyViewWidth; x += 12) {
+                const auto za = ref.sky_view_angles(eye_r, (x + 0.5) / kSkyViewWidth,
+                                                    (y + 0.5) / kSkyViewHeight);
+                const test::Rgb want = ref.sky_radiance(eye_r, mu_s, za[0], za[1]);
+                const auto got = texel(s.sky_view, kSkyViewWidth, x, y);
+                for (std::size_t c = 0; c < 3; ++c) {
+                    if (want[c] > 0.01 * brightest) {
+                        worst = std::max(worst, std::abs(got[c] - want[c]) / want[c]);
+                    }
+                }
+            }
+        }
+        std::printf("sky view, sun %.1f degrees up: worst %.2f%%\n", sun_at(v, sky).elevation_deg,
+                    worst * 100.0);
+        EXPECT_LT(worst, 0.03);
+    }
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
+TEST(Sky, BlueOverheadPalerAtTheHorizonAndRedderTowardASettingSun) {
+    auto r = make_offscreen({{64, 32}});
+    FOVEA_NEED_VULKAN(r);
+    const SceneView v = view_towards(0.0, 10.0, 64, 32);
+    // Rows of the sky-view table: 0 is the zenith, kSkyViewHeight / 2 - 1
+    // just above the horizon; column 0 looks toward the sun, the last away.
+    const std::uint32_t horizon = kSkyViewHeight / 2 - 1;
+    const auto blueness = [](const std::array<double, 3>& c) { return c[2] / c[0]; };
+
+    r->set_sky(at_utc(6, 21, 17.0));  // late morning, the sun 70 degrees up
+    r->draw_scene_frame(std::vector<SceneView>{v});
+    const SkyReadback noon = r->read_back_sky(0);
+    const auto zenith = texel(noon.sky_view, kSkyViewWidth, kSkyViewWidth - 1, 0);
+    const auto low = texel(noon.sky_view, kSkyViewWidth, kSkyViewWidth - 1, horizon);
+    std::printf("noon: zenith b/r %.2f, horizon b/r %.2f\n", blueness(zenith), blueness(low));
+    EXPECT_GT(blueness(zenith), 1.5);
+    EXPECT_GT(blueness(zenith), blueness(low) * 1.2);
+
+    r->set_sky(at_utc(6, 22, 0.75));  // 00:45 UTC: 7:45 pm, the sun setting
+    r->draw_scene_frame(std::vector<SceneView>{v});
+    const SkyReadback dusk = r->read_back_sky(0);
+    const auto toward = texel(dusk.sky_view, kSkyViewWidth, 0, horizon);
+    const auto overhead = texel(dusk.sky_view, kSkyViewWidth, kSkyViewWidth / 2, 0);
+    std::printf("sunset: toward the sun r/b %.2f, overhead b/r %.2f\n", toward[0] / toward[2],
+                blueness(overhead));
+    EXPECT_GT(toward[0], toward[2]);     // red toward the sun
+    EXPECT_GT(blueness(overhead), 1.0);  // still blue overhead
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
+TEST(Sky, TheSunsDiscIsWhereTheSunIs) {
+    constexpr std::uint32_t kSize = 256;
+    auto r = make_offscreen({{kSize, kSize}});
+    FOVEA_NEED_VULKAN(r);
+    const SkyBodies sky = at_utc(3, 20, 15.5);
+    // Toward the sun, a few degrees off, so it lands off the centre.
+    const SceneView probe = view_towards(0.0, 0.0, kSize, kSize);
+    const SunAt sun = sun_at(probe, sky);
+    const SceneView v =
+        view_towards(sun.azimuth_deg + 4.0, sun.elevation_deg - 3.0, kSize, kSize, 10.0);
+    r->set_sky(sky);
+    r->draw_scene_frame(std::vector<SceneView>{v});
+    const auto px = r->read_back_rgba(0);
+    // Where the view's matrix puts the sun, and the centre of the disc's
+    // saturated pixels.
+    const glm::dvec4 clip = glm::dmat4(v.ecef_to_clip) * glm::dvec4(sky.sun * 1e6, 1.0);
+    const double want_x = (clip.x / clip.w + 1.0) * 0.5 * kSize;
+    const double want_y = (clip.y / clip.w + 1.0) * 0.5 * kSize;
+    double sx = 0.0;
+    double sy = 0.0;
+    int n = 0;
+    for (std::uint32_t y = 0; y < kSize; ++y) {
+        for (std::uint32_t x = 0; x < kSize; ++x) {
+            const std::size_t i = (static_cast<std::size_t>(y) * kSize + x) * 4;
+            if (px[i] >= 250 && px[i + 1] >= 250 && px[i + 2] >= 240) {
+                sx += x + 0.5;
+                sy += y + 0.5;
+                ++n;
+            }
+        }
+    }
+    ASSERT_GT(n, 0) << "no disc";
+    std::printf("sun disc: %d pixels, centre (%.2f, %.2f), expected (%.2f, %.2f)\n", n, sx / n,
+                sy / n, want_x, want_y);
+    EXPECT_NEAR(sx / n, want_x, 1.0);
+    EXPECT_NEAR(sy / n, want_y, 1.0);
+    EXPECT_LT(n, 200);  // a disc, not a glow
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
+TEST(Sky, EveryViewTakesTheSameExposure) {
+    auto r = make_offscreen({{64, 32}, {64, 32}, {32, 64}});
+    FOVEA_NEED_VULKAN(r);
+    r->set_sky(at_utc(3, 20, 15.5));
+    const std::vector<SceneView> views = {view_towards(-60.0, 0.0, 64, 32),
+                                          view_towards(0.0, 20.0, 64, 32),
+                                          view_towards(90.0, -30.0, 32, 64)};
+    for (int f = 0; f < 3; ++f) {
+        r->draw_scene_frame(views);
+    }
+    const float e0 = r->read_back_sky(0).exposure;
+    EXPECT_GT(e0, 0.0F);
+    EXPECT_EQ(r->read_back_sky(1).exposure, e0);
+    EXPECT_EQ(r->read_back_sky(2).exposure, e0);
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
+// The light follows the sun (milestone 6 step 1, now through the air): a
+// level surface gets more at noon than at 8 am, and none from the sun at
+// night; each first frame takes its exposure at once, so it is exactly the
+// key over the light, or over night's floor.
+TEST(Sky, TheLightFollowsTheDateAndTime) {
+    const SceneView v = view_towards(0.0, 10.0, 64, 32);
+    struct Light {
+        double level = 0.0;
+        double exposure = 0.0;
+    };
+    const auto light_at = [&](double hours) -> std::optional<Light> {
+        auto r = make_offscreen({{64, 32}});
+        if (r == nullptr) {
+            return std::nullopt;
+        }
+        const SkyBodies sky = at_utc(6, 21, hours);
+        r->set_sky(sky);
+        r->draw_scene_frame(std::vector<SceneView>{v});
+        const SkyReadback s = r->read_back_sky(0);
+        EXPECT_EQ(r->validation_messages(), 0U);
+        Light l;
+        l.level = luminance(s.sun_irradiance) * std::max(sun_at(v, sky).mu, 0.0) +
+                  luminance(s.sky_irradiance);
+        l.exposure = static_cast<double>(s.exposure);
+        return l;
+    };
+    const auto noon = light_at(18.0);
+    if (!noon) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const auto morning = light_at(13.0);
+    const auto night = light_at(6.0);
+    std::printf("level light: noon %.1f, 8 am %.1f, night %.4f\n", noon->level, morning->level,
+                night->level);
+    EXPECT_GT(noon->level, morning->level * 1.5);
+    EXPECT_LT(night->level, noon->level * 1e-4);
+    // The exposure's key (pi) over the light; at night, over the floor, a
+    // ten-thousandth of the sun's illuminance.
+    const double key = 3.14159265358979;
+    EXPECT_NEAR(noon->exposure * noon->level, key, key * 1e-3);
+    EXPECT_NEAR(morning->exposure * morning->level, key, key * 1e-3);
+    const double floor = 1e-4 * Atmosphere{}.sun_illuminance[0];
+    EXPECT_NEAR(night->exposure, key / floor, key / floor * 1e-3);
+}
+
+}  // namespace
+}  // namespace fovea
