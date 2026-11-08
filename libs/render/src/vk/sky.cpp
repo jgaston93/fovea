@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <numbers>
 #include <stdexcept>
 #include <string>
@@ -94,7 +95,8 @@ float half_to_float(std::uint16_t h) {
     if (exponent == 0) {
         v = std::ldexp(static_cast<double>(mantissa), -24);
     } else if (exponent == 31) {
-        v = mantissa == 0 ? INFINITY : NAN;
+        v = mantissa == 0 ? std::numeric_limits<double>::infinity()
+                          : std::numeric_limits<double>::quiet_NaN();
     } else {
         v = std::ldexp(static_cast<double>(mantissa | 0x400U), static_cast<int>(exponent) - 25);
     }
