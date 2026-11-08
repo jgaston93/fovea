@@ -1,0 +1,30 @@
+# Still over Redstone Army Airfield (KHUA), about 70 m over the field,
+# turning in place once round at 12 degrees a second (30 s): every
+# direction of the sky and the horizon on each display, for judging the
+# sky, the light and the haze (milestone 6). Run Fovea with
+# config/khsv.toml (or a copy with an [environment]), then:
+#   cigi-test-host tools/cigi-test-host/scripts/khua-spin.toml
+
+[ig]
+address = "127.0.0.1"
+port = 8004
+
+[host]
+port = 8005
+rate_hz = 60.0
+
+[start]
+lat = 34.6555
+lon = -86.6796
+alt = 280.0  # about 70 m over the field
+heading = 0.0
+speed = 0.0
+
+[flight]
+loop = false
+
+[[segment]]
+kind = "turn"  # once round, without moving
+duration = 30.0
+speed = 0.0
+turn_rate = 12.0
