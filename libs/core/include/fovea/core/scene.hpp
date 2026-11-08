@@ -79,6 +79,10 @@ struct WeatherLayer {
     double visibility_m = 1000.0;  // fog, rain and snow: within the band
 };
 
+// How cloud layers are drawn ([display] clouds): as a surface at the
+// layer's base, or as a volume from base to top, marched (dearer).
+enum class CloudModel : std::uint8_t { layer, volumetric };
+
 // Fog, three cloud layers, rain and snow at once: CIGI's global layers less
 // its rarer ones (sleet, hail, sand, dust).
 inline constexpr std::size_t kMaxWeatherLayers = 6;

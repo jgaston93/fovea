@@ -830,8 +830,14 @@ TEST(TerrainRender, APostsShadowFallsWhereTheSunPutsIt) {
 // The image `v` gives of the database in `dir` lit by `sky`, under the
 // weather `layers` (step 6): settled, read back. Empty without Vulkan.
 std::vector<std::uint8_t> draw_weather(const fs::path& dir, const SceneView& v, std::uint32_t size,
-                                       const SkyBodies& sky, std::span<const WeatherLayer> layers) {
-    auto r = make_renderer(size, size);
+                                       const SkyBodies& sky, std::span<const WeatherLayer> layers,
+                                       CloudModel model = CloudModel::layer) {
+    RendererOptions options;
+    if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
+        options.validation = Validation::required;
+    }
+    options.clouds = model;
+    auto r = make_renderer(size, size, options);
     if (!r) {
         return {};
     }
@@ -854,150 +860,163 @@ double brightness(const std::vector<std::uint8_t>& px, std::uint32_t w, glm::dve
 // diffuse light lights) and the ground is lit only by the light the
 // cloud lets through, so a post's shadow is gone; from above, the layer
 // hides the ground, the post with it, and its top is brighter than the
-// ground was.
+// ground was. Both cloud models: the volume's top is lumpy and its forward
+// scattering brightens the cloud toward the hidden sun (a glow, not the
+// disc).
 TEST(TerrainRender, AFullOvercastHidesTheSunAndLeavesOnlyItsDiffuseLight) {
-    double lat0 = 0.0;
-    double lon0 = 0.0;
-    Spec s = flat_grey(&lat0, &lon0);
-    s.placements = {{"post", lat0, lon0, 120.0, 0.0F}};
-    s.models = {{"post", box_glb(0.5F, 20.0F, 0.5F, {1.0F, 1.0F, 1.0F, 1.0F}, "")}};
-    const fs::path dir = write_db("overcast", s);
-    constexpr std::uint32_t kSize = 128;
-    const SkyBodies sky = sun_at_elevation(lat0, lon0, 40.0);
-    const std::array<WeatherLayer, 1> overcast = {
-        WeatherLayer{WeatherKind::cloud, 1620.0, 400.0, 1.0, 1000.0}};
-    const DMat3 ned = ned_to_ecef(lat0, lon0);
-    const DVec3 base = geodetic_to_ecef({lat0, lon0, 120.0});
-    const DVec3 sun = glm::transpose(ned) * sky.sun;
-    const glm::dvec2 away = -glm::normalize(glm::dvec2(sun.x, sun.y));
-    const double length = 20.0 * glm::length(glm::dvec2(sun.x, sun.y)) / -sun.z;
+    for (const CloudModel model : {CloudModel::layer, CloudModel::volumetric}) {
+        SCOPED_TRACE(model == CloudModel::layer ? "layer" : "volumetric");
+        const bool volume = model == CloudModel::volumetric;
+        double lat0 = 0.0;
+        double lon0 = 0.0;
+        Spec s = flat_grey(&lat0, &lon0);
+        s.placements = {{"post", lat0, lon0, 120.0, 0.0F}};
+        s.models = {{"post", box_glb(0.5F, 20.0F, 0.5F, {1.0F, 1.0F, 1.0F, 1.0F}, "")}};
+        const fs::path dir = write_db("overcast", s);
+        constexpr std::uint32_t kSize = 128;
+        const SkyBodies sky = sun_at_elevation(lat0, lon0, 40.0);
+        const std::array<WeatherLayer, 1> overcast = {
+            WeatherLayer{WeatherKind::cloud, 1620.0, 400.0, 1.0, 1000.0}};
+        const DMat3 ned = ned_to_ecef(lat0, lon0);
+        const DVec3 base = geodetic_to_ecef({lat0, lon0, 120.0});
+        const DVec3 sun = glm::transpose(ned) * sky.sun;
+        const glm::dvec2 away = -glm::normalize(glm::dvec2(sun.x, sun.y));
+        const double length = 20.0 * glm::length(glm::dvec2(sun.x, sun.y)) / -sun.z;
 
-    // From 300 m above the shadow's middle: in the shadow, and beside it.
-    const Geodetic middle =
-        ecef_to_geodetic(base + ned * DVec3(away.x * length / 2.0, away.y * length / 2.0, 0.0));
-    const SceneView down = view_at(middle, 300.0, -90.0, 0.0, 6.0);
-    const auto at = [&](double along, double across) {
-        const glm::dvec2 side(-away.y, away.x);
-        return project(down,
-                       ecef_to_geodetic(base + ned * DVec3(away * along + side * across, 0.0)),
-                       kSize, kSize);
-    };
-    const auto clear = draw_weather(dir, down, kSize, sky, {});
-    if (clear.empty()) {
-        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
-    }
-    const auto under = draw_weather(dir, down, kSize, sky, overcast);
-    const double clear_dark = brightness(clear, kSize, at(length * 0.5, 0.0));
-    const double clear_lit = brightness(clear, kSize, at(length * 0.5, 10.0));
-    const double under_dark = brightness(under, kSize, at(length * 0.5, 0.0));
-    const double under_lit = brightness(under, kSize, at(length * 0.5, 10.0));
-    std::printf("clear: shadow %.0f, beside it %.0f; overcast: %.0f, %.0f\n", clear_dark, clear_lit,
-                under_dark, under_lit);
-    EXPECT_LT(clear_dark, clear_lit * 0.8);
-    EXPECT_NEAR(under_dark, under_lit, 3.0) << "a shadow under a full overcast";
-    EXPECT_LT(under_lit, clear_lit * 0.8) << "the overcast takes the sun's light";
-    EXPECT_GT(under_lit, 0.0);
-
-    // From the ground, looking at the sun.
-    const glm::dvec2 sun_ne = glm::normalize(glm::dvec2(sun.x, sun.y));
-    const double yaw = glm::degrees(std::atan2(sun_ne.y, sun_ne.x));
-    const double pitch = glm::degrees(std::asin(-sun.z));
-    const SceneView up = view_at({lat0 + 0.002, lon0, 120.0}, 2.0, pitch, yaw, 10.0);
-    const auto sunny = draw_weather(dir, up, kSize, sky, {});
-    const auto grey = draw_weather(dir, up, kSize, sky, overcast);
-    const glm::dvec2 centre(kSize / 2.0, kSize / 2.0);
-    const double disc = brightness(sunny, kSize, centre);
-    const double hidden = brightness(grey, kSize, centre);
-    const double aside = brightness(grey, kSize, centre + glm::dvec2(30.0, 30.0));
-    std::printf("the sun: clear %.0f, overcast %.0f (and 30 pixels off it %.0f)\n", disc, hidden,
-                aside);
-    EXPECT_GT(disc, 700.0);
-    EXPECT_NEAR(hidden, aside, 6.0) << "the sun shows through a full overcast";
-    EXPECT_LT(hidden, disc * 0.8);
-
-    // From 3,000 m, above the layer: it hides the ground and the post.
-    const SceneView above = view_at({lat0, lon0, 120.0}, 2880.0, -90.0, 0.0, 6.0);
-    const auto ground = draw_weather(dir, above, kSize, sky, {});
-    const auto tops = draw_weather(dir, above, kSize, sky, overcast);
-    double lo = 1e9;
-    double hi = -1e9;
-    for (std::uint32_t y = 0; y < kSize; y += 4) {
-        for (std::uint32_t x = 0; x < kSize; x += 4) {
-            const double b = brightness(tops, kSize, {x, y});
-            lo = std::min(lo, b);
-            hi = std::max(hi, b);
+        // From 300 m above the shadow's middle: in the shadow, and beside it.
+        const Geodetic middle =
+            ecef_to_geodetic(base + ned * DVec3(away.x * length / 2.0, away.y * length / 2.0, 0.0));
+        const SceneView down = view_at(middle, 300.0, -90.0, 0.0, 6.0);
+        const auto at = [&](double along, double across) {
+            const glm::dvec2 side(-away.y, away.x);
+            return project(down,
+                           ecef_to_geodetic(base + ned * DVec3(away * along + side * across, 0.0)),
+                           kSize, kSize);
+        };
+        const auto clear = draw_weather(dir, down, kSize, sky, {});
+        if (clear.empty()) {
+            GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
         }
+        const auto under = draw_weather(dir, down, kSize, sky, overcast, model);
+        const double clear_dark = brightness(clear, kSize, at(length * 0.5, 0.0));
+        const double clear_lit = brightness(clear, kSize, at(length * 0.5, 10.0));
+        const double under_dark = brightness(under, kSize, at(length * 0.5, 0.0));
+        const double under_lit = brightness(under, kSize, at(length * 0.5, 10.0));
+        std::printf("clear: shadow %.0f, beside it %.0f; overcast: %.0f, %.0f\n", clear_dark,
+                    clear_lit, under_dark, under_lit);
+        EXPECT_LT(clear_dark, clear_lit * 0.8);
+        EXPECT_NEAR(under_dark, under_lit, 3.0) << "a shadow under a full overcast";
+        EXPECT_LT(under_lit, clear_lit * 0.8) << "the overcast takes the sun's light";
+        EXPECT_GT(under_lit, 0.0);
+
+        // From the ground, looking at the sun.
+        const glm::dvec2 sun_ne = glm::normalize(glm::dvec2(sun.x, sun.y));
+        const double yaw = glm::degrees(std::atan2(sun_ne.y, sun_ne.x));
+        const double pitch = glm::degrees(std::asin(-sun.z));
+        const SceneView up = view_at({lat0 + 0.002, lon0, 120.0}, 2.0, pitch, yaw, 10.0);
+        const auto sunny = draw_weather(dir, up, kSize, sky, {});
+        const auto grey = draw_weather(dir, up, kSize, sky, overcast, model);
+        const glm::dvec2 centre(kSize / 2.0, kSize / 2.0);
+        const double disc = brightness(sunny, kSize, centre);
+        const double hidden = brightness(grey, kSize, centre);
+        const double aside = brightness(grey, kSize, centre + glm::dvec2(30.0, 30.0));
+        std::printf("the sun: clear %.0f, overcast %.0f (and 30 pixels off it %.0f)\n", disc,
+                    hidden, aside);
+        EXPECT_GT(disc, 700.0);
+        EXPECT_NEAR(hidden, aside, volume ? 60.0 : 6.0) << "the sun shows through a full overcast";
+        EXPECT_LT(hidden, disc * 0.8);
+
+        // From 3,000 m, above the layer: it hides the ground and the post.
+        const SceneView above = view_at({lat0, lon0, 120.0}, 2880.0, -90.0, 0.0, 6.0);
+        const auto ground = draw_weather(dir, above, kSize, sky, {});
+        const auto tops = draw_weather(dir, above, kSize, sky, overcast, model);
+        double lo = 1e9;
+        double hi = -1e9;
+        for (std::uint32_t y = 0; y < kSize; y += 4) {
+            for (std::uint32_t x = 0; x < kSize; x += 4) {
+                const double b = brightness(tops, kSize, {x, y});
+                lo = std::min(lo, b);
+                hi = std::max(hi, b);
+            }
+        }
+        const double was = brightness(ground, kSize, centre);
+        std::printf("from above: the ground %.0f; the cloud's top %.0f to %.0f\n", was, lo, hi);
+        EXPECT_GT(lo, was) << "the cloud's top no brighter than the ground it hides";
+        EXPECT_LE(hi - lo, volume ? 40.0 : 6.0) << "the ground or the post shows through";
     }
-    const double was = brightness(ground, kSize, centre);
-    std::printf("from above: the ground %.0f; the cloud's top %.0f to %.0f\n", was, lo, hi);
-    EXPECT_GT(lo, was) << "the cloud's top no brighter than the ground it hides";
-    EXPECT_LE(hi - lo, 6.0) << "the ground or the post shows through";
 }
 
 // Scattered cloud lets about its share of the sky through (step 6): seen
 // from below, 10 km up, in three places 100 km apart, a layer of coverage
 // c covers about c of the view: the pixels nearer a full overcast's than
 // the clear sky's (tone-mapped, so a blend's own fraction isn't linear).
+// Both cloud models.
 TEST(TerrainRender, ScatteredCloudLetsAboutItsShareOfTheSkyThrough) {
     std::vector<OffscreenOutput> outputs(3, {96, 96});
     RendererOptions options;
     if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
         options.validation = Validation::required;
     }
-    std::unique_ptr<Renderer> r;
-    try {
-        r = Renderer::offscreen(outputs, options);
-    } catch (const std::runtime_error& e) {
-        if (std::getenv("FOVEA_REQUIRE_VULKAN") != nullptr) {
-            ADD_FAILURE() << "no Vulkan: " << e.what();
+    for (const CloudModel model : {CloudModel::layer, CloudModel::volumetric}) {
+        SCOPED_TRACE(model == CloudModel::layer ? "layer" : "volumetric");
+        options.clouds = model;
+        std::unique_ptr<Renderer> r;
+        try {
+            r = Renderer::offscreen(outputs, options);
+        } catch (const std::runtime_error& e) {
+            if (std::getenv("FOVEA_REQUIRE_VULKAN") != nullptr) {
+                ADD_FAILURE() << "no Vulkan: " << e.what();
+            }
+            GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
         }
-        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
-    }
-    std::vector<SceneView> views;
-    for (int k = 0; k < 3; ++k) {
-        views.push_back(view_at({34.6, -86.8 + 1.1 * k, 0.0}, 100.0, 90.0, 0.0, 50.0));
-    }
-    r->set_sky(sun_at_elevation(34.6, -86.8, 45.0));
-    const auto draw = [&](double coverage) {
-        std::vector<std::vector<std::uint8_t>> out;
-        const std::array<WeatherLayer, 1> layer = {
-            WeatherLayer{WeatherKind::cloud, 10000.0, 400.0, coverage, 1000.0}};
-        r->set_weather(coverage > 0.0 ? std::span<const WeatherLayer>(layer)
-                                      : std::span<const WeatherLayer>());
-        r->draw_scene_frame(views);
-        for (std::uint32_t o = 0; o < 3; ++o) {
-            out.push_back(r->read_back_rgba(o));
+        std::vector<SceneView> views;
+        for (int k = 0; k < 3; ++k) {
+            views.push_back(view_at({34.6, -86.8 + 1.1 * k, 0.0}, 100.0, 90.0, 0.0, 50.0));
         }
-        return out;
-    };
-    const auto clear = draw(0.0);
-    const auto full = draw(1.0);
-    for (const double coverage : {0.3, 0.7}) {
-        const auto some = draw(coverage);
-        double cover = 0.0;
-        int counted = 0;
-        for (std::uint32_t o = 0; o < 3; ++o) {
-            for (std::uint32_t y = 0; y < 96; ++y) {
-                for (std::uint32_t x = 0; x < 96; ++x) {
-                    const double c = brightness(clear[o], 96, {x, y});
-                    const double f = brightness(full[o], 96, {x, y});
-                    if (std::abs(f - c) < 20.0) {
-                        continue;
+        r->set_sky(sun_at_elevation(34.6, -86.8, 45.0));
+        const auto draw = [&](double coverage) {
+            std::vector<std::vector<std::uint8_t>> out;
+            const std::array<WeatherLayer, 1> layer = {
+                WeatherLayer{WeatherKind::cloud, 10000.0, 400.0, coverage, 1000.0}};
+            r->set_weather(coverage > 0.0 ? std::span<const WeatherLayer>(layer)
+                                          : std::span<const WeatherLayer>());
+            r->draw_scene_frame(views);
+            for (std::uint32_t o = 0; o < 3; ++o) {
+                out.push_back(r->read_back_rgba(o));
+            }
+            return out;
+        };
+        const auto clear = draw(0.0);
+        const auto full = draw(1.0);
+        for (const double coverage : {0.3, 0.7}) {
+            const auto some = draw(coverage);
+            double cover = 0.0;
+            int counted = 0;
+            for (std::uint32_t o = 0; o < 3; ++o) {
+                for (std::uint32_t y = 0; y < 96; ++y) {
+                    for (std::uint32_t x = 0; x < 96; ++x) {
+                        const double c = brightness(clear[o], 96, {x, y});
+                        const double f = brightness(full[o], 96, {x, y});
+                        if (std::abs(f - c) < 20.0) {
+                            continue;
+                        }
+                        const double v = brightness(some[o], 96, {x, y});
+                        cover += (v - c) / (f - c) > 0.5 ? 1.0 : 0.0;
+                        ++counted;
                     }
-                    const double v = brightness(some[o], 96, {x, y});
-                    cover += (v - c) / (f - c) > 0.5 ? 1.0 : 0.0;
-                    ++counted;
                 }
             }
+            std::printf("%s, coverage %.1f: %.3f of %d pixels covered\n",
+                        model == CloudModel::layer ? "layer" : "volume", coverage, cover / counted,
+                        counted);
+            EXPECT_GT(counted, 3 * 96 * 96 * 8 / 10);
+            // Within 0.05 at five places tried (the noise's few cells in view
+            // vary it).
+            // The volume's thinner base and top let a little more through.
+            EXPECT_NEAR(cover / counted, coverage, model == CloudModel::volumetric ? 0.1 : 0.07);
         }
-        std::printf("coverage %.1f: %.3f of %d pixels covered\n", coverage, cover / counted,
-                    counted);
-        EXPECT_GT(counted, 3 * 96 * 96 * 9 / 10);
-        // Within 0.05 at five places tried (the noise's few cells in view
-        // vary it).
-        EXPECT_NEAR(cover / counted, coverage, 0.07);
+        EXPECT_EQ(r->validation_messages(), 0U);
     }
-    EXPECT_EQ(r->validation_messages(), 0U);
 }
 
 // A fog layer hides what is in it and not what is above it (step 6): a
