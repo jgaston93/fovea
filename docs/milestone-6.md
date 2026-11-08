@@ -29,7 +29,7 @@ As before, each step is its own pull request. Steps 1 to 6 and 8 run in WSL and 
 
 - **The state.** Date and time (UTC, as CIGI has it), whether time runs (the ICD's ephemeris model), visibility, and the global weather layers. They are protocol-neutral scene state in `libs/core`, written by the host adapter or by config (`[environment]`), and read by the render thread from the snapshot like the eyepoint.
 - **Derived each frame.** The renderer computes the sun's and moon's directions and the lighting from that state, then writes them with the atmosphere's parameters into one per-frame uniform buffer per frame in flight. Push constants (128 bytes, already used for matrices) can't hold them.
-- **Ephemeris.** The sun and moon come from published low-precision formulas (the *Astronomical Almanac*'s, about 0.01° for the sun and a few arc-minutes for the moon), in double precision on the CPU. The moon's phase comes from the same formulas.
+- **Ephemeris.** The sun from the *Astronomical Almanac*'s low-precision formulas (about 0.01°); the moon from Meeus's truncated lunar theory (*Astronomical Algorithms*, ch. 47, about 10 arc-seconds; the Almanac's low-precision moon is only good to about 0.3°), corrected for the eye's parallax (up to 1° for the moon); both in double precision on the CPU, the moon's phase from the same. The directions are geometric, unrefracted: refraction near the horizon (about 0.5°) bends only the sun's and moon's discs, drawn in step 2, not the light.
 
 ### D-030 A physically based sky and aerial perspective, from precomputed tables
 
@@ -39,9 +39,9 @@ As before, each step is its own pull request. Steps 1 to 6 and 8 run in WSL and 
   - multiple scattering
   - a sky-view table per view
   - an aerial-perspective volume per view, along its frustum
-- **Model and distance shading.** Rayleigh and Mie scattering and ozone absorption, over a spherical Earth (WGS84 mean radius). The terrain and model shaders apply the aerial perspective per sample, inside the multisampled pass. A pass after the resolve would read one depth per pixel and haze edges wrongly.
+- **Model and distance shading.** Rayleigh and Mie scattering and ozone absorption, over a spherical Earth (WGS84 mean radius) centred under the eye, the eye's altitude in it taken from its ellipsoidal height, not from its distance to the Earth's centre (which is 7 km more at the equator and 14 km less at the poles). The terrain and model shaders apply the aerial perspective per sample, inside the multisampled pass. A pass after the resolve would read one depth per pixel and haze edges wrongly.
 - **Visibility.** It sets the aerosol (Mie) density at the ground through Koschmieder's relation (extinction 3.912 / V for visibility V), so the host's visibility means what an observer means by it: a dark object fades to 2% contrast at V.
-- **Why this method.** Bruneton's precomputed 4D tables are also exact but slower to rebuild when the time changes. An analytic sky (Preetham, Hosek-Wilkie) has no aerial perspective and no twilight.
+- **Why this method.** Bruneton's precomputed 4D tables hold every sun angle, so time running costs nothing, but rebuilding them when the atmosphere changes (the host's visibility, a weather layer) takes far longer than a frame, and their resolution shows at the horizon; Hillaire's tables rebuild within a frame. An analytic sky (Preetham, Hosek-Wilkie) has no aerial perspective and no twilight.
 - **Cost.** About 0.2 ms a view on a desktop GPU in the paper's figures. The desk measures it.
 
 ### D-031 One exposure for all channels, from the light, not the image
@@ -56,7 +56,7 @@ As before, each step is its own pull request. Steps 1 to 6 and 8 run in WSL and 
 - **What casts.** Models cast onto terrain and onto each other. Terrain casts onto models and onto itself, for hills at a low sun.
 - **Terrain at a high sun.** The terrain's imagery already holds the shadows of the day it was taken (NAIP's, mostly near noon). Shadowing the imagery again doubles them, so terrain receives only the part of a shadow its imagery doesn't already have: models' shadows, and terrain shadows at a low sun.
 - **Why per view.** Each channel's frustum differs. Sharing one map would waste resolution in all of them.
-- **Cost.** About 64 MB a view and four depth passes a frame. The desk measures it.
+- **Cost.** About 64 MB and four depth passes a view: 192 MB and 12 passes a frame for the desk's three channels. The desk measures it.
 
 ### D-033 Airport lights are a tile layer, drawn as points after the resolve
 
@@ -65,15 +65,16 @@ As before, each step is its own pull request. Steps 1 to 6 and 8 run in WSL and 
   - a committed light file per airport, which names each runway's systems (edge, threshold and end, centreline, touchdown zone, approach lighting such as MALSR or ALSF-2, PAPI or VASI) from the FAA's published data
   - extra fixtures with positions, if any
 - **Placing the fixtures.** Fixtures are laid out by the FAA's standards (AC 150/5340-30: spacing, colours and directions), in code, not by hand.
-- **Drawing them.** Each light is drawn after the resolve, single-sampled, as D-028 says. It is at least a pixel across, with its intensity falling off by inverse square and through the atmosphere's transmittance, and its colour and beam direction from its type, so a runway's lights look different from each end.
-- **Clustered lighting.** It is for lights that light the ground (apron floodlights, entity landing lights later), drawn in the scene pass. This milestone reserves it, since no light here lights the ground yet.
+- **Drawing them.** Each light's point is drawn after the resolve, single-sampled, as D-028 (accepted) says, GPU-driven: the layer's lights culled and drawn indirectly. It is at least a pixel across, with its intensity falling off by inverse square and through the atmosphere's transmittance, and its colour and beam direction from its type, so a runway's lights look different from each end.
+- **Clustered lighting.** It is for the light airport lights shed on surfaces (apron floodlights, entity landing lights later), in the scene pass. `fovea-plan.md` had the airport lights drawn with it; since D-028 their points are drawn after the resolve, and clustered lighting keeps the many-lights role foundational decision 4 gives it for the light they cast. This milestone reserves it, since no light here lights the ground yet.
 - **Lit windows.** Models' emissive materials (glTF's `emissiveFactor`, `emissiveTexture` and `KHR_materials_emissive_strength`), read by `libs/models` and set in the model scripts.
 
 ### D-034 Clouds are 2D layers first; precipitation is visibility for now
 
-- **Cloud layers.** Each global weather layer of a cloud type is a textured, lit layer at its base elevation: procedural noise shaped by its coverage, scattered by the sun through the same atmosphere, and shading the ground below it in the shadow pass.
-- **Fog layers.** Each fog layer is a band of extra density in the atmosphere.
-- **Precipitation.** It reduces visibility (the ICD's rate sets it). The streaks themselves are particles, milestone 10's.
+- **Heights.** The ICD gives layers' base elevations above mean sea level; the database is ellipsoidal (D-020), so they are converted with the database's geoid height (issue #19), as the host's altitudes are.
+- **Cloud layers.** Each global cloud layer (the ICD's layers 1 to 3) is a textured, lit layer at its base elevation: procedural noise shaped by its coverage, scattered by the sun through the same atmosphere, and shading the ground below it in the shadow pass.
+- **Fog layers.** Ground fog (layer 0) is a band of extra density in the atmosphere, set by its visibility.
+- **Precipitation.** Rain, snow, sleet and hail are layers too (4 to 7), each with its own visibility range, which is all they change for now. The streaks themselves are particles, milestone 10's.
 - **Later.** Volumetric clouds, regional weather (Environmental Region Control) and wet or snow-covered ground, once the frame shows room.
 
 ### D-014, amended
@@ -82,12 +83,12 @@ The environment adds three packets: Celestial Sphere Control, Atmosphere Control
 
 ## Step 1: Environment state, the per-frame buffer and the sun
 
-- **State and config.** `EnvironmentState` takes date and time (UTC), whether time runs, and visibility. Config takes `[environment]`: `date`, `time`, `time_runs`, `visibility_m`. The render thread advances time when it runs.
-- **Ephemeris.** The sun's and moon's directions in ECEF, from the location of each view's eye.
+- **State and config.** `EnvironmentState` takes date and time (UTC) as an epoch and the host time it was set at, whether time runs, and visibility. Config takes `[environment]`: `date`, `time`, `time_runs`, `visibility_m`. When time runs, each frame's time is the epoch plus the host time elapsed since it was set, so every channel (and later every machine) agrees, and a packet that leaves the time alone leaves it alone.
+- **Ephemeris.** The sun's and moon's directions in ECEF, from the location of each view's eye (D-029).
 - **Buffer and shaders.** The per-frame uniform buffer replaces the pushed sun. The terrain and model shaders take the sun from it, with its colour and the ambient as they are now.
 - **Done when:**
-  - The sun's elevation and azimuth at KHSV on several dates and times (the solstices and equinoxes, sunrise and sunset) match NOAA's solar calculator within 0.05°.
-  - The moon's position and phase match the US Naval Observatory's published values within 0.2°.
+  - The sun's elevation and azimuth at KHSV on several dates and times (the solstices and equinoxes, sunrise and sunset) match NOAA's solar calculator's geometric (unrefracted) values within 0.05°.
+  - The moon's topocentric position matches the US Naval Observatory's within 0.05°, near the horizon included, and its illuminated fraction within 1%.
   - Golden images change only where the sun moved.
   - Drawing still allocates nothing.
 
@@ -131,7 +132,7 @@ The environment adds three packets: Celestial Sphere Control, Atmosphere Control
 
 ## Step 6: Weather layers and fog
 
-- **The layers.** Global cloud layers (D-034): base, thickness, coverage and type. Fog layers. Precipitation as reduced visibility.
+- **The layers.** Global cloud layers (D-034): base, thickness, coverage and type. Ground fog. Precipitation layers as reduced visibility within them.
 - **Setting them.** Config sets them (`[[environment.layer]]`) until step 7 brings the host.
 - **Done when:**
   - A GPU test above and below a full overcast finds the sun hidden and the ground lit only by the sky below it, and the layer seen from above.
@@ -149,7 +150,7 @@ The environment adds three packets: Celestial Sphere Control, Atmosphere Control
 - **Done when:**
   - Codec round trips against the ICD's layouts.
   - An end-to-end test (test host to headless IG) changes the time and visibility and finds the image change.
-  - The host's settings override config's, field by field, as the ICD's valid flags say.
+  - Config sets the environment until the host sends a packet, and each packet then replaces what it carries: Celestial Sphere Control's date and time only when its Date/Time Valid flag is set, Atmosphere Control's every field, Weather Control's layer as a whole (Weather Enable off removes it). The ICD has no flag for one field alone.
 
 ## Step 8: Airport lights and lit windows
 

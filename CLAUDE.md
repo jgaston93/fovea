@@ -82,7 +82,7 @@ Invariants that are expensive to retrofit, so respect them in all code:
 - **No disk I/O or heap allocation on the render path.** The render thread never blocks.
 - Double-precision ECEF positions on the CPU, camera-relative floats on the GPU, and reverse-Z depth.
 - Linear HDR, scene-referred rendering, with tone mapping applied per view.
-- GPU-driven rendering: descriptor indexing, indirect draws, and clustered lighting for many airport lights.
+- GPU-driven rendering: descriptor indexing, indirect draws, and clustered lighting for many airport lights (the light they cast; their points are drawn after the MSAA resolve, D-028, D-033).
 - **Protocol-neutral scene state.** CIGI (and later other protocols) are adapters that write timestamped scene state. Nothing in the renderer depends on packet types.
 - **View** is the general rendering unit: pose source, projection, render mode, post chain and output target. Display channels and future sensor views (EO, NVG, IR, lidar) share it. A channel is config-driven (monitor, eye offset, asymmetric frustum) so it can later move to another process or machine.
 - The **Presenter** abstraction must support three swapchains or one spanned surface. Render resolution is independent of output resolution.

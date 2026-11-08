@@ -122,7 +122,7 @@ Added 2026-11-07, at the owner's asking: the sky, the light and the weather, whi
 - Shadows: the sun's and moon's, on terrain and models (cascaded shadow maps or an equivalent).
 - Atmosphere and aerial perspective: a physically based sky (atmospheric scattering), and distant terrain and models fading into haze with distance, which also softens where terrain levels of detail change.
 - Time of day: the sun and moon placed from the date, time and location; the sky and the lighting following them through dawn, dusk and night; stars.
-- Night lighting: airport and approach lights, drawn with the clustered lighting reserved for them (foundational decision 4), from a lights layer in the tiles (D-018 names it) that the compiler builds from the runways' FAA geometry and a placement file of lights; lit windows, which need emissive materials in `libs/models` and the model scripts.
+- Night lighting: airport and approach lights, their points drawn after the resolve (D-028, D-033) and the light they cast with the clustered lighting reserved for them (foundational decision 4), from a lights layer in the tiles (D-018 names it) that the compiler builds from the runways' FAA geometry and a placement file of lights; lit windows, which need emissive materials in `libs/models` and the model scripts.
 - Weather: visibility (the haze above, set by the host or config) and fog, cloud layers (2D layers first; volumetric clouds if the frame allows), precipitation; wet or snow-covered ground later.
 - Host control: the environment set over CIGI (time of day, atmosphere, weather), from the ICD, as every packet: milestone 6's plan extends D-014's packets to them. And in config without a host.
 

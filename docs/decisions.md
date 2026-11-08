@@ -194,13 +194,13 @@ Each pixel's colour is its samples' weighted mean in linear HDR, c = sum(c_i w_i
 
 **Status:** Proposed (2026-11-08)
 
-Date and time (UTC, as CIGI has it), whether time runs, visibility and the global weather layers are protocol-neutral scene state in `libs/core`, written by the host adapter or by config and read by the render thread from the snapshot. The renderer derives the sun's and moon's directions (published low-precision ephemeris formulas, in double precision on the CPU) and the lighting from it each frame, and writes them with the atmosphere's parameters into a per-frame uniform buffer; push constants can't hold them.
+Date and time (UTC, as CIGI has it, an epoch with the host time it was set at, so a running clock is the epoch plus elapsed time and every channel agrees), whether time runs, visibility and the global weather layers are protocol-neutral scene state in `libs/core`, written by the host adapter or by config and read by the render thread from the snapshot. The renderer derives the sun's and moon's directions (the Almanac's low-precision sun; Meeus's truncated lunar theory with the eye's parallax; geometric, in double precision on the CPU) and the lighting from it each frame, and writes them with the atmosphere's parameters into a per-frame uniform buffer; push constants can't hold them.
 
 ## D-030 A physically based sky and aerial perspective, from precomputed tables
 
 **Status:** Proposed (2026-11-08)
 
-The sky and the haze over distance follow Hillaire (2020): transmittance and multiple-scattering tables, and a sky-view table and an aerial-perspective volume per view, rebuilt by compute shaders as the sun or atmosphere changes; Rayleigh and Mie scattering and ozone over a spherical Earth. The terrain and model shaders apply the aerial perspective per sample in the multisampled pass (a pass after the resolve would read one depth per pixel and haze edges wrongly). Visibility sets the aerosol density at the ground by Koschmieder's relation (extinction 3.912 / V). Bruneton's 4D tables are slower to rebuild as time runs; analytic skies have no aerial perspective or twilight.
+The sky and the haze over distance follow Hillaire (2020): transmittance and multiple-scattering tables, and a sky-view table and an aerial-perspective volume per view, rebuilt by compute shaders as the sun or atmosphere changes; Rayleigh and Mie scattering and ozone over a spherical Earth centred under the eye, its altitude the ellipsoidal height. The terrain and model shaders apply the aerial perspective per sample in the multisampled pass (a pass after the resolve would read one depth per pixel and haze edges wrongly). Visibility sets the aerosol density at the ground by Koschmieder's relation (extinction 3.912 / V). Bruneton's 4D tables cover every sun angle but take far longer than a frame to rebuild when the atmosphere changes (visibility, weather); analytic skies have no aerial perspective or twilight.
 
 ## D-031 One exposure for all channels, from the light
 
@@ -212,16 +212,16 @@ Exposure follows the illuminance at the eye from the sky model (sun, moon and sk
 
 **Status:** Proposed (2026-11-08)
 
-The sun (or the moon, at night) casts shadows through 4 cascades fitted to each view's frustum, 2048² in 32-bit depth, filtered. Models cast onto terrain and each other, terrain onto models and itself. The terrain's imagery already holds its day's shadows, so terrain receives only what the imagery lacks: models' shadows, and terrain's at a low sun.
+The sun (or the moon, at night) casts shadows through 4 cascades fitted to each view's frustum, 2048² in 32-bit depth, filtered: 64 MB and four depth passes a view. Models cast onto terrain and each other, terrain onto models and itself. The terrain's imagery already holds its day's shadows, so terrain receives only what the imagery lacks: models' shadows, and terrain's at a low sun.
 
 ## D-033 Airport lights are a tile layer, drawn as points after the resolve
 
 **Status:** Proposed (2026-11-08)
 
-The compiler builds the `lights` layer (D-018) from the runways' FAA geometry (D-022) and a committed light file per airport naming each runway's systems from the FAA's published data, laid out by the FAA's standard (AC 150/5340-30) in code. The lights are drawn after the resolve, single-sampled, at least a pixel across, by inverse square and the atmosphere's transmittance, coloured and directed by type (D-028). Clustered lighting is kept for lights that light the ground (none yet). Lit windows are models' emissive materials (glTF `emissiveFactor`, `emissiveTexture`, `KHR_materials_emissive_strength`).
+The compiler builds the `lights` layer (D-018) from the runways' FAA geometry (D-022) and a committed light file per airport naming each runway's systems from the FAA's published data, laid out by the FAA's standard (AC 150/5340-30) in code. The lights' points are drawn after the resolve (D-028), GPU-driven, single-sampled, at least a pixel across, by inverse square and the atmosphere's transmittance, coloured and directed by type. Clustered lighting (foundational decision 4) handles the light they cast on surfaces (none yet), not their points. Lit windows are models' emissive materials (glTF `emissiveFactor`, `emissiveTexture`, `KHR_materials_emissive_strength`).
 
 ## D-034 Clouds are 2D layers first; precipitation is visibility for now
 
 **Status:** Proposed (2026-11-08)
 
-Each global cloud layer is a lit, textured layer at its base, its coverage shaping procedural noise, shadowing the ground below; fog layers are bands of density in the atmosphere; precipitation reduces visibility, its streaks waiting for particles (milestone 10). Volumetric clouds, regional weather and wet or snowy ground come later, as the frame allows.
+Each global cloud layer is a lit, textured layer at its base (the ICD's mean-sea-level heights converted with the database's geoid height, D-020), its coverage shaping procedural noise, shadowing the ground below; ground fog is a band of density in the atmosphere; precipitation layers reduce visibility within them, their streaks waiting for particles (milestone 10). Volumetric clouds, regional weather and wet or snowy ground come later, as the frame allows.
