@@ -77,9 +77,10 @@ float shape_density(float coverage, float3 cells, float lod, bool erode, float w
         // Whole a third of the way up the values above the threshold (the
         // shape's values bunch: over all of them, most cloud stayed thin,
         // and the erosion took it).
-        // More than the coverage over the threshold (`widen`): the erosion
-        // takes back about a tenth, and a volume's thinner base and top a
-        // little more.
+        // The coverage over the threshold, widened by `widen`: the erosion
+        // takes back about a tenth of a layer's (1.1); a volume's, lit
+        // through its thin edges, shows a little more than its share
+        // (0.95), each measured.
         const float above = min(coverage * widen, 1.0);
         const float threshold = shape_quantile(1.0 - above);
         const float core = shape_quantile(1.0 - above * 0.67);
@@ -191,9 +192,24 @@ float henyey_greenstein(float g, float c) {
 }
 
 // How a cloud thins toward its base and rounds toward its top, by its
-// height through the layer (0 base, 1 top).
-float height_shape(float y) {
-    return saturate(y / 0.1) * saturate((1.0 - y) / 0.35);
+// height through the layer (0 base, 1 top), its own top at `top` (a share
+// of the layer's thickness).
+float height_shape(float y, float top) {
+    return saturate(y / 0.1) * saturate((top - y) / (0.35 * top));
+}
+
+// How high a cloud grows, a share of the layer's thickness, by the column
+// it stands in (`rel` any point in it, `y` its height through the layer):
+// its core's density there (a big, dense cloud reaches the layer's top, a
+// small one stops a third of the way), and a broad noise, 48 km a tile, so
+// clouds of a size differ too. Cumulus share their base, where the air
+// condenses, but not their tops.
+float cloud_top(float4 l, float3 rel, float3 up, float y, uint layer, float lod) {
+    const float3 base = rel - up * (y * (l.y - l.x));
+    const float3 cells = cloud_cells(base, layer);
+    const float core = shape_density(l.w, cells, lod + 2.0, false, 0.95);
+    const float broad = cloud_shape.SampleLevel(cells / (kShapeCells * 4.0), lod).g;
+    return lerp(0.3, 1.0, saturate(core * 1.3)) * lerp(0.55, 1.0, saturate(broad * 1.5 - 0.25));
 }
 
 static const uint kVolumeSteps = 48;
@@ -263,8 +279,12 @@ CloudOut fs_clouds_volume(CloudPixel i) {
         const float lod = shape_lod(footprint * max(t / max(t0, 1.0), 1.0));
         float3 up;
         const float y = (point_height(rel, up) - l.x) / thickness;
-        const float density = shape_density(l.w, cloud_cells(rel, i.layer), lod, true, 1.25) *
-                              height_shape(y);
+        const float top = cloud_top(l, rel, up, y, i.layer, lod);
+        if (y > top) {
+            continue;
+        }
+        const float density = shape_density(l.w, cloud_cells(rel, i.layer), lod, true, 0.95) *
+                              height_shape(y, top);
         if (density <= 1e-3) {
             continue;
         }
@@ -280,15 +300,19 @@ CloudOut fs_clouds_volume(CloudPixel i) {
             const float3 q = rel + to_light * along;
             float3 q_up;
             const float qy = (point_height(q, q_up) - l.x) / thickness;
-            toward += shape_density(l.w, cloud_cells(q, i.layer), lod + 1.0, false, 1.25) *
-                      height_shape(qy) * step;
+            toward += shape_density(l.w, cloud_cells(q, i.layer), lod + 1.0, false, 0.95) *
+                      height_shape(qy, top) * step;
         }
         const float od = toward * kCloudExtinction;
         // Beer's law, with a softer tail standing in for the light scattered
         // many times (it reaches deeper than the direct beam).
         const float through = max(exp(-od), 0.7 * exp(-0.25 * od));
-        // The sky's light, less toward the cloud's base.
-        const float3 ambient = s.sky_irradiance * kInvPi * (0.5 + 0.5 * saturate(y));
+        // The light from around: the clear sky's in the gaps, and in a
+        // layer that covers the sky, the grey light the cloud itself
+        // scatters (the clear sky's blue lit an overcast's base dark and
+        // blue); less toward the cloud's base.
+        const float3 around = lerp(s.sky_irradiance, light_on_top(s, up) * 0.5, l.w);
+        const float3 ambient = around * kInvPi * (0.5 + 0.5 * saturate(y));
         const float sigma = kCloudExtinction * density;
         const float3 source = sigma * (light * phase * through + ambient);
         const float step_through = exp(-sigma * dt);
