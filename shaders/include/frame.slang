@@ -33,6 +33,8 @@ struct ViewLighting {
     // the ellipsoid, metres; how many layers, and of them clouds; the up at
     // the eye (ECEF); the fraction of the light on level ground the clouds
     // above the eye leave (on average), for the air and the fog; the eye in
+    // the cloud noise's cells, and the share of the sky the clouds above
+    // leave clear (weather.slang's air_light);
     // the cloud noise's cells; and the layers, lowest first: base and top
     // (metres), extinction per metre, and a cloud's coverage (0 to 1) or -1
     // for fog, rain and snow.
@@ -42,7 +44,7 @@ struct ViewLighting {
     float3 up;
     float weather_light;
     float3 noise_origin;
-    float unused2;
+    float clear_sky;  // the share of the sky the clouds above the eye leave clear
     float4 layer[6];
 };
 

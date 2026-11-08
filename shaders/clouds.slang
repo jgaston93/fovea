@@ -96,7 +96,7 @@ CloudOut fs_clouds(CloudPixel i) {
     }
     // Through the air, then the fog, rain and snow, to the eye.
     const float4 air = aerial_perspective(i.position.xy, dist * 0.001);
-    const float3 seen = through_bands(radiance * air.a + air.rgb * lighting.weather_light, mu,
+    const float3 seen = through_bands(radiance * air.a + air_light(air, s), mu,
                                       dist, s, 1.0);
     CloudOut o;
     o.colour = float4(min(seen * s.exposure, float3(60000.0)) * alpha, alpha);
