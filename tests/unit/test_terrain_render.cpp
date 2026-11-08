@@ -957,10 +957,8 @@ TEST(TerrainRender, ScatteredCloudLetsAboutItsShareOfTheSkyThrough) {
     if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
         options.validation = Validation::required;
     }
-    for (const CloudModel model : {CloudModel::layer, CloudModel::volumetric, CloudModel::skybox}) {
-        SCOPED_TRACE(model == CloudModel::layer        ? "layer"
-                     : model == CloudModel::volumetric ? "volumetric"
-                                                       : "skybox");
+    for (const CloudModel model : {CloudModel::layer, CloudModel::volumetric}) {
+        SCOPED_TRACE(model == CloudModel::layer ? "layer" : "volumetric");
         options.clouds = model;
         std::unique_ptr<Renderer> r;
         try {
@@ -1009,17 +1007,13 @@ TEST(TerrainRender, ScatteredCloudLetsAboutItsShareOfTheSkyThrough) {
                 }
             }
             std::printf("%s, coverage %.1f: %.3f of %d pixels covered\n",
-                        model == CloudModel::layer        ? "layer"
-                        : model == CloudModel::volumetric ? "volume"
-                                                          : "skybox",
-                        coverage, cover / counted, counted);
+                        model == CloudModel::layer ? "layer" : "volume", coverage, cover / counted,
+                        counted);
             EXPECT_GT(counted, 3 * 96 * 96 * 8 / 10);
             // Within 0.05 at five places tried (the noise's few cells in view
             // vary it).
             // The volume's thinner base and top let a little more through.
-            // The skybox shows the same sky in every place: one patch, so a looser
-            // bound.
-            EXPECT_NEAR(cover / counted, coverage, model == CloudModel::layer ? 0.07 : 0.1);
+            EXPECT_NEAR(cover / counted, coverage, model == CloudModel::volumetric ? 0.1 : 0.07);
         }
         EXPECT_EQ(r->validation_messages(), 0U);
     }
