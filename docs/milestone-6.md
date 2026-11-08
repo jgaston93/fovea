@@ -199,6 +199,9 @@ The environment adds three packets: Celestial Sphere Control, Atmosphere Control
   - GPU memory rose 225 MiB (12 maps of 16 MiB). CPU work rose 0.3 ms a frame (the fitting, and culling models for each cascade).
   - Every run held 60 Hz, with no validation messages.
   - Mid-morning, the tower casts its shadow north-west across the apron.
+  - **The owner's look** (the airport route at 8 am, the sun 25 degrees up, and at 10 am) found the shadows good, with two faults, both fixed here.
+    - At a low sun the terrain casts, and each cascade drew all the view's tiles: 5.5 ms on output 0, and 868 frames of 3,900 missed. Each cascade now draws only the tiles that reach its box, in its own region of records: 3.8 ms on output 0 (2.7 and 3.0 on the others, about 9.5 of the frame's 16.7 in all), and 60 Hz held. Terrain casting is still the heaviest thing on the screen; coarser casters would cut it, if step 9 finds the budget short.
+    - Far off, the tower's thin shadow flickered as the view moved, until it was near enough to be wide. A distant pixel covers tens of metres of ground looking along it, and one lookup a pixel sampled a shadow a few metres wide. The lookup is now bilinear, and its taps spread over the pixel's footprint in the map (from the screen derivatives of the point, up to eight texels apart). The owner found it better, for 0.08 ms an output.
 - **Goldens.** `models_on_hills` was regenerated and looked at: the boxes cast their shadows away from the sun. NVIDIA matches it as before.
 - **From the review.**
   - The maps are made with the terrain, not without it (225 MiB that nothing else reads).
