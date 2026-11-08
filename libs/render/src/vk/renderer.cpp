@@ -35,12 +35,16 @@
 #include "fovea/render/renderer.hpp"
 #include "overlay_ui.hpp"
 #include "shaders/kCsAerial.hpp"
+#include "shaders/kCsCloudDetail.hpp"
+#include "shaders/kCsCloudQuantiles.hpp"
+#include "shaders/kCsCloudShape.hpp"
 #include "shaders/kCsExposure.hpp"
 #include "shaders/kCsIrradiance.hpp"
 #include "shaders/kCsMultiScattering.hpp"
 #include "shaders/kCsSkyView.hpp"
 #include "shaders/kCsTransmittance.hpp"
 #include "shaders/kFsClouds.hpp"
+#include "shaders/kFsCloudsVolume.hpp"
 #include "shaders/kFsModel.hpp"
 #include "shaders/kFsModelShadow.hpp"
 #include "shaders/kFsResolve.hpp"
@@ -517,7 +521,8 @@ struct Renderer::Impl {
     std::vector<bool> shadows_lit;  // a light casts this frame: else the maps are only cleared
     std::vector<SkyViewInput> sky_inputs;
     bool drew_scene = false;
-    double frame_period_s = 1.0 / 60.0;  // RendererOptions::frame_rate_hz
+    double frame_period_s = 1.0 / 60.0;          // RendererOptions::frame_rate_hz
+    CloudModel cloud_model = CloudModel::layer;  // RendererOptions::clouds
 
     // What the terrain, models and sky need of the device (one place, so
     // the positional fields stay in step).
@@ -1219,17 +1224,24 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     }
     vkDestroyShaderModule(device.device, vs_stars, nullptr);
     vkDestroyShaderModule(device.device, fs_stars, nullptr);
-    VkShaderModule vs_clouds = make_module(kVsClouds);
-    VkShaderModule fs_clouds = make_module(kFsClouds);
+    const CloudShaders cloud_shaders{make_module(kVsClouds),       make_module(kFsClouds),
+                                     make_module(kFsCloudsVolume), make_module(kCsCloudShape),
+                                     make_module(kCsCloudDetail),  make_module(kCsCloudQuantiles)};
+    const auto release_clouds = [&] {
+        for (VkShaderModule m :
+             {cloud_shaders.vertex, cloud_shaders.layer, cloud_shaders.volume, cloud_shaders.shape,
+              cloud_shaders.detail, cloud_shaders.quantiles}) {
+            vkDestroyShaderModule(device.device, m, nullptr);
+        }
+    };
     try {
-        clouds = std::make_unique<CloudsGpu>(gpu, kHdrFormat, kDepthFormat, vs_clouds, fs_clouds);
+        clouds =
+            std::make_unique<CloudsGpu>(gpu, kHdrFormat, kDepthFormat, cloud_shaders, cloud_model);
     } catch (...) {
-        vkDestroyShaderModule(device.device, vs_clouds, nullptr);
-        vkDestroyShaderModule(device.device, fs_clouds, nullptr);
+        release_clouds();
         throw;
     }
-    vkDestroyShaderModule(device.device, vs_clouds, nullptr);
-    vkDestroyShaderModule(device.device, fs_clouds, nullptr);
+    release_clouds();
     cloud_order.resize(count);
     sky_inputs.resize(count);
 
@@ -1459,6 +1471,8 @@ Frame& Renderer::Impl::begin_frame() {
 // the reference scene (sky and grid), then any terrain over it.
 void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
                                 std::span<const SceneView> views) {
+    // The clouds' noise, made on the first frame.
+    clouds->prepare(cmd);
     if (shadows) {
         // Every view's maps readable before any view draws (its own are then
         // redrawn before its scene, when a light casts).
@@ -2140,6 +2154,7 @@ std::unique_ptr<Renderer> Renderer::for_windows(Platform& platform,
     impl->create_device(true);
     impl->choose_samples(options.msaa);
     impl->frame_period_s = 1.0 / std::max(options.frame_rate_hz, 1.0);
+    impl->cloud_model = options.clouds;
     for (Swapchain& s : impl->swapchains) {
         impl->build_swapchain(s);  // deferred while a window has no size
     }
@@ -2161,6 +2176,7 @@ std::unique_ptr<Renderer> Renderer::offscreen(std::span<const OffscreenOutput> o
     impl->create_device(false);
     impl->choose_samples(options.msaa);
     impl->frame_period_s = 1.0 / std::max(options.frame_rate_hz, 1.0);
+    impl->cloud_model = options.clouds;
     std::vector<VkExtent2D> render_extents;
     for (const OffscreenOutput& o : outputs) {
         impl->create_offscreen(o);

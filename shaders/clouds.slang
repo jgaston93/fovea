@@ -1,14 +1,26 @@
 // The cloud layers (milestone 6 step 6, D-034): drawn after the resolve
 // and the stars into the HDR target, one full-screen triangle a layer, the
-// farthest first. Each pixel finds where its ray meets the layer's base
-// (from below, or from above), and puts the cloud there, its depth tested
-// against the resolved scene's so terrain nearer than it shows in front.
-// The layer's coverage shapes procedural noise (weather.slang); it is lit
-// by the sun, moon and sky at the eye, reflecting from above what it lets
-// through below, and seen through the air and the fog.
+// farthest first, tested against the resolved scene's depth so terrain
+// nearer than a cloud shows in front. Two models, chosen by config
+// ([display] clouds): fs_clouds draws each layer as a surface at its base;
+// fs_clouds_volume marches each ray through the layer, base to top. Both
+// shape it from cloud_noise.slang's volumes (Perlin-Worley shapes, Worley
+// detail eroding their edges), thresholded where the layer's coverage puts
+// it, and both light it by the sun, moon and sky at the eye, then show it
+// through the air and the fog.
 
 #define FRAME_SET 0
 #include "include/frame.slang"
+
+// The noise (cloud_noise.slang): the shape volume, tiling every kShapeCells
+// of the weather's noise cells (12 km), and the detail volume, every half
+// cell (1.5 km); sampled linearly, repeating. And the shape's quantiles.
+[[vk::binding(0, 1)]] Sampler3D<float4> cloud_shape;
+[[vk::binding(1, 1)]] Sampler3D<float4> cloud_detail;
+[[vk::binding(2, 1)]] StructuredBuffer<uint> cloud_table;
+static const float kShapeCells = 4.0;
+static const float kDetailCells = 0.5;
+static const float kShapeSize = 128.0;
 
 // Mirrors CloudPush in clouds.cpp.
 struct CloudPush {
@@ -39,6 +51,94 @@ CloudPixel vs_clouds(uint id: SV_VulkanVertexID, uint instance: SV_VulkanInstanc
     return o;
 }
 
+// The value of the shape volume below which a share x of it lies.
+float shape_quantile(float x) {
+    const float i = saturate(x) * 255.0;
+    const uint lo = uint(floor(i));
+    const uint hi = min(lo + 1, 255u);
+    return lerp(asfloat(cloud_table[256 + lo]), asfloat(cloud_table[256 + hi]), i - float(lo));
+}
+
+// A layer's density at a point (its noise cells, as cloud_cells gives
+// them), 0 to 1: the shape above the coverage's quantile, so a share
+// `coverage` of the layer is cloud, rising toward each cloud's core; its
+// edges eroded by the detail. `lod` the shape volume's mip by the pixel's
+// footprint: as it coarsens, the density tends to its mean, so distant
+// broken cloud reads as the thin layer it averages to.
+float shape_density(float coverage, float3 cells, float lod, bool erode) {
+    if (coverage <= 0.0) {
+        return 0.0;
+    }
+    const float base = cloud_shape.SampleLevel(cells / kShapeCells, lod).r;
+    float d;
+    if (coverage >= 1.0) {
+        d = 0.6 + 0.4 * base;  // overcast: whole, thicker and thinner
+    } else {
+        // Whole a third of the way up the values above the threshold (the
+        // shape's values bunch: over all of them, most cloud stayed thin,
+        // and the erosion took it).
+        // A tenth more than the coverage over the threshold: the erosion
+        // takes back about that.
+        const float above = min(coverage * 1.1, 1.0);
+        const float threshold = shape_quantile(1.0 - above);
+        const float core = shape_quantile(1.0 - above * 0.67);
+        d = saturate((base - threshold) / max(core - threshold, 1e-3));
+    }
+    if (erode) {
+        const float e = cloud_detail.SampleLevel(cells / kDetailCells, max(lod - 2.0, 0.0)).r;
+        d = saturate((d - e * 0.3) / (1.0 - e * 0.3));
+    }
+    // About the mean density of a layer of this coverage.
+    return lerp(d, coverage * 0.35, saturate((lod - 2.0) / 3.0));
+}
+
+// The shape volume's mip for a pixel spanning `footprint` noise cells.
+float shape_lod(float footprint) {
+    return max(log2(max(footprint / kShapeCells * kShapeSize, 1e-6)), 0.0);
+}
+
+// The layer's base where the ray (from the eye, direction d, zenith cosine
+// mu) meets it: from below, the far root ahead; from above, the near one
+// where the ray comes down to it. x the distance, y 1 if it does.
+float2 base_hit(float4 l, float mu) {
+    const float2 span = sphere_span(lighting.eye_height_m, mu, l.x);
+    const float dist = lighting.eye_height_m < l.x ? span.y : span.x;
+    return float2(dist, span.x <= span.y && dist > 0.0 ? 1.0 : 0.0);
+}
+
+// The light on a cloud's top, as on level ground there (up its up).
+float3 light_on_top(ViewSky s, float3 up) {
+    return s.sun_irradiance * saturate(dot(lighting.sun, up)) +
+           s.moon_irradiance * saturate(dot(lighting.moon, up)) + s.sky_irradiance;
+}
+
+// A cloud's light (premultiplied: radiance times alpha, before exposure)
+// and alpha, `dist` metres along a ray of zenith cosine mu, through the air
+// and the fog to the eye, exposed; and its depth.
+CloudOut finish(float4 position, float3 lit, float alpha, float dist, float3 rel, float mu,
+                ViewSky s) {
+    const float4 air = aerial_perspective(position.xy, dist * 0.001);
+    float3 seen = lit * air.a + air_light(air, s) * alpha;
+    if (lighting.layer_count > 0) {
+        const float t = band_transmittance(mu, dist);
+        seen = seen * t + band_radiance(s) * alpha * (1.0 - t);
+    }
+    CloudOut o;
+    o.colour = float4(min(seen * s.exposure, float3(60000.0)), alpha);
+    const float4 clip = mul(push.rel_to_clip, float4(rel, 1.0));
+    o.depth = saturate(clip.z / clip.w);
+    return o;
+}
+
+// Opaque where it lets less than a thousandth through: NVIDIA blends a
+// half-float target in half floats, where 1 - alpha can't go below about
+// 5e-4, and the sun's disc behind (some 60,000) then shone through even a
+// full overcast. A thinner cloud dims the disc, as cloud does.
+float opaque_alpha(float transmittance) {
+    return transmittance < 1e-3 ? 1.0 : 1.0 - transmittance;
+}
+
+// The layer as a surface at its base.
 [shader("fragment")]
 CloudOut fs_clouds(CloudPixel i) {
     const float4 l = lighting.layer[i.layer];
@@ -46,45 +146,33 @@ CloudOut fs_clouds(CloudPixel i) {
     const float4 p = mul(push.clip_to_rel, float4(i.ndc, 1.0, 1.0));
     const float3 d = normalize(p.xyz / p.w);
     const float mu = dot(d, lighting.up);
-    const float h = lighting.eye_height_m;
-    // The base from below (the far root, ahead), or from above (the near
-    // one, where the ray comes down to it).
-    const float2 span = sphere_span(h, mu, l.x);
-    const bool below = h < l.x;
-    const float dist = below ? span.y : span.x;
-    const bool hits = span.x <= span.y && dist > 0.0;
+    const float2 hit = base_hit(l, mu);
     // Its noise cells, and how many a pixel spans: taken for every pixel,
     // outside the branch (a pixel that misses gives its neighbours nothing
-    // useful, which only fades their detail).
-    const float3 rel = d * (hits ? dist : 0.0);
+    // useful, which only coarsens their detail).
+    const float3 rel = d * (hit.y > 0.0 ? hit.x : 0.0);
     const float3 cells = cloud_cells(rel, i.layer);
     const float footprint = max(length(ddx(cells)), length(ddy(cells)));
-    if (!hits) {
+    if (hit.y == 0.0) {
         discard;
     }
-    const float density = cloud_density(l.w, cells, 5, kCloudSpread, footprint);
+    const float density = shape_density(l.w, cells, shape_lod(footprint), true);
     const float tau = cloud_depth(l) * density;
-    // Opaque where it lets less than a thousandth through: NVIDIA blends a
-    // half-float target in half floats, where 1 - alpha can't go below
-    // about 5e-4, and the sun's disc behind (some 60,000) then shone through
-    // even a full overcast. A thinner cloud dims the disc, as cloud does.
-    const float through_sky = exp(-tau);
-    const float alpha = through_sky < 1e-3 ? 1.0 : 1.0 - through_sky;
+    const float alpha = opaque_alpha(exp(-tau));
     if (alpha < 1e-3) {
         discard;
     }
-    // The light on its top, as on level ground there; what it reflects up,
-    // and scatters through down (less the light passing straight through:
-    // the scene behind, which the blend keeps by 1 - alpha).
+    // What it reflects up, or scatters through down (less the light
+    // passing straight through: the scene behind, which the blend keeps by
+    // 1 - alpha), of the light on its top. Thicker cores reflect more and
+    // let less through.
     const ViewSky s = view_sky[lighting.view];
     float3 up;
     (void)point_height(rel, up);
-    const float3 top = s.sun_irradiance * saturate(dot(lighting.sun, up)) +
-                       s.moon_irradiance * saturate(dot(lighting.moon, up)) + s.sky_irradiance;
+    const bool below = lighting.eye_height_m < l.x;
     const float through = cloud_diffuse(tau);
     const float scattered = below ? max(through - exp(-tau), 0.0) : 1.0 - through;
-    // Divided by alpha: the blend multiplies it back.
-    float3 radiance = top * scattered * kInvPi / alpha;
+    float3 lit = light_on_top(s, up) * scattered * kInvPi;
     // Seen from below toward the sun, its thin edges glow with the light
     // scattered forward through them (single scattering, optical depth
     // tau: at most where tau is 1).
@@ -92,15 +180,129 @@ CloudOut fs_clouds(CloudPixel i) {
         const float c = dot(d, lighting.sun);
         const float g = 0.6;
         const float phase = (1.0 - g * g) / (4.0 * kPi * pow(1.0 + g * g - 2.0 * g * c, 1.5));
-        radiance += s.sun_irradiance * phase * tau * exp(-tau) / alpha;
+        lit += s.sun_irradiance * phase * tau * exp(-tau);
     }
-    // Through the air, then the fog, rain and snow, to the eye.
-    const float4 air = aerial_perspective(i.position.xy, dist * 0.001);
-    const float3 seen = through_bands(radiance * air.a + air_light(air, s), mu,
-                                      dist, s, 1.0);
-    CloudOut o;
-    o.colour = float4(min(seen * s.exposure, float3(60000.0)) * alpha, alpha);
-    const float4 clip = mul(push.rel_to_clip, float4(rel, 1.0));
-    o.depth = saturate(clip.z / clip.w);
-    return o;
+    return finish(i.position, lit, alpha, hit.x, rel, mu, s);
+}
+
+float henyey_greenstein(float g, float c) {
+    return (1.0 - g * g) / (4.0 * kPi * pow(max(1.0 + g * g - 2.0 * g * c, 1e-4), 1.5));
+}
+
+// How a cloud thins toward its base and rounds toward its top, by its
+// height through the layer (0 base, 1 top).
+float height_shape(float y) {
+    return saturate(y / 0.1) * saturate((1.0 - y) / 0.35);
+}
+
+static const uint kVolumeSteps = 48;
+static const float kVolumeReachM = 40000.0;  // the farthest a ray marches in a layer
+static const float kCloudExtinction = 0.04;  // per metre at density 1 (renderer.cpp's)
+
+// The layer as a volume: the ray marched from where it enters the layer to
+// where it leaves (or kVolumeReachM on), kVolumeSteps steps, each lit by
+// the light it gets through the cloud toward the sun or moon (four steps
+// that way) and by the sky, scattered with a forward and a back lobe;
+// integrated as Hillaire's (2016) energy-conserving step.
+[shader("fragment")]
+CloudOut fs_clouds_volume(CloudPixel i) {
+    const float4 l = lighting.layer[i.layer];
+    const float4 p = mul(push.clip_to_rel, float4(i.ndc, 1.0, 1.0));
+    const float3 d = normalize(p.xyz / p.w);
+    const float mu = dot(d, lighting.up);
+    const float h = lighting.eye_height_m;
+    // Where the ray is within the layer: [t0, t1].
+    const float2 bottom = sphere_span(h, mu, l.x);
+    const float2 top = sphere_span(h, mu, l.y);
+    const bool meets_bottom = bottom.x <= bottom.y;
+    float t0;
+    float t1;
+    if (h < l.x) {
+        t0 = bottom.y;
+        t1 = top.y;
+    } else if (h > l.y) {
+        t0 = top.x;
+        t1 = meets_bottom && bottom.x > 0.0 ? bottom.x : top.y;
+        if (top.x > top.y || top.y < 0.0) {
+            t1 = -1.0;
+        }
+    } else {
+        t0 = 0.0;
+        t1 = meets_bottom && bottom.x > 0.0 ? bottom.x : top.y;
+    }
+    t0 = max(t0, 0.0);
+    t1 = min(t1, t0 + kVolumeReachM);
+    // The detail a pixel resolves where the ray enters, for every pixel
+    // (outside the branch).
+    const float3 enter = d * (t1 > t0 ? t0 : 0.0);
+    const float3 enter_cells = cloud_cells(enter, i.layer);
+    const float footprint = max(length(ddx(enter_cells)), length(ddy(enter_cells)));
+    if (t1 <= t0) {
+        discard;
+    }
+    const ViewSky s = view_sky[lighting.view];
+    const bool by_moon = lighting.shadow_light == 2;
+    const float3 to_light = by_moon ? lighting.moon : lighting.sun;
+    const float3 light = by_moon ? s.moon_irradiance : s.sun_irradiance;
+    const float c = dot(d, to_light);
+    const float phase = lerp(henyey_greenstein(0.8, c), henyey_greenstein(-0.3, c), 0.4);
+    // Steps staggered by pixel (interleaved gradient noise) so their bands
+    // dissolve into a fine grain.
+    const float jitter =
+        frac(52.9829189 * frac(dot(i.position.xy, float2(0.06711056, 0.00583715))));
+    const float dt = (t1 - t0) / float(kVolumeSteps);
+    const float thickness = l.y - l.x;
+    float transmittance = 1.0;
+    float3 lit = float3(0.0);
+    float first = -1.0;
+    for (uint k = 0; k < kVolumeSteps; ++k) {
+        const float t = t0 + (float(k) + jitter) * dt;
+        const float3 rel = d * t;
+        // The step's distance coarsens its detail, from the entry's.
+        const float lod = shape_lod(footprint * max(t / max(t0, 1.0), 1.0));
+        float3 up;
+        const float y = (point_height(rel, up) - l.x) / thickness;
+        const float density = shape_density(l.w, cloud_cells(rel, i.layer), lod, true) *
+                              height_shape(y);
+        if (density <= 1e-3) {
+            continue;
+        }
+        if (first < 0.0) {
+            first = t;
+        }
+        // Toward the light: four steps, growing, through the shape alone.
+        float toward = 0.0;
+        float along = 0.0;
+        for (uint j = 0; j < 4; ++j) {
+            const float step = 30.0 * float(1u << j);
+            along += step;
+            const float3 q = rel + to_light * along;
+            float3 q_up;
+            const float qy = (point_height(q, q_up) - l.x) / thickness;
+            toward += shape_density(l.w, cloud_cells(q, i.layer), lod + 1.0, false) *
+                      height_shape(qy) * step;
+        }
+        const float od = toward * kCloudExtinction;
+        // Beer's law, with a softer tail standing in for the light scattered
+        // many times (it reaches deeper than the direct beam).
+        const float through = max(exp(-od), 0.7 * exp(-0.25 * od));
+        // The sky's light, less toward the cloud's base.
+        const float3 ambient = s.sky_irradiance * kInvPi * (0.5 + 0.5 * saturate(y));
+        const float sigma = kCloudExtinction * density;
+        const float3 source = sigma * (light * phase * through + ambient);
+        const float step_through = exp(-sigma * dt);
+        lit += transmittance * source * (1.0 - step_through) / sigma;
+        transmittance *= step_through;
+        if (transmittance < 1e-3) {
+            transmittance = 0.0;
+            break;
+        }
+    }
+    if (first < 0.0) {
+        discard;
+    }
+    const float alpha = opaque_alpha(transmittance);
+    // Its light, as the blend takes it: what it scattered, alpha's worth.
+    return finish(i.position, lit * (alpha / max(1.0 - transmittance, 1e-6)), alpha, first,
+                  d * first, mu, s);
 }

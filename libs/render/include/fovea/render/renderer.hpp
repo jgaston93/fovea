@@ -38,6 +38,8 @@ struct RendererOptions {
     // The frame clock's rate ([display] target_hz): exposure adapts by a
     // frame period each frame drawn (D-031).
     double frame_rate_hz = 60.0;
+    // How cloud layers are drawn ([display] clouds, milestone 6 step 6).
+    CloudModel clouds = CloudModel::layer;
 };
 
 struct GpuInfo {
