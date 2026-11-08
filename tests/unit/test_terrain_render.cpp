@@ -856,17 +856,16 @@ double brightness(const std::vector<std::uint8_t>& px, std::uint32_t w, glm::dve
 
 // The weather (milestone 6 step 6, D-034): under a full overcast, 1,500 m
 // up and 400 m thick, the sun is hidden (looking at it shows the cloud's
-// even grey: no disc, and no glow from the haze below, which the cloud's
+// grey: no disc, and no glow from the haze below, which the cloud's
 // diffuse light lights) and the ground is lit only by the light the
 // cloud lets through, so a post's shadow is gone; from above, the layer
 // hides the ground, the post with it, and its top is brighter than the
-// ground was. Both cloud models: the volume's top is lumpy and its forward
-// scattering brightens the cloud toward the hidden sun (a glow, not the
-// disc).
+// ground was. Both cloud models: their bases and tops are mottled, and the
+// volume's forward scattering brightens it toward the hidden sun (a glow,
+// not the disc).
 TEST(TerrainRender, AFullOvercastHidesTheSunAndLeavesOnlyItsDiffuseLight) {
     for (const CloudModel model : {CloudModel::layer, CloudModel::volumetric}) {
         SCOPED_TRACE(model == CloudModel::layer ? "layer" : "volumetric");
-        const bool volume = model == CloudModel::volumetric;
         double lat0 = 0.0;
         double lon0 = 0.0;
         Spec s = flat_grey(&lat0, &lon0);
@@ -923,7 +922,7 @@ TEST(TerrainRender, AFullOvercastHidesTheSunAndLeavesOnlyItsDiffuseLight) {
         std::printf("the sun: clear %.0f, overcast %.0f (and 30 pixels off it %.0f)\n", disc,
                     hidden, aside);
         EXPECT_GT(disc, 700.0);
-        EXPECT_NEAR(hidden, aside, volume ? 60.0 : 6.0) << "the sun shows through a full overcast";
+        EXPECT_NEAR(hidden, aside, 60.0) << "the sun shows through a full overcast";
         EXPECT_LT(hidden, disc * 0.8);
 
         // From 3,000 m, above the layer: it hides the ground and the post.
@@ -942,7 +941,7 @@ TEST(TerrainRender, AFullOvercastHidesTheSunAndLeavesOnlyItsDiffuseLight) {
         const double was = brightness(ground, kSize, centre);
         std::printf("from above: the ground %.0f; the cloud's top %.0f to %.0f\n", was, lo, hi);
         EXPECT_GT(lo, was) << "the cloud's top no brighter than the ground it hides";
-        EXPECT_LE(hi - lo, volume ? 40.0 : 6.0) << "the ground or the post shows through";
+        EXPECT_LE(hi - lo, 40.0) << "the ground or the post shows through";
     }
 }
 
