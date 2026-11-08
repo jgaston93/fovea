@@ -303,7 +303,6 @@ fovea::RendererOptions renderer_options(const fovea::DisplayConfig& config) {
     fovea::RendererOptions r;
     r.msaa = config.msaa;
     r.frame_rate_hz = config.target_hz;
-    r.clouds = config.clouds;
     return r;
 }
 

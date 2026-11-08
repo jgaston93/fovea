@@ -64,11 +64,11 @@ struct EntityState {
     FixedArray<Articulation, kMaxArticulations> parts;
 };
 
-// A global weather layer (milestone 6 step 6, D-034): a cloud layer, drawn
-// at its base, its coverage shaping procedural noise and shading the ground
-// below it; or a band of fog, rain or snow, its visibility the air's within
-// it. Heights are above the WGS-84 ellipsoid: writers convert sea-level
-// heights with the geoid's (D-020).
+// A global weather layer (milestone 6 step 6, D-034): a band of fog, rain
+// or snow, its visibility the air's within it; or a cloud layer, its base,
+// thickness and coverage kept for when clouds are drawn (#73: not yet).
+// Heights are above the WGS-84 ellipsoid: writers convert sea-level heights
+// with the geoid's (D-020).
 enum class WeatherKind : std::uint8_t { cloud, fog, rain, snow };
 
 struct WeatherLayer {
@@ -78,10 +78,6 @@ struct WeatherLayer {
     double coverage = 1.0;         // clouds: the fraction of the sky they cover, 0 to 1
     double visibility_m = 1000.0;  // fog, rain and snow: within the band
 };
-
-// How cloud layers are drawn ([display] clouds): as a surface at the
-// layer's base, or as a volume from base to top, marched (dearer).
-enum class CloudModel : std::uint8_t { layer, volumetric };
 
 // Fog, three cloud layers, rain and snow at once: CIGI's global layers less
 // its rarer ones (sleet, hail, sand, dust).

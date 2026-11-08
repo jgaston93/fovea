@@ -30,21 +30,15 @@
 #include <imgui.h>
 #include <imgui_impl_vulkan.h>
 
-#include "clouds.hpp"
 #include "fovea/core/geodesy.hpp"
 #include "fovea/render/renderer.hpp"
 #include "overlay_ui.hpp"
 #include "shaders/kCsAerial.hpp"
-#include "shaders/kCsCloudDetail.hpp"
-#include "shaders/kCsCloudQuantiles.hpp"
-#include "shaders/kCsCloudShape.hpp"
 #include "shaders/kCsExposure.hpp"
 #include "shaders/kCsIrradiance.hpp"
 #include "shaders/kCsMultiScattering.hpp"
 #include "shaders/kCsSkyView.hpp"
 #include "shaders/kCsTransmittance.hpp"
-#include "shaders/kFsClouds.hpp"
-#include "shaders/kFsCloudsVolume.hpp"
 #include "shaders/kFsModel.hpp"
 #include "shaders/kFsModelShadow.hpp"
 #include "shaders/kFsResolve.hpp"
@@ -52,7 +46,6 @@
 #include "shaders/kFsStars.hpp"
 #include "shaders/kFsTerrain.hpp"
 #include "shaders/kFsTonemap.hpp"
-#include "shaders/kVsClouds.hpp"
 #include "shaders/kVsFullscreen.hpp"
 #include "shaders/kVsModel.hpp"
 #include "shaders/kVsModelShadow.hpp"
@@ -68,74 +61,29 @@ namespace fovea {
 
 namespace {
 
-// The weather's constants (step 6; weather.slang has their twins): the
-// cloud noise's coarsest cell and its period in cells, and a cloud's
-// extinction per metre (a stratus 300 m thick is about 12 deep).
-constexpr double kCloudCellM = 3000.0;
-constexpr double kCloudPeriod = 256.0;
-constexpr double kCloudExtinctionPerM = 0.04;
-constexpr double kCloudMaxDepth = 40.0;
-
-// A view's weather into its lighting block (step 6, D-034): the layers,
-// lowest first, with the eye's height, up and place in the cloud noise; the
-// share of level light the clouds above the eye leave, on average (for the
-// air and the fog: where they are lit matters less than how much); and the
-// cloud layers to draw, the farthest from the eye's height first (along any
-// ray that meets two, the one further in height is further away). No
-// allocation.
-void fill_weather(ViewLighting& l, std::span<const WeatherLayer> weather, const DVec3& eye_ecef,
-                  double eye_height_m, const DVec3& up,
-                  FixedArray<std::uint32_t, kMaxWeatherLayers>& order) {
+// A view's weather into its lighting block (step 6, D-034): the eye's
+// height and up, and the fog, rain and snow, lowest first, each as its base,
+// top and extinction (Koschmieder's 3.912 over its visibility). Cloud layers
+// aren't drawn yet (#73): left out. No allocation.
+void fill_weather(ViewLighting& l, std::span<const WeatherLayer> weather, double eye_height_m,
+                  const DVec3& up) {
     l.eye_height_m = static_cast<float>(eye_height_m);
     l.up = {static_cast<float>(up.x), static_cast<float>(up.y), static_cast<float>(up.z)};
-    for (int a = 0; a < 3; ++a) {
-        const double cells = eye_ecef[a] / kCloudCellM;
-        l.noise_origin[static_cast<std::size_t>(a)] =
-            static_cast<float>(cells - std::floor(cells / kCloudPeriod) * kCloudPeriod);
-    }
-    std::array<const WeatherLayer*, kMaxWeatherLayers> sorted{};
+    std::array<const WeatherLayer*, kMaxWeatherLayers> bands{};
     std::size_t n = 0;
     for (const WeatherLayer& w : weather) {
-        const bool empty =
-            w.thickness_m <= 0.0 || (w.kind == WeatherKind::cloud && w.coverage <= 0.0);
-        if (!empty && n < sorted.size()) {
-            sorted[n++] = &w;
+        if (w.kind != WeatherKind::cloud && w.thickness_m > 0.0 && n < bands.size()) {
+            bands[n++] = &w;
         }
     }
-    std::sort(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(n),
+    std::sort(bands.begin(), bands.begin() + static_cast<std::ptrdiff_t>(n),
               [](const WeatherLayer* a, const WeatherLayer* b) { return a->base_m < b->base_m; });
     l.layer_count = static_cast<std::uint32_t>(n);
-    l.cloud_count = 0;
-    l.weather_light = 1.0F;
-    double light = 1.0;
-    double clear = 1.0;
-    order.clear();
     for (std::size_t k = 0; k < n; ++k) {
-        const WeatherLayer& w = *sorted[k];
-        const bool cloud = w.kind == WeatherKind::cloud;
-        const double extinction =
-            cloud ? kCloudExtinctionPerM : 3.912 / std::max(w.visibility_m, 1.0);
+        const WeatherLayer& w = *bands[k];
         l.layer[k] = {static_cast<float>(w.base_m), static_cast<float>(w.base_m + w.thickness_m),
-                      static_cast<float>(extinction),
-                      cloud ? static_cast<float>(std::clamp(w.coverage, 0.0, 1.0)) : -1.0F};
-        if (cloud) {
-            ++l.cloud_count;
-            (void)order.push_back(static_cast<std::uint32_t>(k));
-            if (w.base_m > eye_height_m) {
-                const double tau = std::min(kCloudExtinctionPerM * w.thickness_m, kCloudMaxDepth);
-                const double c = std::clamp(w.coverage, 0.0, 1.0);
-                light *= (1.0 - c) + c / (1.0 + 0.15 * tau);
-                clear *= 1.0 - c;
-            }
-        }
+                      static_cast<float>(3.912 / std::max(w.visibility_m, 1.0)), 0.0F};
     }
-    l.weather_light = static_cast<float>(light);
-    l.clear_sky = static_cast<float>(clear);
-    const auto from_eye = [&](std::uint32_t k) {
-        return std::abs(static_cast<double>(l.layer[k][0]) - eye_height_m);
-    };
-    std::sort(order.begin(), order.end(),
-              [&](std::uint32_t a, std::uint32_t b) { return from_eye(a) > from_eye(b); });
 }
 
 constexpr std::uint32_t kFramesInFlight = 2;
@@ -508,11 +456,8 @@ struct Renderer::Impl {
     // each frame before the views; the inputs sized once.
     std::unique_ptr<SkyGpu> sky_tables;
     std::unique_ptr<StarsGpu> stars;  // step 4
-    // The weather (step 6): its layers, as set_weather left them; and each
-    // view's cloud layers to draw this frame, the farthest first.
-    std::unique_ptr<CloudsGpu> clouds;
+    // The weather's layers (step 6), as set_weather left them.
     FixedArray<WeatherLayer, kMaxWeatherLayers> weather;
-    std::vector<FixedArray<std::uint32_t, kMaxWeatherLayers>> cloud_order;
     // The shadow maps (step 5): each view's cascades and their light this
     // frame (record_sky), and whether the terrain casts (the light low).
     std::unique_ptr<ShadowMaps> shadows;
@@ -521,8 +466,7 @@ struct Renderer::Impl {
     std::vector<bool> shadows_lit;  // a light casts this frame: else the maps are only cleared
     std::vector<SkyViewInput> sky_inputs;
     bool drew_scene = false;
-    double frame_period_s = 1.0 / 60.0;          // RendererOptions::frame_rate_hz
-    CloudModel cloud_model = CloudModel::layer;  // RendererOptions::clouds
+    double frame_period_s = 1.0 / 60.0;  // RendererOptions::frame_rate_hz
 
     // What the terrain, models and sky need of the device (one place, so
     // the positional fields stay in step).
@@ -539,10 +483,7 @@ struct Renderer::Impl {
                 frame_layout,
                 frame_set,
                 shadows ? shadows->maps() : VK_NULL_HANDLE,
-                shadows ? shadows->sampler() : VK_NULL_HANDLE,
-                clouds ? clouds->shape() : VK_NULL_HANDLE,
-                clouds ? clouds->sampler() : VK_NULL_HANDLE,
-                clouds ? clouds->table() : VK_NULL_HANDLE};
+                shadows ? shadows->sampler() : VK_NULL_HANDLE};
     }
 
     // Terrain, once loaded (milestone 3 step 5).
@@ -1140,16 +1081,12 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     // The lighting's: one dynamic uniform buffer, offset to the view's block.
     // The sky's (milestone 6 step 2): each view's light, the views'
     // sky-view tables and the atmosphere (shaders/include/frame.slang).
-    // 8 to 10: the clouds' shape, its sampler and its quantiles (step 6),
-    // for the shade they cast.
-    const std::array<VkDescriptorType, 11> frame_types = {
+    const std::array<VkDescriptorType, 8> frame_types = {
         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          VK_DESCRIPTOR_TYPE_SAMPLER,
-        VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          VK_DESCRIPTOR_TYPE_SAMPLER,
-        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
-    std::array<VkDescriptorSetLayoutBinding, 11> frame_bindings{};
+        VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          VK_DESCRIPTOR_TYPE_SAMPLER};
+    std::array<VkDescriptorSetLayoutBinding, 8> frame_bindings{};
     for (std::uint32_t b = 0; b < frame_bindings.size(); ++b) {
         frame_bindings[b].binding = b;
         frame_bindings[b].descriptorType = frame_types[b];
@@ -1166,10 +1103,10 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     const auto count = static_cast<std::uint32_t>(render_extents.size());
     const std::array<VkDescriptorPoolSize, 6> pool_sizes = {
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count + 3},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 2 + 2},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 2},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 2 + 1},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 1},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
     VkDescriptorPoolCreateInfo pci{};
     pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1231,25 +1168,6 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     }
     vkDestroyShaderModule(device.device, vs_stars, nullptr);
     vkDestroyShaderModule(device.device, fs_stars, nullptr);
-    const CloudShaders cloud_shaders{make_module(kVsClouds),       make_module(kFsClouds),
-                                     make_module(kFsCloudsVolume), make_module(kCsCloudShape),
-                                     make_module(kCsCloudDetail),  make_module(kCsCloudQuantiles)};
-    const auto release_clouds = [&] {
-        for (VkShaderModule m :
-             {cloud_shaders.vertex, cloud_shaders.layer, cloud_shaders.volume, cloud_shaders.shape,
-              cloud_shaders.detail, cloud_shaders.quantiles}) {
-            vkDestroyShaderModule(device.device, m, nullptr);
-        }
-    };
-    try {
-        clouds =
-            std::make_unique<CloudsGpu>(gpu, kHdrFormat, kDepthFormat, cloud_shaders, cloud_model);
-    } catch (...) {
-        release_clouds();
-        throw;
-    }
-    release_clouds();
-    cloud_order.resize(count);
     sky_inputs.resize(count);
 
     const VkDescriptorBufferInfo lighting_info{lighting, 0, sizeof(ViewLighting)};
@@ -1268,23 +1186,14 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     view_cascades.resize(count);
     terrain_casts.assign(count, false);
     shadows_lit.assign(count, false);
-    const VkDescriptorImageInfo cloud_shape_info{VK_NULL_HANDLE, clouds->shape(),
-                                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    const VkDescriptorImageInfo cloud_sampler_info{clouds->sampler(), VK_NULL_HANDLE,
-                                                   VK_IMAGE_LAYOUT_UNDEFINED};
-    const VkDescriptorBufferInfo cloud_table_info{clouds->table(), 0, VK_WHOLE_SIZE};
-    std::array<VkWriteDescriptorSet, 9> fws{};
-    const std::array<std::uint32_t, 9> fw_bindings = {0, 1, 2, 3, 4, 5, 8, 9, 10};
-    for (std::uint32_t w = 0; w < fws.size(); ++w) {
-        fws[w].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        fws[w].dstSet = frame_set;
-        fws[w].dstBinding = fw_bindings[w];
-        fws[w].descriptorCount = 1;
-        fws[w].descriptorType = frame_types[fw_bindings[w]];
+    std::array<VkWriteDescriptorSet, 6> fws{};
+    for (std::uint32_t b = 0; b < fws.size(); ++b) {
+        fws[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        fws[b].dstSet = frame_set;
+        fws[b].dstBinding = b;
+        fws[b].descriptorCount = 1;
+        fws[b].descriptorType = frame_types[b];
     }
-    fws[6].pImageInfo = &cloud_shape_info;
-    fws[7].pImageInfo = &cloud_sampler_info;
-    fws[8].pBufferInfo = &cloud_table_info;
     fws[0].pBufferInfo = &lighting_info;
     fws[1].pBufferInfo = &view_sky_info;
     fws[2].pImageInfo = &sky_view_info;
@@ -1487,8 +1396,6 @@ Frame& Renderer::Impl::begin_frame() {
 // the reference scene (sky and grid), then any terrain over it.
 void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
                                 std::span<const SceneView> views) {
-    // The clouds' noise, made on the first frame.
-    clouds->prepare(cmd);
     if (shadows) {
         // Every view's maps readable before any view draws (its own are then
         // redrawn before its scene, when a light casts).
@@ -1545,7 +1452,7 @@ void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
             terrain_casts[i] = false;
             l.shadow_light = 0;
         }
-        fill_weather(l, weather, view.eye_ecef, eye.alt_m, up, cloud_order[i]);
+        fill_weather(l, weather, eye.alt_m, up);
         const std::uint32_t at = lighting_offset(slot, i);
         std::memcpy(static_cast<std::uint8_t*>(lighting_mapped) + at, &l, sizeof(l));
         (void)vmaFlushAllocation(allocator, lighting_memory, at, sizeof(l));
@@ -1730,8 +1637,6 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
     begin_pass(cmd, t.view, t.extent, t.depth_view, VK_ATTACHMENT_LOAD_OP_LOAD,
                VK_ATTACHMENT_STORE_OP_NONE, VK_ATTACHMENT_LOAD_OP_LOAD);
     stars->record(cmd, view, sky, t.extent, lighting_offset(slot, i));
-    // Then the cloud layers over them (step 6).
-    clouds->record(cmd, view, lighting_offset(slot, i), cloud_order[i].span());
     vkCmdEndRendering(cmd);
     transition(cmd, t.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -2081,7 +1986,6 @@ Renderer::Impl::~Impl() {
             vmaDestroyImage(allocator, o.image, o.image_memory);
         }
         terrain.reset();
-        clouds.reset();
         stars.reset();
         sky_tables.reset();
         shadows.reset();
@@ -2170,7 +2074,6 @@ std::unique_ptr<Renderer> Renderer::for_windows(Platform& platform,
     impl->create_device(true);
     impl->choose_samples(options.msaa);
     impl->frame_period_s = 1.0 / std::max(options.frame_rate_hz, 1.0);
-    impl->cloud_model = options.clouds;
     for (Swapchain& s : impl->swapchains) {
         impl->build_swapchain(s);  // deferred while a window has no size
     }
@@ -2192,7 +2095,6 @@ std::unique_ptr<Renderer> Renderer::offscreen(std::span<const OffscreenOutput> o
     impl->create_device(false);
     impl->choose_samples(options.msaa);
     impl->frame_period_s = 1.0 / std::max(options.frame_rate_hz, 1.0);
-    impl->cloud_model = options.clouds;
     std::vector<VkExtent2D> render_extents;
     for (const OffscreenOutput& o : outputs) {
         impl->create_offscreen(o);
