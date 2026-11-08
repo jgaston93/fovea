@@ -84,7 +84,9 @@ float shadow_lit(Texture2DArray<float> maps, SamplerState nearest, float3 rel, f
     // move a shadow's edge.
     const float3 l = lighting.shadow_light == 1 ? lighting.sun : lighting.moon;
     const float ndl = max(dot(n, l), 0.05);
-    const float grazing = min(sqrt(saturate(1.0 - ndl * ndl)) / ndl, 10.0);
+    // At most 4 (the light 14 degrees off the surface): beyond, the point
+    // would pass casters near it and their shadows start detached.
+    const float grazing = min(sqrt(saturate(1.0 - ndl * ndl)) / ndl, 4.0);
     for (uint c = 0; c < 4; ++c) {
         const float texel_m = lighting.cascade_texel[c];
         const float3 p = rel + n * texel_m + l * texel_m * (1.0 + 1.5 * grazing);

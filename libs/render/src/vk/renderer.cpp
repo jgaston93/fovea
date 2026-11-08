@@ -598,6 +598,9 @@ void Renderer::Impl::create_device(bool present) {
     VkPhysicalDeviceFeatures f10{};
     f10.multiDrawIndirect = VK_TRUE;
     f10.drawIndirectFirstInstance = VK_TRUE;
+    // Shadow casters beyond a map's box toward the light flattened onto it,
+    // not clipped (milestone 6 step 5).
+    f10.depthClamp = VK_TRUE;
 
     vkb::PhysicalDeviceSelector selector(instance);
     selector.set_minimum_version(1, 3)
@@ -1151,15 +1154,12 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
                                             VK_IMAGE_LAYOUT_GENERAL};
     const VkDescriptorImageInfo transmittance_info{
         sky_tables->sampler(), sky_tables->transmittance_table(), VK_IMAGE_LAYOUT_GENERAL};
-    shadows = std::make_unique<ShadowMaps>(gpu, count);
+    // The shadow maps (bindings 6 and 7) come with terrain (load_terrain):
+    // nothing else casts or reads them.
     view_cascades.resize(count);
     terrain_casts.assign(count, false);
     shadows_lit.assign(count, false);
-    const VkDescriptorImageInfo shadow_info{VK_NULL_HANDLE, shadows->maps(),
-                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    const VkDescriptorImageInfo compare_info{shadows->sampler(), VK_NULL_HANDLE,
-                                             VK_IMAGE_LAYOUT_UNDEFINED};
-    std::array<VkWriteDescriptorSet, 8> fws{};
+    std::array<VkWriteDescriptorSet, 6> fws{};
     for (std::uint32_t b = 0; b < fws.size(); ++b) {
         fws[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         fws[b].dstSet = frame_set;
@@ -1173,8 +1173,6 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     fws[3].pBufferInfo = &atmosphere_info;
     fws[4].pImageInfo = &aerial_info;
     fws[5].pImageInfo = &transmittance_info;
-    fws[6].pImageInfo = &shadow_info;
-    fws[7].pImageInfo = &compare_info;
     vkUpdateDescriptorSets(device.device, static_cast<std::uint32_t>(fws.size()), fws.data(), 0,
                            nullptr);
 
@@ -1371,6 +1369,11 @@ Frame& Renderer::Impl::begin_frame() {
 // the reference scene (sky and grid), then any terrain over it.
 void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
                                 std::span<const SceneView> views) {
+    if (shadows) {
+        // Every view's maps readable before any view draws (its own are then
+        // redrawn before its scene, when a light casts).
+        shadows->ready(cmd);
+    }
     for (std::size_t i = 0; i < hdr.size(); ++i) {
         const SceneView view = i < views.size() ? views[i] : SceneView{};
         // The sun from the Earth's centre (its parallax is 9 arc-seconds),
@@ -1403,8 +1406,9 @@ void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
         l.moon_up = static_cast<float>(moon_up);
         // The shadows' light (step 5): the sun while any of it is up, else
         // the moon, else none; their cascades for this view.
+        // A moon all but new lights nothing worth a shadow.
         const bool by_sun = sun_up > 0.0;
-        const bool by_moon = !by_sun && moon_up > 0.0;
+        const bool by_moon = !by_sun && moon_up > 0.0 && sky.moon_lit > 0.1;
         shadows_lit[i] = by_sun || by_moon;
         if (by_sun || by_moon) {
             const DVec3 towards = by_sun ? sky.sun : moon;
@@ -1443,22 +1447,21 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
     const HdrTarget& t = hdr[i];
     const bool multisampled = t.ms != VK_NULL_HANDLE;
     if (terrain) {
-        // The view's tiles, then its shadow maps from the light (step 5):
-        // the casters' depths, before the scene that samples them. Drawn
-        // (cleared, at least) every frame, so the maps are always ready to
-        // read.
+        // The view's tiles, then, when a light casts, its shadow maps from
+        // it (step 5): the casters' depths, before the scene that samples
+        // them. Without one, the maps aren't read (shadow_light 0).
         const auto s = static_cast<std::uint32_t>(slot);
         const auto o = static_cast<std::uint32_t>(i);
         (void)terrain->prepare(s, o, view, t.extent);
-        for (std::uint32_t c = 0; c < kShadowCascades; ++c) {
-            shadows->begin(cmd, o, c);
-            if (shadows_lit[i]) {
+        if (shadows_lit[i]) {
+            for (std::uint32_t c = 0; c < kShadowCascades; ++c) {
+                shadows->begin(cmd, o, c);
                 terrain->draw_shadow(cmd, s, o, c, view, Mat4(view_cascades[i].to_map[c]),
                                      terrain_casts[i]);
+                vkCmdEndRendering(cmd);
             }
-            vkCmdEndRendering(cmd);
+            shadows->done(cmd, o);
         }
-        shadows->done(cmd, o);
     }
     // The scene's colour target (the HDR target itself, or its multisampled
     // twin), after the previous frame's tone-map or resolve pass read it
@@ -2117,6 +2120,27 @@ TerrainLoad Renderer::load_terrain(std::unique_ptr<TerrainDatabase> database,
         fail("load_terrain: terrain is already loaded");
     }
     check(vkDeviceWaitIdle(m.device.device), "vkDeviceWaitIdle");
+    // The shadow maps (step 5), into the frame set (bindings 6 and 7) and,
+    // through the GpuContext, the terrain's own set.
+    m.shadows = std::make_unique<ShadowMaps>(GpuContext{m.gpu_context()},
+                                             static_cast<std::uint32_t>(m.hdr.size()));
+    const VkDescriptorImageInfo shadow_info{VK_NULL_HANDLE, m.shadows->maps(),
+                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo shadow_sampler_info{m.shadows->sampler(), VK_NULL_HANDLE,
+                                                    VK_IMAGE_LAYOUT_UNDEFINED};
+    std::array<VkWriteDescriptorSet, 2> sws{};
+    for (std::uint32_t w = 0; w < sws.size(); ++w) {
+        sws[w].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        sws[w].dstSet = m.frame_set;
+        sws[w].dstBinding = 6 + w;
+        sws[w].descriptorCount = 1;
+    }
+    sws[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    sws[0].pImageInfo = &shadow_info;
+    sws[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    sws[1].pImageInfo = &shadow_sampler_info;
+    vkUpdateDescriptorSets(m.device.device, static_cast<std::uint32_t>(sws.size()), sws.data(), 0,
+                           nullptr);
     const GpuContext gpu = m.gpu_context();
     const std::array<VkShaderModule, 7> modules = {
         m.make_module(kVsTerrain),    m.make_module(kFsTerrain), m.make_module(kVsTerrainShadow),

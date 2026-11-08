@@ -200,6 +200,13 @@ The environment adds three packets: Celestial Sphere Control, Atmosphere Control
   - Every run held 60 Hz, with no validation messages.
   - Mid-morning, the tower casts its shadow north-west across the apron.
 - **Goldens.** `models_on_hills` was regenerated and looked at: the boxes cast their shadows away from the sun. NVIDIA matches it as before.
+- **From the review.**
+  - The maps are made with the terrain, not without it (225 MiB that nothing else reads).
+  - Every view's maps are made readable once, before the first frame binds them. A view's layers were otherwise still undefined while another view drew (validation reports it with three views; a test now draws three).
+  - Without a light casting (night with no moon, or a moon all but new), no maps are drawn.
+  - Casters beyond a box toward the light are clamped onto it (depth clamp), not clipped.
+  - The receiver's offset toward the light is capped at four texels, so shadows don't start detached from their casters.
+  - Models dropped from a cascade for want of room are counted.
 
 ## Step 6: Weather layers and fog
 

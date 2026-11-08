@@ -31,6 +31,11 @@ public:
     VkImageView maps() const { return array_view_; }
     VkSampler sampler() const { return sampler_; }
 
+    // Once, before the first frame that may read them: every layer made
+    // readable (cleared to 1), so a view whose maps aren't drawn yet, or
+    // this frame, can still be bound with the rest.
+    void ready(VkCommandBuffer cmd);
+
     // A view's cascade c: begins a depth-only rendering pass into it,
     // cleared to 1 (the far side), after the frame before read it. End it
     // with vkCmdEndRendering, then call done() once all of the view's are
@@ -49,11 +54,13 @@ private:
     VkImageView array_view_ = VK_NULL_HANDLE;
     std::vector<VkImageView> layer_views_;
     VkSampler sampler_ = VK_NULL_HANDLE;
+    bool ready_ = false;
 };
 
 // A depth-only pipeline for the shadow maps: `fragment` may be null (no
-// cut-outs); `vertex_input` null for none. Slope-scaled depth bias keeps a
-// surface lit at a grazing light.
+// cut-outs); `vertex_input` null for none. No depth bias (the receivers
+// offset themselves, frame.slang's shadow_lit); depth clamped, so casters
+// beyond the box toward the light still cast.
 VkPipeline make_shadow_pipeline(VkDevice device, VkPipelineLayout layout, VkShaderModule vertex,
                                 VkShaderModule fragment,
                                 const VkPipelineVertexInputStateCreateInfo* vertex_input);

@@ -682,7 +682,8 @@ std::uint32_t ModelGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uin
 }
 
 void ModelGpu::record_shadow(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
-                             std::uint32_t cascade, const SceneView& view, const Mat4& to_map) {
+                             std::uint32_t cascade, const SceneView& view, const Mat4& to_map,
+                             std::uint32_t& dropped) {
     if (loaded_ == 0) {
         return;
     }
@@ -700,14 +701,19 @@ void ModelGpu::record_shadow(VkCommandBuffer cmd, std::uint32_t slot, std::uint3
     std::uint32_t n = 0;
     for (const Placed& p : placed_) {
         const Entry& e = models_[p.model];
-        if (!e.ready || n + e.primitives.size() > kMaxModelDraws) {
+        if (!e.ready) {
             continue;
         }
         const DVec3 offset = p.origin_ecef - view.eye_ecef;
         const glm::dvec4 c = m * glm::dvec4(offset + p.rotation * e.centre, 1.0);
         const double r = e.radius_m;
-        if (std::abs(c.x) > 1.0 + r * sx || std::abs(c.y) > 1.0 + r * sy || c.z < -r * sz ||
-            c.z > 1.0 + r * sz) {
+        // Toward the light (z under 0) casters still count: clamped onto
+        // the box.
+        if (std::abs(c.x) > 1.0 + r * sx || std::abs(c.y) > 1.0 + r * sy || c.z > 1.0 + r * sz) {
+            continue;
+        }
+        if (n + e.primitives.size() > kMaxModelDraws) {
+            ++dropped;
             continue;
         }
         ModelDraw d;

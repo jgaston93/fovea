@@ -33,7 +33,8 @@ ShadowMaps::ShadowMaps(const GpuContext& gpu, std::uint32_t views)
         ici.arrayLayers = layers;
         ici.samples = VK_SAMPLE_COUNT_1_BIT;
         ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-        ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         VmaAllocationCreateInfo aci{};
         aci.usage = VMA_MEMORY_USAGE_AUTO;
         aci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
@@ -90,6 +91,40 @@ void ShadowMaps::release() {
         vmaDestroyImage(gpu_.allocator, image_, memory_);
     }
     gpu_.device = VK_NULL_HANDLE;
+}
+
+void ShadowMaps::ready(VkCommandBuffer cmd) {
+    if (ready_) {
+        return;
+    }
+    VkImageMemoryBarrier2 b{};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    b.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = image_;
+    b.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, VK_REMAINING_ARRAY_LAYERS};
+    VkDependencyInfo dep{};
+    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &dep);
+    const VkClearDepthStencilValue far{1.0F, 0};
+    const VkImageSubresourceRange all{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0,
+                                      VK_REMAINING_ARRAY_LAYERS};
+    vkCmdClearDepthStencilImage(cmd, image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &far, 1, &all);
+    b.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier2(cmd, &dep);
+    ready_ = true;
 }
 
 void ShadowMaps::begin(VkCommandBuffer cmd, std::uint32_t view, std::uint32_t cascade) const {
@@ -184,6 +219,7 @@ VkPipeline make_shadow_pipeline(VkDevice device, VkPipelineLayout layout, VkShad
     raster.polygonMode = VK_POLYGON_MODE_FILL;
     raster.cullMode = VK_CULL_MODE_NONE;
     raster.lineWidth = 1.0F;
+    raster.depthClampEnable = VK_TRUE;
     // No depth bias: a slope-scaled one pushes a post's sides, which a low
     // sun grazes, a long way back and shortens its shadow by metres. The
     // receivers offset themselves along their normals instead (shadow_lit).

@@ -91,9 +91,11 @@ public:
                          std::uint32_t& dropped);
     // Draws the placements inside a shadow map's box into it (step 5),
     // inside its depth-only pass: `to_map` takes points relative to the
-    // eye to the map. No allocation.
+    // eye to the map. Counts in `dropped` those past kMaxModelDraws. No
+    // allocation.
     void record_shadow(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
-                       std::uint32_t cascade, const SceneView& view, const Mat4& to_map);
+                       std::uint32_t cascade, const SceneView& view, const Mat4& to_map,
+                       std::uint32_t& dropped);
     std::uint32_t loaded() const { return loaded_; }
 
 private:

@@ -827,6 +827,43 @@ TEST(TerrainRender, APostsShadowFallsWhereTheSunPutsIt) {
     }
 }
 
+// Shadows across views (step 5): three views of terrain with a model, the
+// sun up, drawn under validation (synchronization included): each view's
+// maps are drawn before its scene, and every view's are readable before
+// any is bound.
+TEST(TerrainRender, SeveralViewsDrawTheirShadowsCleanly) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    s.placements = {{"post", lat0, lon0, 120.0, 0.0F}};
+    s.models = {{"post", box_glb(0.5F, 20.0F, 0.5F, {1.0F, 1.0F, 1.0F, 1.0F}, "")}};
+    const fs::path dir = write_db("shadow_views", s);
+    RendererOptions options;
+    if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
+        options.validation = Validation::required;
+    }
+    std::unique_ptr<Renderer> r;
+    try {
+        r = Renderer::offscreen(std::vector<OffscreenOutput>(3, {96, 96}), options);
+    } catch (const std::runtime_error& e) {
+        if (std::getenv("FOVEA_REQUIRE_VULKAN") != nullptr) {
+            ADD_FAILURE() << "no Vulkan: " << e.what();
+        }
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    r->set_sky(sun_at_elevation(lat0, lon0, 40.0));
+    (void)r->load_terrain(open_db(dir));
+    // 90 m south of the post, the first view facing it.
+    const Geodetic eye{lat0 - 0.0008, lon0, 120.0};
+    const std::vector<SceneView> views = {view_at(eye, 60.0, -30.0, 0.0),
+                                          view_at(eye, 60.0, -30.0, 120.0),
+                                          view_at(eye, 60.0, -30.0, 240.0)};
+    settle_models(*r, views, 1);
+    EXPECT_GT(r->terrain_stats().placements_drawn, 0U);
+    EXPECT_EQ(r->terrain_stats().placements_dropped, 0U);
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
 // The terrain casts with the sun low (D-032): a hill 60 m high, the sun 10
 // degrees up in the east, shades the ground behind it (west) and not the
 // ground before it.

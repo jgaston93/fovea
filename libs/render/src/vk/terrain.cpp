@@ -1459,7 +1459,7 @@ void TerrainGpu::draw_shadow(VkCommandBuffer cmd, std::uint32_t slot, std::uint3
                          (slot * outputs_ + o) * cache_->capacity());
     }
     if (models_) {
-        models_->record_shadow(cmd, slot, o, cascade, view, to_map);
+        models_->record_shadow(cmd, slot, o, cascade, view, to_map, stats_.placements_dropped);
     }
 }
 
