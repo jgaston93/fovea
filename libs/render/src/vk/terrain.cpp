@@ -45,10 +45,9 @@ static_assert(sizeof(TileDraw) == 32, "must match TileDraw in terrain.slang");
 
 struct TerrainPush {
     Mat4 ecef_to_clip{1.0F};
-    std::array<float, 3> sun{};
     std::uint32_t samples = 0;
 };
-static_assert(sizeof(TerrainPush) == 80, "must match TerrainPush in terrain.slang");
+static_assert(sizeof(TerrainPush) == 68, "must match TerrainPush in terrain.slang");
 
 [[noreturn]] void fail(const std::string& what) {
     throw std::runtime_error(what);
@@ -222,16 +221,6 @@ void upload_image(Uploader& up, VkImage image, std::span<const VkDeviceSize> off
                   VK_ACCESS_2_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-}
-
-// The direction towards the sun at the eye: fixed for now, 45 degrees up
-// in the south-east.
-DVec3 sun_direction(const DVec3& eye_ecef) {
-    const Geodetic g = ecef_to_geodetic(eye_ecef);
-    const double el = glm::radians(45.0);
-    const double az = glm::radians(135.0);
-    const DVec3 ned(std::cos(el) * std::cos(az), std::cos(el) * std::sin(az), -std::sin(el));
-    return ned_to_ecef(g.lat_deg, g.lon_deg) * ned;
 }
 
 DVec3 ellipsoid_up(double lat_deg, double lon_deg) {
@@ -1097,8 +1086,9 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
                              sizeof(TerrainPush)};
     VkPipelineLayoutCreateInfo plci{};
     plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    plci.setLayoutCount = 1;
-    plci.pSetLayouts = &t->set_layout_;
+    const std::array<VkDescriptorSetLayout, 2> set_layouts = {t->set_layout_, gpu.frame_layout};
+    plci.setLayoutCount = static_cast<std::uint32_t>(set_layouts.size());
+    plci.pSetLayouts = set_layouts.data();
     plci.pushConstantRangeCount = 1;
     plci.pPushConstantRanges = &push;
     check(vkCreatePipelineLayout(gpu.device, &plci, nullptr, &t->layout_),
@@ -1341,7 +1331,8 @@ void TerrainGpu::request_children(const SceneView& view, const TileSelection& se
 }
 
 std::uint32_t TerrainGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
-                                 const SceneView& view, VkExtent2D extent) {
+                                 const SceneView& view, VkExtent2D extent,
+                                 std::uint32_t lighting_offset) {
     LodView lv;
     lv.eye_ecef = view.eye_ecef;
     lv.ecef_to_clip = view.ecef_to_clip;
@@ -1399,22 +1390,19 @@ std::uint32_t TerrainGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::u
     stats_.failures = cs.failures;
 
     const auto drawn = static_cast<std::uint32_t>(sel.drawn);
-    const DVec3 sun = sun_direction(view.eye_ecef);
-    const std::array<float, 3> sun_f = {static_cast<float>(sun.x), static_cast<float>(sun.y),
-                                        static_cast<float>(sun.z)};
     if (drawn > 0) {
-        draw_tiles(cmd, slot, o, view, drawn, sun_f);
+        draw_tiles(cmd, slot, o, view, drawn, lighting_offset);
     }
     if (models_) {
         stats_.placements_drawn +=
-            models_->record(cmd, slot, o, view, sun_f, stats_.placements_dropped);
+            models_->record(cmd, slot, o, view, lighting_offset, stats_.placements_dropped);
     }
     return drawn;
 }
 
 void TerrainGpu::draw_tiles(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t o,
                             const SceneView& view, std::uint32_t drawn,
-                            const std::array<float, 3>& sun_f) {
+                            std::uint32_t lighting_offset) {
     const std::uint32_t capacity = cache_->capacity();
     const std::uint32_t base = (slot * outputs_ + o) * capacity;
     auto* records = static_cast<TileDraw*>(draws_.mapped) + base;
@@ -1433,10 +1421,12 @@ void TerrainGpu::draw_tiles(VkCommandBuffer cmd, std::uint32_t slot, std::uint32
 
     TerrainPush push;
     push.ecef_to_clip = view.ecef_to_clip;
-    push.sun = sun_f;
     push.samples = samples_;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set_, 0, nullptr);
+    const std::array<VkDescriptorSet, 2> sets = {set_, gpu_.frame_set};
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0,
+                            static_cast<std::uint32_t>(sets.size()), sets.data(), 1,
+                            &lighting_offset);
     vkCmdBindIndexBuffer(cmd, indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
     vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(push), &push);

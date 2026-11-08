@@ -88,6 +88,17 @@ struct HostConfig {
     double geoid_height_m = 0.0;
 };
 
+// [environment] (milestone 6, D-029): the date and time, UTC, and the
+// visibility, until a host sets them.
+struct EnvironmentConfig {
+    std::int64_t year = 2026;
+    unsigned month = 3;
+    unsigned day = 20;
+    double utc_seconds = 15.5 * 3600.0;  // since midnight
+    bool time_runs = true;
+    double visibility_m = 50000.0;
+};
+
 struct DisplayConfig {
     PresenterKind presenter = PresenterKind::multi_swapchain;
     double target_hz = 60.0;
@@ -97,6 +108,7 @@ struct DisplayConfig {
     std::uint32_t msaa = 4;
     std::vector<ChannelConfig> channels;
     ReferenceScene reference_scene;
+    EnvironmentConfig environment;
     std::optional<HostConfig> host;
     std::optional<TerrainConfig> terrain;
 };

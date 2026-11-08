@@ -401,6 +401,15 @@ struct Renderer::Impl {
     VkDescriptorSetLayout resolve_set_layout = VK_NULL_HANDLE;
     VkPipelineLayout resolve_layout = VK_NULL_HANDLE;
     VkPipeline resolve_pipeline = VK_NULL_HANDLE;
+    // Each view's lighting (milestone 6, D-029): a ViewLighting block per
+    // frame slot and output, written as each view is recorded.
+    SkyBodies sky = sky_bodies(EnvironmentState{}.julian_date);
+    VkDescriptorSetLayout frame_layout = VK_NULL_HANDLE;
+    VkDescriptorSet frame_set = VK_NULL_HANDLE;
+    VkBuffer lighting = VK_NULL_HANDLE;
+    VmaAllocation lighting_memory = nullptr;
+    void* lighting_mapped = nullptr;
+    VkDeviceSize lighting_stride = 0;
 
     // Terrain, once loaded (milestone 3 step 5).
     std::unique_ptr<TerrainGpu> terrain;
@@ -986,17 +995,64 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     check(vkCreateDescriptorSetLayout(device.device, &ms_lci, nullptr, &resolve_set_layout),
           "vkCreateDescriptorSetLayout (resolve)");
 
+    // The lighting's: one dynamic uniform buffer, offset to the view's block.
+    VkDescriptorSetLayoutBinding frame_binding{};
+    frame_binding.binding = 0;
+    frame_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    frame_binding.descriptorCount = 1;
+    frame_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo frame_lci{};
+    frame_lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    frame_lci.bindingCount = 1;
+    frame_lci.pBindings = &frame_binding;
+    check(vkCreateDescriptorSetLayout(device.device, &frame_lci, nullptr, &frame_layout),
+          "vkCreateDescriptorSetLayout (frame)");
+
     const auto count = static_cast<std::uint32_t>(render_extents.size());
-    const std::array<VkDescriptorPoolSize, 2> pool_sizes = {
+    const std::array<VkDescriptorPoolSize, 3> pool_sizes = {
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 2}};
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 2},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1}};
     VkDescriptorPoolCreateInfo pci{};
     pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pci.maxSets = count * 2;
+    pci.maxSets = count * 2 + 1;
     pci.poolSizeCount = static_cast<std::uint32_t>(pool_sizes.size());
     pci.pPoolSizes = pool_sizes.data();
     check(vkCreateDescriptorPool(device.device, &pci, nullptr, &descriptor_pool),
           "vkCreateDescriptorPool");
+
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(physical.physical_device, &props);
+    const VkDeviceSize align =
+        std::max<VkDeviceSize>(props.limits.minUniformBufferOffsetAlignment, 1);
+    lighting_stride = (sizeof(ViewLighting) + align - 1) / align * align;
+    VkBufferCreateInfo lbci{};
+    lbci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    lbci.size = lighting_stride * kFramesInFlight * count;
+    lbci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    VmaAllocationCreateInfo laci{};
+    laci.usage = VMA_MEMORY_USAGE_AUTO;
+    laci.flags =
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VmaAllocationInfo linfo{};
+    check(vmaCreateBuffer(allocator, &lbci, &laci, &lighting, &lighting_memory, &linfo),
+          "vmaCreateBuffer (lighting)");
+    lighting_mapped = linfo.pMappedData;
+    VkDescriptorSetAllocateInfo fai{};
+    fai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    fai.descriptorPool = descriptor_pool;
+    fai.descriptorSetCount = 1;
+    fai.pSetLayouts = &frame_layout;
+    check(vkAllocateDescriptorSets(device.device, &fai, &frame_set),
+          "vkAllocateDescriptorSets (frame)");
+    VkDescriptorBufferInfo lighting_info{lighting, 0, sizeof(ViewLighting)};
+    VkWriteDescriptorSet fw{};
+    fw.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    fw.dstSet = frame_set;
+    fw.descriptorCount = 1;
+    fw.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    fw.pBufferInfo = &lighting_info;
+    vkUpdateDescriptorSets(device.device, 1, &fw, 0, nullptr);
 
     VkPushConstantRange scene_push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ScenePush)};
     VkPipelineLayoutCreateInfo scene_lci{};
@@ -1242,8 +1298,22 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
     }
     vkCmdDraw(cmd, 3, 1, 0, 0);
     if (terrain) {
+        // The view's lighting, in its slot's block: the sun from the Earth's
+        // centre (its parallax is 9 arc-seconds), the moon from the eye.
+        const auto at = static_cast<std::uint32_t>((slot * hdr.size() + i) * lighting_stride);
+        const DVec3 moon = glm::normalize(sky.moon_m - view.eye_ecef);
+        ViewLighting l;
+        l.sun[0] = static_cast<float>(sky.sun.x);
+        l.sun[1] = static_cast<float>(sky.sun.y);
+        l.sun[2] = static_cast<float>(sky.sun.z);
+        l.moon_lit = static_cast<float>(sky.moon_lit);
+        l.moon[0] = static_cast<float>(moon.x);
+        l.moon[1] = static_cast<float>(moon.y);
+        l.moon[2] = static_cast<float>(moon.z);
+        std::memcpy(static_cast<std::uint8_t*>(lighting_mapped) + at, &l, sizeof(l));
+        (void)vmaFlushAllocation(allocator, lighting_memory, at, sizeof(l));
         (void)terrain->record(cmd, static_cast<std::uint32_t>(slot), static_cast<std::uint32_t>(i),
-                              view, t.extent);
+                              view, t.extent, at);
     }
     vkCmdEndRendering(cmd);
     if (multisampled) {
@@ -1654,6 +1724,10 @@ Renderer::Impl::~Impl() {
         vkDestroyPipelineLayout(device.device, tonemap_layout, nullptr);
         vkDestroyPipelineLayout(device.device, scene_layout, nullptr);
         vkDestroyDescriptorPool(device.device, descriptor_pool, nullptr);
+        vkDestroyDescriptorSetLayout(device.device, frame_layout, nullptr);
+        if (lighting != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(allocator, lighting, lighting_memory);
+        }
         vkDestroyDescriptorSetLayout(device.device, set_layout, nullptr);
         vkDestroySampler(device.device, sampler, nullptr);
         vkDestroyShaderModule(device.device, fs_tonemap, nullptr);
@@ -1758,6 +1832,10 @@ std::uint32_t Renderer::draw_scene_frame(std::span<const SceneView> views,
     return impl_->draw({{}, views, true, overlay});
 }
 
+void Renderer::set_sky(const SkyBodies& sky) {
+    impl_->sky = sky;
+}
+
 TerrainLoad Renderer::load_terrain(std::unique_ptr<TerrainDatabase> database,
                                    const TerrainOptions& options) {
     Impl& m = *impl_;
@@ -1773,7 +1851,9 @@ TerrainLoad Renderer::load_terrain(std::unique_ptr<TerrainDatabase> database,
                          m.bc_textures,
                          m.max_anisotropy,
                          m.timeline,
-                         m.samples};
+                         m.samples,
+                         m.frame_layout,
+                         m.frame_set};
     const std::array<VkShaderModule, 4> modules = {
         m.make_module(kVsTerrain), m.make_module(kFsTerrain), m.make_module(kVsModel),
         m.make_module(kFsModel)};

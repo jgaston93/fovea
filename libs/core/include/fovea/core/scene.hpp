@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "fovea/core/attitude.hpp"
+#include "fovea/core/celestial.hpp"
 #include "fovea/core/containers.hpp"
 #include "fovea/core/math.hpp"
 #include "fovea/core/time.hpp"
@@ -63,9 +64,23 @@ struct EntityState {
     FixedArray<Articulation, kMaxArticulations> parts;
 };
 
+// The date and time, and the weather (milestone 6, D-029). The time is
+// the UTC Julian date it was at set_at, on this computer's clock: while time
+// runs, every frame (and every channel) takes it plus the time since, so a
+// writer that doesn't change the time leaves a running clock running.
 struct EnvironmentState {
-    double time_of_day_h = 12.0;  // local solar time, hours
+    double julian_date = fovea::julian_date(2026, 3, 20, 15.5 * 3600.0);
+    LocalTime set_at;
+    bool time_runs = false;
+    double visibility_m = 50000.0;  // drawn from step 3
 };
+
+// The UTC Julian date at t.
+inline double julian_date_at(const EnvironmentState& e, LocalTime t) noexcept {
+    return e.time_runs
+               ? e.julian_date + std::chrono::duration<double>(t - e.set_at).count() / 86400.0
+               : e.julian_date;
+}
 
 struct SceneSnapshot {
     FixedArray<EntityState, kMaxEntities> entities;

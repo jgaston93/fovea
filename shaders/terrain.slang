@@ -28,10 +28,19 @@ struct TileDraw {
 
 struct TerrainPush {
     float4x4 ecef_to_clip;  // directions relative to the eye to clip space
-    float3 sun;             // towards the sun, ECEF axes
     uint samples;           // per tile side
 };
 [[vk::push_constant]] ConstantBuffer<TerrainPush> push;
+
+// Each view's lighting (milestone 6, D-029), set 1: mirrored as ViewLighting
+// in gpu_context.hpp.
+struct ViewLighting {
+    float3 sun;      // towards the sun, ECEF axes
+    float moon_lit;  // the fraction of the moon's disc lit
+    float3 moon;     // towards the moon from the eye, ECEF axes
+    float unused;
+};
+[[vk::binding(0, 1)]] ConstantBuffer<ViewLighting> lighting;
 
 [[vk::binding(0, 0)]] StructuredBuffer<Control> controls;
 [[vk::binding(1, 0)]] StructuredBuffer<TileDraw> draws;
@@ -123,6 +132,6 @@ float4 fs_terrain(TerrainVertex i) : SV_Target {
         imagery[NonUniformResourceIndex(i.tile)].Sample(imagery_sampler, i.uv).rgb;
     // The photographs carry their own shading; the sun only adds a little
     // relief, so lighting stays close to what was photographed.
-    const float sun = saturate(dot(normalize(i.normal), push.sun));
+    const float sun = saturate(dot(normalize(i.normal), lighting.sun));
     return float4(albedo * (0.75 + 0.25 * sun), 1.0);
 }

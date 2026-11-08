@@ -252,6 +252,11 @@ public:
     std::uint32_t draw_scene_frame(std::span<const SceneView> views,
                                    const OverlayContent* overlay = nullptr);
 
+    // The sun and moon the frames drawn from now on are lit by (milestone 6,
+    // D-029): the frame loop sets them each frame from the scene's date and
+    // time. Until then, those of EnvironmentState's default date and time.
+    void set_sky(const SkyBodies& sky);
+
     // Shows the debug overlay (Dear ImGui) on one output, drawn after the
     // tone map whenever draw_scene_frame is given content. One output only,
     // never a sensor view; offscreen outputs are allowed for tests. Call

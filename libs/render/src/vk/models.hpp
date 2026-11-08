@@ -75,10 +75,10 @@ public:
     void arrived(std::uint32_t m);
 
     // Draws one view's placements whose models have arrived, inside the
-    // rendering pass. No allocation. Returns the placements drawn, and
+    // rendering pass, lit as the terrain is. No allocation. Returns the placements drawn, and
     // counts in `dropped` those visible but past kMaxModelDraws.
     std::uint32_t record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
-                         const SceneView& view, const std::array<float, 3>& sun,
+                         const SceneView& view, std::uint32_t lighting_offset,
                          std::uint32_t& dropped);
     std::uint32_t loaded() const { return loaded_; }
 

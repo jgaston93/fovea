@@ -92,6 +92,16 @@ The environment adds three packets: Celestial Sphere Control, Atmosphere Control
   - Golden images change only where the sun moved.
   - Drawing still allocates nothing.
 
+### Step 1 results (2026-11-08)
+
+- **Against JPL Horizons.** Checked at KHSV at 16 times from 2000 to 2040 (sunrise and sunset, the solstices, the 2024 eclipse, new and full moons). Horizons stands in for NOAA's calculator and the USNO: it is one source for both bodies, geometric (airless), from JPL's ephemerides.
+  - The sun is within 0.006°.
+  - The moon is within 0.003° seen from the ground, against 1.0° without the parallax.
+  - The moon's lit fraction is within 0.8%. Horizons' is seen from KHSV and ours from the Earth's centre: the parallax shifts the phase angle by up to a degree.
+- **The lighting follows the time.** A white box's top at KHSV on the June solstice reads 231 at local noon, 217 at 8 am, and 186 at night, the same at two times of night.
+- **The buffer.** Each view's lighting is a uniform block in a per-frame buffer (set 1 of the terrain and model pipelines, at the view's dynamic offset), so the push constants drop to 68 bytes.
+- **Goldens.** `terrain_hills` and `models_on_hills` were regenerated: the sun moved from the fixed 45°/135° to the default date and time's (2026-03-20, 15:30 UTC), visible only on the boxes' faces and the hills' slopes. The reference scene's goldens are unchanged.
+
 ## Step 2: The sky
 
 - **The sky.** The transmittance, multiple-scattering and sky-view tables (D-030) replace the gradient, with the sun's disc in it.

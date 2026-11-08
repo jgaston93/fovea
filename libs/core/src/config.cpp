@@ -338,6 +338,41 @@ void parse_reference_scene(Parser& p, const toml::table& t, ReferenceScene& out)
     }
 }
 
+void parse_environment(Parser& p, const toml::table& t, EnvironmentConfig& out) {
+    p.check_keys(t, {"date", "time", "time_runs", "visibility_m"}, "environment");
+    if (const auto* n = t.get("date")) {
+        if (const auto* d = n->as_date()) {
+            const toml::date v = d->get();
+            out.year = v.year;
+            out.month = v.month;
+            out.day = v.day;
+        } else {
+            p.error(n->source(), "'environment.date' must be a date, like 2026-03-20");
+        }
+    }
+    if (const auto* n = t.get("time")) {
+        if (const auto* d = n->as_time()) {
+            const toml::time v = d->get();
+            out.utc_seconds = v.hour * 3600.0 + v.minute * 60.0 + v.second + v.nanosecond / 1e9;
+        } else {
+            p.error(n->source(), "'environment.time' must be a time of day, UTC, like 15:30:00");
+        }
+    }
+    if (const auto* n = t.get("time_runs")) {
+        if (const auto* b = n->as_boolean()) {
+            out.time_runs = b->get();
+        } else {
+            p.error(n->source(), "'environment.time_runs' must be true or false");
+        }
+    }
+    if (const auto* n = t.get("visibility_m")) {
+        if (auto v = p.number(*n, "environment.visibility_m")) {
+            check_range(p, *n, "environment.visibility_m", *v, 0.0, 1e7, true);
+            out.visibility_m = *v;
+        }
+    }
+}
+
 void parse_terrain(Parser& p, const toml::table& t, TerrainConfig& out) {
     p.check_keys(t, {"database", "max_level", "pixel_error", "max_tiles", "budget_mb"}, "terrain");
     if (const auto* n = t.get("max_tiles")) {
@@ -508,7 +543,13 @@ ConfigResult parse_display_config(std::string_view text, std::string_view source
     }
 
     DisplayConfig config;
-    p.check_keys(root, {"display", "channel", "reference_scene", "host", "terrain"}, "");
+    p.check_keys(root, {"display", "channel", "reference_scene", "environment", "host", "terrain"},
+                 "");
+    if (const auto* n = root.get("environment")) {
+        if (const auto* t = p.table(*n, "environment")) {
+            parse_environment(p, *t, config.environment);
+        }
+    }
     if (const auto* n = root.get("terrain")) {
         if (const auto* t = p.table(*n, "terrain")) {
             parse_terrain(p, *t, config.terrain.emplace());

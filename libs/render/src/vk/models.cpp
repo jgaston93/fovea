@@ -33,10 +33,9 @@ static_assert(sizeof(GpuMaterial) == 32, "must match Material in model.slang");
 
 struct ModelPush {
     Mat4 ecef_to_clip{1.0F};
-    std::array<float, 3> sun{};
     std::uint32_t samples = 1;  // the scene pass's: masks use alpha to coverage past 1
 };
-static_assert(sizeof(ModelPush) == 80, "must match ModelPush in model.slang");
+static_assert(sizeof(ModelPush) == 68, "must match ModelPush in model.slang");
 
 constexpr std::uint32_t kNoImage = 0xFFFFFFFFU;
 static_assert(sizeof(ModelVertex) == 32, "the vertex layout below");
@@ -269,8 +268,9 @@ ModelGpu::ModelGpu(const GpuContext& gpu, std::filesystem::path database_dir,
                                  sizeof(ModelPush)};
         VkPipelineLayoutCreateInfo plci{};
         plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        plci.setLayoutCount = 1;
-        plci.pSetLayouts = &set_layout_;
+        const std::array<VkDescriptorSetLayout, 2> set_layouts = {set_layout_, gpu.frame_layout};
+        plci.setLayoutCount = static_cast<std::uint32_t>(set_layouts.size());
+        plci.pSetLayouts = set_layouts.data();
         plci.pushConstantRangeCount = 1;
         plci.pPushConstantRanges = &push;
         check(vkCreatePipelineLayout(gpu.device, &plci, nullptr, &layout_),
@@ -604,7 +604,7 @@ void ModelGpu::arrived(std::uint32_t m) {
 }
 
 std::uint32_t ModelGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
-                               const SceneView& view, const std::array<float, 3>& sun,
+                               const SceneView& view, std::uint32_t lighting_offset,
                                std::uint32_t& dropped) {
     if (loaded_ == 0) {
         return 0;
@@ -652,10 +652,12 @@ std::uint32_t ModelGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uin
                              n * sizeof(VkDrawIndexedIndirectCommand));
     ModelPush push;
     push.ecef_to_clip = view.ecef_to_clip;
-    push.sun = sun;
     push.samples = static_cast<std::uint32_t>(gpu_.samples);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set_, 0, nullptr);
+    const std::array<VkDescriptorSet, 2> sets = {set_, gpu_.frame_set};
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0,
+                            static_cast<std::uint32_t>(sets.size()), sets.data(), 1,
+                            &lighting_offset);
     const VkDeviceSize zero = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &vertices_.buffer, &zero);
     vkCmdBindIndexBuffer(cmd, indices_.buffer, 0, VK_INDEX_TYPE_UINT32);

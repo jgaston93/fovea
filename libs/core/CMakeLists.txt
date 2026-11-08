@@ -5,6 +5,7 @@ find_package(Threads REQUIRED)
 # No Vulkan, SDL or GDAL here, ever.
 add_library(fovea_core STATIC
     src/attitude.cpp
+    src/celestial.cpp
     src/colour.cpp
     src/config.cpp
     src/file.cpp

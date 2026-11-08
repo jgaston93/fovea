@@ -10,6 +10,7 @@ add_executable(fovea_unit_tests
     unit/test_cigi_test_host.cpp
     unit/test_config.cpp
     unit/test_containers.cpp
+    unit/test_celestial.cpp
     unit/test_geodesy.cpp
     unit/test_image_file.cpp
     unit/test_log.cpp
