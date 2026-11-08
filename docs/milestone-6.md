@@ -166,6 +166,17 @@ The environment adds three packets: Celestial Sphere Control, Atmosphere Control
   - GPU tests at noon, sunset, civil twilight and midnight find the sky's brightness falling in that order, the stars visible only after twilight, and the moon's lit side toward the sun.
   - A run through dusk at the desk shows no jump.
 
+### Step 4 results (2026-11-08)
+
+- **Night falls.** Over KHSV on the June solstice, the sky's light on level ground is 1,256 at noon, 74 at sunset, 0.51 at the end of civil twilight and 1.25e-5 (the airglow) at midnight with the moon down. In a view 50 degrees up, no stars show at noon or at sunset, and 132 at midnight.
+- **The moon.** It is lit on the side toward the sun: a waxing half moon 31 degrees up, its disc's light leans toward the sun across the sky (alignment 1.00, 14 px off its middle in a one-degree view). Its brightness follows Allen's magnitude law, 2.1e-6 of the sun's six degrees from full. It lights the sky through its own layer of the sky-view table (a second layer a view, its azimuth from the moon's), and the land and models through its own irradiance, and adds to the haze. The disc is Lambertian (albedo 0.18, calibrated to the full moon's illuminance), seen through the air.
+- **Stars.** The Yale Bright Star Catalogue, 5th revised edition (9,096 stars; `tools/fetch-stars.py` makes the table from the Harvard copy, its SHA-256 pinned, and the table is committed). Positions are J2000, turned to the date by precession (Meeus 21.3) and the Earth's rotation: Polaris stays within 0.75 degrees of the latitude through a day, and Sirius crosses the meridian due south at its declination. They are drawn after the resolve as single-pixel points (D-028), by magnitude and through the air, where the resolved depth is still the sky's, so terrain hides them, and below the horizon not at all. A day's exposure loses them without being told to.
+- **Airglow.** A moonless sky has a faint glow of its own (about 2e-4 lux on level ground), so night isn't black.
+- **Exposure at night.** Exposure adapts fully down to a twentieth of the sun's illuminance (an overcast day, a low sun). Below that, it rises three quarters of a stop for each stop the light falls: deep dusk shows about 2 stops darker than full adaptation, a moonlit night about 4, a moonless one about 6. This replaces step 2's floor (a ten-thousandth, then a square root). On the desk, the first try washed dusk out and left a moonless midnight black.
+- **On the desk.** The owner looked at deep dusk (the sun 3 degrees down), a half-moon night and a moonless midnight, from KHUA, turning in place once round (`khua-spin.toml`, new, for looking all round the sky). They looked alright, and nothing odd stood out. Deep dusk is a lavender pink all round, the moon's glow passes in the south-west, and a moonless midnight is a dark grey sky over faint land, with the stars sharp single pixels.
+  - Cost over the KHUA route's first minute: output 0 1.99 ms (1.94 at step 3), the others 0.01 to 0.02 ms more. That is the moonlit layer and the moon in the haze, and the stars.
+  - Every run held 60 Hz, with no validation messages.
+
 ## Step 5: Shadows
 
 - **The maps.** Cascaded shadow maps (D-032) from the sun or moon.

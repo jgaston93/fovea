@@ -265,7 +265,8 @@ TEST(Sky, TheLightFollowsTheDateAndTime) {
         const SkyReadback s = r->read_back_sky(0);
         EXPECT_EQ(r->validation_messages(), 0U);
         Light l;
-        l.light = luminance(s.sun_irradiance) + luminance(s.sky_irradiance);
+        l.light = luminance(s.sun_irradiance) + luminance(s.moon_irradiance) +
+                  luminance(s.sky_irradiance);
         l.level = luminance(s.sun_irradiance) * std::max(sun_at(v, sky).mu, 0.0) +
                   luminance(s.sky_irradiance);
         l.exposure = static_cast<double>(s.exposure);
@@ -281,13 +282,18 @@ TEST(Sky, TheLightFollowsTheDateAndTime) {
                 night->level);
     EXPECT_GT(noon->level, morning->level * 1.5);
     EXPECT_LT(night->level, noon->level * 1e-4);
-    // The exposure's key (pi) over that light; at night, over the floor, a
-    // ten-thousandth of the sun's illuminance.
+    // The exposure's key (pi) over that light. Below the knee, a twentieth
+    // of the sun's illuminance, it adapts three quarters of a stop a stop
+    // (step 4): key / (knee (light / knee)^0.75).
     const double key = 3.14159265358979;
     EXPECT_NEAR(noon->exposure * noon->light, key, key * 1e-3);
-    EXPECT_NEAR(morning->exposure * morning->light, key, key * 1e-3);
-    const double floor = 1e-4 * Atmosphere{}.sun_illuminance[0];
-    EXPECT_NEAR(night->exposure, key / floor, key / floor * 1e-3);
+    const double knee = 0.05 * Atmosphere{}.sun_illuminance[0];
+    for (const auto& l : {*morning, *night}) {
+        const double adapted = l.light >= knee ? l.light : knee * std::pow(l.light / knee, 0.75);
+        EXPECT_NEAR(l.exposure, key / adapted, key / adapted * 1e-3) << l.light;
+    }
+    std::printf("night: light %.3g, %.1f stops darker than full adaptation\n", night->light,
+                std::log2(key / night->light / night->exposure));
 }
 
 // Visibility sets the haze (milestone 6 step 3, D-030): along a level ray
@@ -385,6 +391,138 @@ TEST(Sky, FarGroundFadesIntoTheSkyAsVisibilityFalls) {
     std::printf("ground against sky: %.0f at 500 m visibility, %.0f at 200 km\n", thick, clear);
     EXPECT_LT(thick, 30.0);
     EXPECT_GT(clear, 3.0 * thick);
+}
+
+// The sun's elevation at the view's eye, degrees.
+double sun_elevation(const SceneView& v, const SkyBodies& sky) {
+    return sun_at(v, sky).elevation_deg;
+}
+
+// Night falls (milestone 6 step 4): from noon through sunset and civil
+// twilight to midnight the sky's light on level ground falls, in that
+// order; stars show at midnight and not by day or at sunset. KHSV, the
+// June solstice, the moon down at midnight.
+TEST(Sky, NightFallsFromNoonThroughTwilightAndTheStarsComeOut) {
+    constexpr std::uint32_t kSize = 128;
+    const SceneView v = view_towards(0.0, 50.0, kSize, kSize);
+    // Sunset and the end of civil twilight (6 degrees down), found by the
+    // minute after 00:00 UTC on the 22nd.
+    const auto first_below = [&](double elevation) {
+        for (int minute = 0; minute < 240; ++minute) {
+            const double hours = 24.0 + minute / 60.0;
+            if (sun_elevation(v, at_utc(6, 21, hours)) < elevation) {
+                return hours;
+            }
+        }
+        return 24.0;
+    };
+    struct Look {
+        double sky = 0.0;
+        int stars = 0;
+    };
+    const auto look_at = [&](double hours) -> std::optional<Look> {
+        auto r = make_offscreen({{kSize, kSize}});
+        if (r == nullptr) {
+            return std::nullopt;
+        }
+        r->set_sky(at_utc(6, 21, hours));
+        r->draw_scene_frame(std::vector<SceneView>{v});
+        const SkyReadback s = r->read_back_sky(0);
+        const auto px = r->read_back_rgba(0);
+        EXPECT_EQ(r->validation_messages(), 0U);
+        // A star: a pixel well brighter than the mean of its eight neighbours.
+        const auto at = [&](std::uint32_t x, std::uint32_t y) {
+            const std::size_t i = (static_cast<std::size_t>(y) * kSize + x) * 4;
+            return static_cast<double>(px[i]) + px[i + 1] + px[i + 2];
+        };
+        Look l;
+        l.sky = luminance(s.sky_irradiance);
+        for (std::uint32_t y = 1; y + 1 < kSize; ++y) {
+            for (std::uint32_t x = 1; x + 1 < kSize; ++x) {
+                double around = 0.0;
+                for (int dy = -1; dy <= 1; ++dy) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        around += (dx == 0 && dy == 0)
+                                      ? 0.0
+                                      : at(static_cast<std::uint32_t>(static_cast<int>(x) + dx),
+                                           static_cast<std::uint32_t>(static_cast<int>(y) + dy));
+                    }
+                }
+                l.stars += at(x, y) > around / 8.0 + 60.0 ? 1 : 0;
+            }
+        }
+        return l;
+    };
+    const auto noon = look_at(18.0);
+    if (!noon) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const auto sunset = look_at(first_below(0.0));
+    const auto civil = look_at(first_below(-6.0));
+    const auto midnight = look_at(6.0);
+    std::printf("sky light: noon %.4g, sunset %.4g, civil twilight %.4g, midnight %.4g\n",
+                noon->sky, sunset->sky, civil->sky, midnight->sky);
+    std::printf("stars: noon %d, sunset %d, civil twilight %d, midnight %d\n", noon->stars,
+                sunset->stars, civil->stars, midnight->stars);
+    EXPECT_GT(noon->sky, sunset->sky);
+    EXPECT_GT(sunset->sky, civil->sky);
+    EXPECT_GT(civil->sky, midnight->sky);
+    EXPECT_EQ(noon->stars, 0);
+    EXPECT_EQ(sunset->stars, 0);
+    EXPECT_GT(midnight->stars, 20);
+}
+
+// The moon's lit side faces the sun (step 4): a waxing half moon in the
+// south-west at 03:00 UTC on the 22nd (the sun 18 degrees down, in the
+// north-west), seen close up: the brightness of its disc leans toward
+// where the sun is, across the sky.
+TEST(Sky, TheMoonsLitSideFacesTheSun) {
+    constexpr std::uint32_t kSize = 128;
+    const SkyBodies sky = at_utc(6, 22, 3.0);
+    const SceneView probe = view_towards(0.0, 0.0, kSize, kSize);
+    const Geodetic g = ecef_to_geodetic(probe.eye_ecef);
+    const DMat3 to_ned = glm::transpose(ned_to_ecef(g.lat_deg, g.lon_deg));
+    const DVec3 moon = glm::normalize(sky.moon_m - probe.eye_ecef);
+    const DVec3 m = to_ned * moon;
+    const double el = glm::degrees(std::asin(-m.z));
+    const double az = glm::degrees(std::atan2(m.y, m.x));
+    ASSERT_GT(el, 5.0) << "the moon is down";
+    // A 1-degree view, the moon (half a degree) in its middle.
+    const SceneView v = view_towards(az, el, kSize, kSize, 0.5);
+    auto r = make_offscreen({{kSize, kSize}});
+    FOVEA_NEED_VULKAN(r);
+    r->set_sky(sky);
+    r->draw_scene_frame(std::vector<SceneView>{v});
+    const auto px = r->read_back_rgba(0);
+    const auto project = [&](const DVec3& dir) {
+        const glm::dvec4 c = glm::dmat4(v.ecef_to_clip) * glm::dvec4(dir * 1e6, 1.0);
+        return glm::dvec2((c.x / c.w + 1.0) * 0.5 * kSize, (c.y / c.w + 1.0) * 0.5 * kSize);
+    };
+    // Toward the sun across the sky from the moon, on the screen.
+    const DVec3 toward = glm::normalize(sky.sun - moon * glm::dot(sky.sun, moon));
+    const glm::dvec2 centre = project(moon);
+    const glm::dvec2 sunward = glm::normalize(project(moon + toward * 1e-3) - centre);
+    // The disc's brightness-weighted centre, against its geometric one.
+    double sum = 0.0;
+    glm::dvec2 weighted(0.0);
+    for (std::uint32_t y = 0; y < kSize; ++y) {
+        for (std::uint32_t x = 0; x < kSize; ++x) {
+            const std::size_t i = (static_cast<std::size_t>(y) * kSize + x) * 4;
+            const double b = static_cast<double>(px[i]) + px[i + 1] + px[i + 2];
+            if (b > 300.0) {
+                sum += b;
+                weighted += b * glm::dvec2(x + 0.5, y + 0.5);
+            }
+        }
+    }
+    ASSERT_GT(sum, 0.0) << "no moon";
+    const glm::dvec2 lean = weighted / sum - centre;
+    std::printf("moon %.1f degrees up, %.0f%% lit; its light leans %.1f px, %.2f toward the sun\n",
+                el, sky.moon_lit * 100.0, glm::length(lean),
+                glm::dot(glm::normalize(lean), sunward));
+    EXPECT_GT(glm::dot(glm::normalize(lean), sunward), 0.8);
+    EXPECT_GT(glm::length(lean), 3.0);
+    EXPECT_EQ(r->validation_messages(), 0U);
 }
 
 }  // namespace

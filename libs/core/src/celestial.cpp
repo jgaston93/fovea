@@ -207,6 +207,34 @@ SkyBodies sky_bodies(double julian_date_utc) noexcept {
     const double r_sun_km = r_sun_au * kAuKm;
     const double phase = std::atan2(r_sun_km * std::sin(elong), dist_km - r_sun_km * cos_elong);
     out.moon_lit = (1.0 + std::cos(phase)) / 2.0;
+    const double a = std::abs(phase) / kDegree;
+    const double moon_magnitude = -12.73 + 0.026 * a + 4e-9 * a * a * a * a;
+    out.moon_illuminance = std::pow(10.0, -0.4 * (moon_magnitude + 26.74));
+
+    // Precession from J2000 to the date (Meeus 21.3: zeta, z, theta in
+    // arc-seconds), applied to each axis, then the Earth's rotation.
+    const double tp = (julian_date_utc - kJ2000) / 36525.0;
+    const double arcsec = kDegree / 3600.0;
+    const double zeta = (2306.2181 * tp + 0.30188 * tp * tp + 0.017998 * tp * tp * tp) * arcsec;
+    const double zp = (2306.2181 * tp + 1.09468 * tp * tp + 0.018203 * tp * tp * tp) * arcsec;
+    const double theta = (2004.3109 * tp - 0.42665 * tp * tp - 0.041833 * tp * tp * tp) * arcsec;
+    const double cg = cos_deg(gmst_deg);
+    const double sg = sin_deg(gmst_deg);
+    for (int i = 0; i < 3; ++i) {
+        DVec3 axis(0.0);
+        axis[i] = 1.0;
+        // As Meeus's A, B, C, with the right ascension turned by zeta.
+        const double ra = std::atan2(axis.y, axis.x) + zeta;
+        const double cd = std::sqrt(axis.x * axis.x + axis.y * axis.y);
+        const double sd = axis.z;
+        const DVec3 q(std::cos(theta) * cd * std::cos(ra) - std::sin(theta) * sd, cd * std::sin(ra),
+                      std::sin(theta) * cd * std::cos(ra) + std::cos(theta) * sd);
+        // Turned by z, then by the Earth's rotation.
+        const double cz = std::cos(zp);
+        const double sz = std::sin(zp);
+        const DVec3 date(cz * q.x - sz * q.y, sz * q.x + cz * q.y, q.z);
+        out.j2000_to_ecef[i] = DVec3(cg * date.x + sg * date.y, -sg * date.x + cg * date.y, date.z);
+    }
     return out;
 }
 

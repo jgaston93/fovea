@@ -28,13 +28,23 @@ struct SkyPush {
     uint views;
     float adapt;  // how far exposure moves to its target this frame, 0 to 1
     float key;    // exposure times a level surface's illuminance
-    float floor_illuminance;  // exposure stops rising below this (night)
+    float knee_illuminance;  // below it, exposure adapts less (dusk and night)
     // For the aerial-perspective volume: the view's clip space to its level
     // frame (x north, y east, z down), and the sun in that frame.
     float4x4 clip_to_local;
     float3 sun_local;
-    float unused;
+    // The moon (step 4): its illuminance over the sun's, times how much of
+    // its disc is above the horizon, and its direction in the level frame.
+    float moon_scale;
+    float3 moon_local;
+    uint source;  // the sky-view pass: 0 lit by the sun, 1 by the moon
 };
+
+// A light's zenith cosine at the eye, from its direction in the level frame.
+float zenith_cos(float3 local) {
+    return -local.z;
+}
+
 [[vk::push_constant]] ConstantBuffer<SkyPush> push;
 
 float3 transmittance_to_top(float r, float mu) {
@@ -152,7 +162,11 @@ void cs_sky_view(uint3 id: SV_DispatchThreadID) {
     const float zenith = angles.x;
     const float azimuth = angles.y;
     const float3 dir = float3(sin(zenith) * cos(azimuth), cos(zenith), sin(zenith) * sin(azimuth));
-    const float3 sun = float3(sqrt(saturate(1.0 - push.mu_s * push.mu_s)), push.mu_s, 0.0);
+    // The light this layer is lit by, at azimuth 0 of its table: the sun,
+    // or (step 4) the moon, scaled by its illuminance.
+    const float mu_l = push.source == 0 ? push.mu_s : zenith_cos(push.moon_local);
+    const float scale = push.source == 0 ? 1.0 : push.moon_scale;
+    const float3 sun = float3(sqrt(saturate(1.0 - mu_l * mu_l)), mu_l, 0.0);
     const float mu = dir.y;
     const float ground = distance_to_ground(r, mu, atmosphere.bottom_radius);
     const float top = distance_to_sphere(r, mu, atmosphere.top_radius);
@@ -192,7 +206,8 @@ void cs_sky_view(uint3 id: SV_DispatchThreadID) {
         light += through * sun_transmittance(atmosphere.bottom_radius, mu_g) * saturate(mu_g) *
                  atmosphere.ground_albedo / kPi;
     }
-    sky_view_out[uint3(id.xy, push.view)] = float4(light * atmosphere.sun_illuminance, 1.0);
+    sky_view_out[uint3(id.xy, push.view + push.source * push.views)] =
+        float4(light * atmosphere.sun_illuminance * scale, 1.0);
 }
 
 // The view's irradiance: the sun's through the air to the eye, and the
@@ -213,7 +228,11 @@ void cs_irradiance(uint3 id: SV_DispatchThreadID) {
     float3 ring = float3(0.0);
     for (uint j = 0; j < 32; ++j) {
         const float azimuth = (j + 0.5) * da;
-        ring += sky_view_out[uint3(uint2(sky_view_uv(atmosphere, r, zenith, azimuth) * kSkyViewSize), push.view)].rgb;
+        const uint2 at = uint2(sky_view_uv(atmosphere, r, zenith, azimuth) * kSkyViewSize);
+        // The sunlit layer and the moonlit (step 4), each symmetric about
+        // its own light's azimuth.
+        ring += sky_view_out[uint3(at, push.view)].rgb +
+                sky_view_out[uint3(at, push.view + push.views)].rgb;
     }
     // L cos(z) sin(z) dz da, both halves.
     sky_sum[k] = ring * cos(zenith) * sin(zenith) * dz * da * 2.0;
@@ -225,9 +244,13 @@ void cs_irradiance(uint3 id: SV_DispatchThreadID) {
         }
         ViewSky s;
         s.sun_irradiance = atmosphere.sun_illuminance * sun_transmittance(r, push.mu_s) * push.sun_up;
-        s.sky_irradiance = sky;
+        s.moon_irradiance = atmosphere.sun_illuminance * push.moon_scale *
+                            sun_transmittance(r, zenith_cos(push.moon_local));
+        // The airglow's radiance from the whole upper hemisphere: pi L.
+        s.sky_irradiance = sky + kAirglow * kPi;
         s.exposure = 1.0;
         s.unused = 0.0;
+        s.unused1 = 0.0;
         view_sky_out[push.view] = s;
     }
 }
@@ -236,13 +259,19 @@ void cs_irradiance(uint3 id: SV_DispatchThreadID) {
 // sun's on a surface facing it, and the sky's. Not the light on level
 // ground: that falls toward nothing as the sun sets, while the air toward
 // the sun stays bright, and an exposure following it washed dusk out.
-// Moved toward its target by `adapt`, in stops.
+// Moved toward its target by `adapt`, in stops. Below the knee (a twentieth
+// of the sun's illuminance: overcast, or the sun low) it rises three
+// quarters of a stop for each stop the light falls, as eyes adapt only so
+// far: deep dusk shows about 2 stops darker than day, a moonlit night
+// about 4, a moonless one about 6, dark but not black (step 4).
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void cs_exposure(uint3 id: SV_DispatchThreadID) {
     const ViewSky s = view_sky_out[0];
-    const float light = luminance(s.sun_irradiance + s.sky_irradiance);
-    const float target = push.key / max(light, push.floor_illuminance);
+    const float light = luminance(s.sun_irradiance + s.moon_irradiance + s.sky_irradiance);
+    const float knee = push.knee_illuminance;
+    const float adapted = light >= knee ? light : knee * pow(max(light, 1e-12) / knee, 0.75);
+    const float target = push.key / adapted;
     float stops = log2(target);
     if (exposure_state[1] != 0.0) {
         // Not lerp(): a + (b - a) t leaves a settled exposure exactly as it was.
@@ -280,6 +309,11 @@ void cs_aerial(uint3 id: SV_DispatchThreadID) {
     const float c = dot(dir, sun);
     const float pr = rayleigh_phase(c);
     const float pm = mie_phase(atmosphere.mie_g, c);
+    // And the moon's (step 4), scaled by its illuminance.
+    const float3 moon = float3(push.moon_local.x, -push.moon_local.z, push.moon_local.y);
+    const float cm = dot(dir, moon);
+    const float pr_m = rayleigh_phase(cm);
+    const float pm_m = mie_phase(atmosphere.mie_g, cm);
     float3 through = float3(1.0);
     float3 light = float3(0.0);
     float t_prev = 0.0;
@@ -300,7 +334,16 @@ void cs_aerial(uint3 id: SV_DispatchThreadID) {
                 const float3 sun_t = sun_transmittance(ri, mu_s);
                 const float3 ms =
                     multi_scattering.SampleLevel(multi_scattering_uv(atmosphere, ri, mu_s), 0.0).rgb;
-                const float3 s = (m.rayleigh * pr + m.mie * pm) * sun_t + m.scattering * ms;
+                float3 s = (m.rayleigh * pr + m.mie * pm) * sun_t + m.scattering * ms;
+                if (push.moon_scale > 0.0) {
+                    const float mu_m = dot(q, moon) / ri;
+                    const float3 moon_t = sun_transmittance(ri, mu_m);
+                    const float3 ms_m = multi_scattering
+                                            .SampleLevel(multi_scattering_uv(atmosphere, ri, mu_m), 0.0)
+                                            .rgb;
+                    s += ((m.rayleigh * pr_m + m.mie * pm_m) * moon_t + m.scattering * ms_m) *
+                         push.moon_scale;
+                }
                 const float3 safe = max(m.extinction, 1e-9);
                 light += through * (s - s * step_t) / safe;
                 through *= step_t;

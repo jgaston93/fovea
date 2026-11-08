@@ -24,8 +24,10 @@ struct ViewSky {
     float exposure = 0.0F;
     std::array<float, 3> sky_irradiance{};
     float unused = 0.0F;
+    std::array<float, 3> moon_irradiance{};
+    float unused1 = 0.0F;
 };
-static_assert(sizeof(ViewSky) == 32, "must match ViewSky in frame.slang");
+static_assert(sizeof(ViewSky) == 48, "must match ViewSky in frame.slang");
 
 // What one view's sky needs this frame.
 struct SkyViewInput {
@@ -34,6 +36,10 @@ struct SkyViewInput {
     double sun_up = 1.0;         // how much of its disc is above the horizon
     Mat4 clip_to_local{1.0F};    // the view's clip space to its level frame (x north, z down)
     Vec3 sun_local{0.0F, 0.0F, -1.0F};
+    // The moon (step 4): its illuminance over the sun's times how much of
+    // its disc is above the horizon, and its direction in the level frame.
+    double moon_scale = 0.0;
+    Vec3 moon_local{0.0F, 0.0F, 1.0F};
 };
 
 class SkyGpu {
@@ -63,6 +69,7 @@ public:
     VkDeviceSize view_sky_size() const { return view_sky_size_; }
     VkImageView sky_view_tables() const { return sky_view_.view; }
     VkImageView aerial_volumes() const { return aerial_.view; }
+    VkImageView transmittance_table() const { return transmittance_.view; }
     VkSampler sampler() const { return sampler_; }
     VkBuffer atmosphere_buffer() const { return atmosphere_.buffer; }
     static VkDeviceSize atmosphere_size();

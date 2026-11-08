@@ -36,6 +36,15 @@ struct SkyBodies {
     DVec3 moon_m{0.0};         // the moon's centre, ECEF metres (its direction from an eye
                                // there is moon_m - eye: the parallax, up to a degree)
     double moon_lit = 0.0;     // the fraction of the moon's disc lit, 0 to 1
+    // The moon's illuminance over the sun's, both outside the atmosphere:
+    // 2.5e-6 full, falling with the phase (Allen's magnitude law,
+    // m = -12.73 + 0.026 a + 4e-9 a^4 for phase angle a in degrees, against
+    // the sun's -26.74).
+    double moon_illuminance = 0.0;
+    // J2000 equatorial coordinates (a star catalogue's) to ECEF at this date:
+    // precession to the date (Meeus 21.3), then the Earth's rotation, as the
+    // sun and moon take it (nutation left out of both).
+    DMat3 j2000_to_ecef{1.0};
 };
 
 // Where the sun and moon are at a UTC Julian date. Good from 1950 to
@@ -50,5 +59,6 @@ SkyBodies sky_bodies(double julian_date_utc) noexcept;
 double disc_above_horizon(const DVec3& towards, const DVec3& up, double radius_deg) noexcept;
 
 inline constexpr double kSunRadiusDeg = 0.267;
+inline constexpr double kMoonRadiusDeg = 0.259;  // at its mean distance (the shaders' too)
 
 }  // namespace fovea

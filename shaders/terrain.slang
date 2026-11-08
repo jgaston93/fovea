@@ -144,6 +144,9 @@ float4 fs_terrain(TerrainVertex i) : SV_Target {
     const ViewSky s = view_sky[lighting.view];
     const float level = saturate(-lighting.sun_local.z);
     const float slope = saturate(dot(normalize(i.normal), lighting.sun));
-    const float3 e = s.sun_irradiance * lerp(level, slope, 0.25) + s.sky_irradiance;
+    const float moon_level = saturate(-lighting.moon_local.z);
+    const float moon_slope = saturate(dot(normalize(i.normal), lighting.moon));
+    const float3 e = s.sun_irradiance * lerp(level, slope, 0.25) +
+                     s.moon_irradiance * lerp(moon_level, moon_slope, 0.25) + s.sky_irradiance;
     return float4((albedo * e * kInvPi * i.air.a + i.air.rgb) * s.exposure, 1.0);
 }

@@ -42,12 +42,15 @@
 #include "shaders/kFsModel.hpp"
 #include "shaders/kFsResolve.hpp"
 #include "shaders/kFsScene.hpp"
+#include "shaders/kFsStars.hpp"
 #include "shaders/kFsTerrain.hpp"
 #include "shaders/kFsTonemap.hpp"
 #include "shaders/kVsFullscreen.hpp"
 #include "shaders/kVsModel.hpp"
+#include "shaders/kVsStars.hpp"
 #include "shaders/kVsTerrain.hpp"
 #include "sky.hpp"
+#include "stars.hpp"
 #include "terrain.hpp"
 
 namespace fovea {
@@ -254,12 +257,13 @@ bool overlay_frame(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
 void begin_pass(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
                 VkImageView depth_view = VK_NULL_HANDLE,
                 VkAttachmentLoadOp depth_load = VK_ATTACHMENT_LOAD_OP_CLEAR,
-                VkAttachmentStoreOp depth_store = VK_ATTACHMENT_STORE_OP_DONT_CARE) {
+                VkAttachmentStoreOp depth_store = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                VkAttachmentLoadOp colour_load = VK_ATTACHMENT_LOAD_OP_DONT_CARE) {
     VkRenderingAttachmentInfo colour{};
     colour.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     colour.imageView = target;
     colour.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colour.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;  // every pixel is written
+    colour.loadOp = colour_load;  // usually every pixel is written
     colour.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     VkRenderingAttachmentInfo depth{};
     depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -422,6 +426,7 @@ struct Renderer::Impl {
     // The sky's tables and each view's light (milestone 6 step 2), made
     // each frame before the views; the inputs sized once.
     std::unique_ptr<SkyGpu> sky_tables;
+    std::unique_ptr<StarsGpu> stars;  // step 4
     std::vector<SkyViewInput> sky_inputs;
     bool drew_scene = false;
     double frame_period_s = 1.0 / 60.0;  // RendererOptions::frame_rate_hz
@@ -1034,11 +1039,11 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     // The lighting's: one dynamic uniform buffer, offset to the view's block.
     // The sky's (milestone 6 step 2): each view's light, the views'
     // sky-view tables and the atmosphere (shaders/include/frame.slang).
-    const std::array<VkDescriptorType, 5> frame_types = {
+    const std::array<VkDescriptorType, 6> frame_types = {
         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
-    std::array<VkDescriptorSetLayoutBinding, 5> frame_bindings{};
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
+    std::array<VkDescriptorSetLayoutBinding, 6> frame_bindings{};
     for (std::uint32_t b = 0; b < frame_bindings.size(); ++b) {
         frame_bindings[b].binding = b;
         frame_bindings[b].descriptorType = frame_types[b];
@@ -1054,7 +1059,7 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
 
     const auto count = static_cast<std::uint32_t>(render_extents.size());
     const std::array<VkDescriptorPoolSize, 5> pool_sizes = {
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count + 2},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count + 3},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 2},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
@@ -1108,6 +1113,17 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
         vkDestroyShaderModule(device.device, m, nullptr);
     }
     sky_tables->set_visibility(EnvironmentState{}.visibility_m);
+    VkShaderModule vs_stars = make_module(kVsStars);
+    VkShaderModule fs_stars = make_module(kFsStars);
+    try {
+        stars = std::make_unique<StarsGpu>(gpu, kHdrFormat, kDepthFormat, vs_stars, fs_stars);
+    } catch (...) {
+        vkDestroyShaderModule(device.device, vs_stars, nullptr);
+        vkDestroyShaderModule(device.device, fs_stars, nullptr);
+        throw;
+    }
+    vkDestroyShaderModule(device.device, vs_stars, nullptr);
+    vkDestroyShaderModule(device.device, fs_stars, nullptr);
     sky_inputs.resize(count);
 
     const VkDescriptorBufferInfo lighting_info{lighting, 0, sizeof(ViewLighting)};
@@ -1119,7 +1135,9 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
                                                  SkyGpu::atmosphere_size()};
     const VkDescriptorImageInfo aerial_info{sky_tables->sampler(), sky_tables->aerial_volumes(),
                                             VK_IMAGE_LAYOUT_GENERAL};
-    std::array<VkWriteDescriptorSet, 5> fws{};
+    const VkDescriptorImageInfo transmittance_info{
+        sky_tables->sampler(), sky_tables->transmittance_table(), VK_IMAGE_LAYOUT_GENERAL};
+    std::array<VkWriteDescriptorSet, 6> fws{};
     for (std::uint32_t b = 0; b < fws.size(); ++b) {
         fws[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         fws[b].dstSet = frame_set;
@@ -1132,6 +1150,7 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     fws[2].pImageInfo = &sky_view_info;
     fws[3].pBufferInfo = &atmosphere_info;
     fws[4].pImageInfo = &aerial_info;
+    fws[5].pImageInfo = &transmittance_info;
     vkUpdateDescriptorSets(device.device, static_cast<std::uint32_t>(fws.size()), fws.data(), 0,
                            nullptr);
 
@@ -1353,10 +1372,17 @@ void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
         l.inv_width = 1.0F / static_cast<float>(std::max(hdr[i].extent.width, 1U));
         l.inv_height = 1.0F / static_cast<float>(std::max(hdr[i].extent.height, 1U));
         l.views = sky_tables->views();  // the volumes' stacking, as SkyGpu made them
+        const DVec3 moon_local = glm::transpose(level) * moon;
+        const double moon_up = disc_above_horizon(moon, up, kMoonRadiusDeg);
+        l.moon_local = {static_cast<float>(moon_local.x), static_cast<float>(moon_local.y),
+                        static_cast<float>(moon_local.z)};
+        l.moon_up = static_cast<float>(moon_up);
         const std::uint32_t at = lighting_offset(slot, i);
         std::memcpy(static_cast<std::uint8_t*>(lighting_mapped) + at, &l, sizeof(l));
         (void)vmaFlushAllocation(allocator, lighting_memory, at, sizeof(l));
-        sky_inputs[i] = {height_km, -sun_local.z, sun_up, view.clip_to_local, Vec3(sun_local)};
+        sky_inputs[i] = {height_km,          -sun_local.z,    sun_up,
+                         view.clip_to_local, Vec3(sun_local), sky.moon_illuminance * moon_up,
+                         Vec3(moon_local)};
     }
     // Exposure moves toward its target with a time constant of a second
     // (D-031), a frame period a frame: by the frame clock, not the wall's,
@@ -1481,6 +1507,44 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
         vkCmdPushConstants(cmd, resolve_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(rp), &rp);
         draw_fullscreen(cmd, t.view, t.extent, t.depth_view);
     }
+    // The stars (step 4), single-sampled into the resolved target, tested
+    // against the resolved depth: after the writes to both.
+    std::array<VkImageMemoryBarrier2, 2> sbs{};
+    for (VkImageMemoryBarrier2& b : sbs) {
+        b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    }
+    sbs[0].image = t.image;
+    sbs[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    sbs[0].srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    sbs[0].srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    sbs[0].dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    sbs[0].dstAccessMask =
+        VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    sbs[0].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    sbs[0].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    sbs[1].image = t.depth;
+    sbs[1].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    sbs[1].srcStageMask =
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    sbs[1].srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    sbs[1].dstStageMask =
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    sbs[1].dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    sbs[1].oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    sbs[1].newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    VkDependencyInfo sdep{};
+    sdep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    sdep.imageMemoryBarrierCount = static_cast<std::uint32_t>(sbs.size());
+    sdep.pImageMemoryBarriers = sbs.data();
+    vkCmdPipelineBarrier2(cmd, &sdep);
+    // The stars only test the depth: it isn't stored again (STORE would be
+    // a write the barrier above doesn't order).
+    begin_pass(cmd, t.view, t.extent, t.depth_view, VK_ATTACHMENT_LOAD_OP_LOAD,
+               VK_ATTACHMENT_STORE_OP_NONE, VK_ATTACHMENT_LOAD_OP_LOAD);
+    stars->record(cmd, view, sky, t.extent, lighting_offset(slot, i));
+    vkCmdEndRendering(cmd);
     transition(cmd, t.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1829,6 +1893,7 @@ Renderer::Impl::~Impl() {
             vmaDestroyImage(allocator, o.image, o.image_memory);
         }
         terrain.reset();
+        stars.reset();
         sky_tables.reset();
         vkDestroySemaphore(device.device, timeline, nullptr);
         for (HdrTarget& t : hdr) {
