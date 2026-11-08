@@ -29,12 +29,12 @@ As before, each step is its own pull request. Steps 1 and 2 run in WSL and CI (l
 
 ## Step 2: Alpha to coverage
 
-- Masked materials draw with alpha to coverage when multisampled: the fragment shader then doesn't discard below the cutoff (which would cut every edge hard), but sharpens alpha about the material's own cutoff, a' = (a - cutoff) / max(fwidth(a), 1e-4) + 0.5, so the cut-out falls where its author put it and its edge spans about a pixel, on any GPU; single-sampled, it discards as now. Blend materials stay drawn opaque for now (milestone 4 step 3; the landmarks have none).
+- Masked materials draw with alpha to coverage when multisampled: the fragment shader then doesn't discard below the cutoff (which would cut every edge hard), but sharpens alpha about the material's own cutoff, a' = (a - cutoff) / max(fwidth(a), 1e-4) + 0.5, so the cut-out falls where its author put it and its edge spans about a pixel (how alpha becomes samples is the GPU's to choose: some AMD and Intel drivers dither it, which the desk's NVIDIA can't show); single-sampled, it discards as now. Blend materials stay drawn opaque for now (milestone 4 step 3; the landmarks have none).
 - **Done when:** a GPU test of a masked model shows partial coverage along its cut-out edge at 4 samples, a hard edge at 1, and the edge where the cutoff puts it (within a pixel) either way.
 
 ### Step 2 results (2026-11-07)
 
-- A box's top, its alpha rising evenly across it and masked at 0.5, is cut down its middle: at 4 samples 26 pixels along the cut are partly covered, the cut within 0.42 pixels of where the cutoff puts it; at 1 sample none, within 0.5 (a pixel's own step). The same on lavapipe and NVIDIA.
+- A box's top, its alpha rising evenly across it and masked at 0.5, is cut where alpha is 0.3, off its middle: at 4 samples the pixels along the cut are partly covered, the cut within half a pixel of where the cutoff puts it; at 1 sample none. The same on lavapipe and NVIDIA.
 - No landmark model has a masked material yet, so nothing on the desk changes: this is ready for vegetation (milestone 7) and any cut-outs to come.
 
 ## Step 3: Hardware check

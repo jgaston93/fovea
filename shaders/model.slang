@@ -79,7 +79,14 @@ float4 fs_model(ModelVertex i, bool front: SV_IsFrontFace) : SV_Target {
             // Alpha to coverage (milestone 5 step 2, D-027): alpha sharpened
             // about the material's cutoff, so the cut-out falls where its
             // author put it, its edge about a pixel wide.
-            coverage = saturate((colour.a - m.alpha_cutoff) / max(fwidth(colour.a), 1e-4) + 0.5);
+            // Where alpha doesn't vary, glTF's rule: at the cutoff or over
+            // it, opaque. Wholly cut away: nothing to shade.
+            const float w = fwidth(colour.a);
+            coverage = w > 1e-4 ? saturate((colour.a - m.alpha_cutoff) / w + 0.5)
+                                : (colour.a >= m.alpha_cutoff ? 1.0 : 0.0);
+            if (coverage <= 0.0) {
+                discard;
+            }
         } else if (colour.a < m.alpha_cutoff) {
             discard;
         }
