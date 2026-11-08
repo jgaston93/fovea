@@ -10,6 +10,13 @@
 # still reported.
 race:libvulkan_lvp.so
 
+# lavapipe compiles shaders with LLVM on its rasterizer threads (llvmpipe-0,
+# -1, ...), and LLVM isn't TSan-built either: with multisampling (milestone 5,
+# D-027) its threads race inside libLLVM alone, with no lavapipe frame on
+# either side (seen with LLVM 20.1, Ubuntu 24.04: StringMapImpl and
+# IEEEFloat). Suppressed likewise.
+race:libLLVM.so
+
 # GDAL (the terrain compiler's tests), likewise not TSan-built: its own
 # mutexes, taken in different orders on different threads, report as
 # potential deadlocks with both locks inside libgdal (seen with GDAL 3.8.4,
