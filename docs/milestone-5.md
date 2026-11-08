@@ -32,6 +32,11 @@ As before, each step is its own pull request. Steps 1 and 2 run in WSL and CI (l
 - Masked materials draw with alpha to coverage when multisampled: the fragment shader then doesn't discard below the cutoff (which would cut every edge hard), but sharpens alpha about the material's own cutoff, a' = (a - cutoff) / max(fwidth(a), 1e-4) + 0.5, so the cut-out falls where its author put it and its edge spans about a pixel, on any GPU; single-sampled, it discards as now. Blend materials stay drawn opaque for now (milestone 4 step 3; the landmarks have none).
 - **Done when:** a GPU test of a masked model shows partial coverage along its cut-out edge at 4 samples, a hard edge at 1, and the edge where the cutoff puts it (within a pixel) either way.
 
+### Step 2 results (2026-11-07)
+
+- A box's top, its alpha rising evenly across it and masked at 0.5, is cut down its middle: at 4 samples 26 pixels along the cut are partly covered, the cut within 0.42 pixels of where the cutoff puts it; at 1 sample none, within 0.5 (a pixel's own step). The same on lavapipe and NVIDIA.
+- No landmark model has a masked material yet, so nothing on the desk changes: this is ready for vegetation (milestone 7) and any cut-outs to come.
+
 ## Step 3: Hardware check
 
 - On the desk: GPU time and memory at 1, 2, 4 and 8 samples on the KHSV and KHUA routes, the default chosen from them (4 unless the cost says otherwise), and the owner's look at crawling edges (runway edges and markings, buildings, the tower's antenna, the horizon) against `msaa = 1`. Results recorded; anything unexpected becomes an issue.
