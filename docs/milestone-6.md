@@ -186,6 +186,21 @@ The environment adds three packets: Celestial Sphere Control, Atmosphere Control
   - A hill at a low sun shades the ground behind it.
   - The desk's GPU time is measured with and without (step 9).
 
+### Step 5 results (2026-11-08)
+
+- **The maps.** Four cascades a view, 2048 square, 32-bit depth, out to 6 km; their splits three-quarters logarithmic. Each slice is bounded by a sphere, so its texel doesn't change as the view turns, seen from the light along an orthographic box reaching 3 km beyond it toward the light for casters outside the view. The box's centre is snapped to whole texels in the world: a fixed point moves across its map only by whole texels as the eye moves (unit-tested, with every slice's corners and its casters inside its map). The light is the sun while any of it is up, else the moon.
+- **Casters.** Models always (cut-outs through a masked fragment shader). The terrain only with the light under 30 degrees; higher, its imagery holds its shadows (D-032). The terrain casts the tiles the view picked, so hills outside the view don't cast into it (a later step can widen that).
+- **Placement and length.** A post 20 m tall, seen from above, casts its shadow tip 34.83 m away where the geometry puts it at 35.21 m (the sun 30 degrees up), and 11.91 m against 12.15 m (60 degrees). That is within two texels and a pixel (0.64 m).
+- **No acne.** The sunlit ground beside the shadow is even to 3 levels at 30 degrees. That needed a receiver offset toward the light, scaled by how much it grazes the surface. Along the light's own ray, that offset doesn't move a shadow's edge. A slope-scaled depth bias in the maps was the first try: it pushed the post's sides (which a low sun grazes) back, and shortened its shadow by 3 m.
+- **Terrain casting.** A hill 60 m high, the sun 10 degrees up, shades the ground 130 m behind it to 41 against 70 before it.
+- **lavapipe again.** In the terrain's fragment shader, lavapipe (Mesa 25.2.8, LLVM 20) crashes compiling a Load, a SampleLevel or a SampleCmp of an image, though not a Sample, and any image of the frame set (step 3). So the maps are also bound in the terrain's own set, read with Sample and a nearest sampler, and compared in the shader (3 x 3). The models use the same lookup, so shadows look alike on both.
+- **On the desk.**
+  - Shadows cost 0.25 to 0.6 ms an output over the routes' first minute. Output 0 is 1.95 ms on the airport route (1.52 at step 3) and 2.57 on KHUA (1.99 at step 4).
+  - GPU memory rose 225 MiB (12 maps of 16 MiB). CPU work rose 0.3 ms a frame (the fitting, and culling models for each cascade).
+  - Every run held 60 Hz, with no validation messages.
+  - Mid-morning, the tower casts its shadow north-west across the apron.
+- **Goldens.** `models_on_hills` was regenerated and looked at: the boxes cast their shadows away from the sun. NVIDIA matches it as before.
+
 ## Step 6: Weather layers and fog
 
 - **The layers.** Global cloud layers (D-034): base, thickness, coverage and type. Ground fog. Precipitation layers as reduced visibility within them.
