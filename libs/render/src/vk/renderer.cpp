@@ -104,6 +104,7 @@ void fill_weather(ViewLighting& l, std::span<const WeatherLayer> weather, const 
     l.cloud_count = 0;
     l.weather_light = 1.0F;
     double light = 1.0;
+    double clear = 1.0;
     order.clear();
     for (std::size_t k = 0; k < n; ++k) {
         const WeatherLayer& w = *sorted[k];
@@ -120,10 +121,12 @@ void fill_weather(ViewLighting& l, std::span<const WeatherLayer> weather, const 
                 const double tau = std::min(kCloudExtinctionPerM * w.thickness_m, kCloudMaxDepth);
                 const double c = std::clamp(w.coverage, 0.0, 1.0);
                 light *= (1.0 - c) + c / (1.0 + 0.15 * tau);
+                clear *= 1.0 - c;
             }
         }
     }
     l.weather_light = static_cast<float>(light);
+    l.clear_sky = static_cast<float>(clear);
     const auto from_eye = [&](std::uint32_t k) {
         return std::abs(static_cast<double>(l.layer[k][0]) - eye_height_m);
     };

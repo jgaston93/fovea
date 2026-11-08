@@ -850,8 +850,8 @@ double brightness(const std::vector<std::uint8_t>& px, std::uint32_t w, glm::dve
 
 // The weather (milestone 6 step 6, D-034): under a full overcast, 1,500 m
 // up and 400 m thick, the sun is hidden (looking at it shows the cloud's
-// grey, not the disc, at most a faint glow: the haze under the cloud is
-// still lit as clear air is, if less, D-034) and the ground is lit only by the light the
+// even grey: no disc, and no glow from the haze below, which the cloud's
+// diffuse light lights) and the ground is lit only by the light the
 // cloud lets through, so a post's shadow is gone; from above, the layer
 // hides the ground, the post with it, and its top is brighter than the
 // ground was.
@@ -912,7 +912,7 @@ TEST(TerrainRender, AFullOvercastHidesTheSunAndLeavesOnlyItsDiffuseLight) {
     std::printf("the sun: clear %.0f, overcast %.0f (and 30 pixels off it %.0f)\n", disc, hidden,
                 aside);
     EXPECT_GT(disc, 700.0);
-    EXPECT_LT(hidden, aside * 1.1) << "the sun shows through a full overcast";
+    EXPECT_NEAR(hidden, aside, 6.0) << "the sun shows through a full overcast";
     EXPECT_LT(hidden, disc * 0.8);
 
     // From 3,000 m, above the layer: it hides the ground and the post.

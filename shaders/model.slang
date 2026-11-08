@@ -109,7 +109,7 @@ float4 fs_model(ModelVertex i, bool front: SV_IsFrontFace) : SV_Target {
     const float3 lit = colour.rgb * irradiance_on(n, s, shade, under_clouds(i.rel, s)) * kInvPi;
     const float dist = length(i.rel);
     const float mu = dot(i.rel, lighting.up) / max(dist, 1e-3);
-    const float3 seen = through_bands(lit * air.a + air.rgb * lighting.weather_light, mu, dist, s, 1.0);
+    const float3 seen = through_bands(lit * air.a + air_light(air, s), mu, dist, s, 1.0);
     return float4(seen * s.exposure, coverage);
 }
 

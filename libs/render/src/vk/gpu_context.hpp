@@ -67,7 +67,7 @@ struct ViewLighting {
     std::array<float, 3> up{0.0F, 0.0F, 1.0F};
     float weather_light = 1.0F;
     std::array<float, 3> noise_origin{};
-    float unused2 = 0.0F;
+    float clear_sky = 1.0F;
     std::array<std::array<float, 4>, kMaxWeatherLayers> layer{};
 };
 static_assert(sizeof(ViewLighting) == 496, "must match ViewLighting in frame.slang");

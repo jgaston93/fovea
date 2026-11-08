@@ -64,6 +64,18 @@ float band_transmittance(float mu, float dist) {
     return exp(-depth);
 }
 
+// The light the air between the eye and a point scatters toward it (from
+// aerial_perspective): under clouds, not the clear air's sunlit glow but
+// the clouds' diffuse light, as fog takes it, for the share of the sky they
+// cover (clear_sky the share they don't).
+float3 air_light(float4 air, ViewSky s) {
+    if (lighting.clear_sky >= 1.0) {
+        return air.rgb;
+    }
+    return air.rgb * lighting.clear_sky +
+           (1.0 - air.a) * band_radiance(s) * (1.0 - lighting.clear_sky);
+}
+
 // The light a band scatters toward the eye, before exposure: as a cloud
 // lit from above, most of the light on level ground at the eye (less what
 // clouds above take).
@@ -144,10 +156,12 @@ float cloud_density(float coverage, float3 p, uint octaves, float spread, float 
     const float n = sum / total;
     // To a uniform 0 to 1 (a logistic close to the normal's distribution),
     // then cloud where it's above 1 - coverage, its density rising over a
-    // tenth beyond: a cloud is all but opaque at a tenth of its density, so
-    // its edge shows close to where the coverage puts it.
+    // quarter beyond (squared, so the thin edge is wide: a cloud is all but
+    // opaque at a tenth of its density, and a narrow edge showed as a
+    // bright rim from below), close to where the coverage puts it.
     const float u = 1.0 / (1.0 + exp(-1.702 * (n - 0.5) / spread));
-    const float d = smoothstep(1.0 - coverage, 1.0 - coverage + 0.1, u);
+    const float e = smoothstep(1.0 - coverage, 1.0 - coverage + 0.25, u);
+    const float d = e * e;
     return lerp(coverage, d, sqrt(kept / all));
 }
 
