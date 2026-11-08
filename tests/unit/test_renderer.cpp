@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <stdexcept>
@@ -311,7 +312,15 @@ TEST(ReferenceScene, EyeOffsetMovesTheEye) {
     const auto raised_px = r->read_back_rgba(0);
     const auto high_px = r->read_back_rgba(1);
     const auto moved_px = r->read_back_rgba(2);
-    EXPECT_EQ(raised_px, high_px);
+    // The same to a level: the two eyes, reached differently, can differ in
+    // their last bits, and the sky's haze (milestone 6 step 3) is computed
+    // from each view's own eye.
+    int worst = 0;
+    for (std::size_t i = 0; i < raised_px.size(); ++i) {
+        worst = std::max(worst, std::abs(int{raised_px[i]} - int{high_px[i]}));
+    }
+    std::printf("raised against high: at most %d levels apart\n", worst);
+    EXPECT_LE(worst, 1);
     EXPECT_NE(moved_px, high_px);
     EXPECT_EQ(r->validation_messages(), 0U);
 }
