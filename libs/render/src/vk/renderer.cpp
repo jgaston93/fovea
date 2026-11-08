@@ -539,7 +539,10 @@ struct Renderer::Impl {
                 frame_layout,
                 frame_set,
                 shadows ? shadows->maps() : VK_NULL_HANDLE,
-                shadows ? shadows->sampler() : VK_NULL_HANDLE};
+                shadows ? shadows->sampler() : VK_NULL_HANDLE,
+                clouds ? clouds->shape() : VK_NULL_HANDLE,
+                clouds ? clouds->sampler() : VK_NULL_HANDLE,
+                clouds ? clouds->table() : VK_NULL_HANDLE};
     }
 
     // Terrain, once loaded (milestone 3 step 5).
@@ -1137,12 +1140,16 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     // The lighting's: one dynamic uniform buffer, offset to the view's block.
     // The sky's (milestone 6 step 2): each view's light, the views'
     // sky-view tables and the atmosphere (shaders/include/frame.slang).
-    const std::array<VkDescriptorType, 8> frame_types = {
+    // 8 to 10: the clouds' shape, its sampler and its quantiles (step 6),
+    // for the shade they cast.
+    const std::array<VkDescriptorType, 11> frame_types = {
         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          VK_DESCRIPTOR_TYPE_SAMPLER};
-    std::array<VkDescriptorSetLayoutBinding, 8> frame_bindings{};
+        VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          VK_DESCRIPTOR_TYPE_SAMPLER,
+        VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          VK_DESCRIPTOR_TYPE_SAMPLER,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+    std::array<VkDescriptorSetLayoutBinding, 11> frame_bindings{};
     for (std::uint32_t b = 0; b < frame_bindings.size(); ++b) {
         frame_bindings[b].binding = b;
         frame_bindings[b].descriptorType = frame_types[b];
@@ -1159,10 +1166,10 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     const auto count = static_cast<std::uint32_t>(render_extents.size());
     const std::array<VkDescriptorPoolSize, 6> pool_sizes = {
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count + 3},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 2 + 1},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 1},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 2 + 2},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 2},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
     VkDescriptorPoolCreateInfo pci{};
     pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1261,14 +1268,23 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     view_cascades.resize(count);
     terrain_casts.assign(count, false);
     shadows_lit.assign(count, false);
-    std::array<VkWriteDescriptorSet, 6> fws{};
-    for (std::uint32_t b = 0; b < fws.size(); ++b) {
-        fws[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        fws[b].dstSet = frame_set;
-        fws[b].dstBinding = b;
-        fws[b].descriptorCount = 1;
-        fws[b].descriptorType = frame_types[b];
+    const VkDescriptorImageInfo cloud_shape_info{VK_NULL_HANDLE, clouds->shape(),
+                                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo cloud_sampler_info{clouds->sampler(), VK_NULL_HANDLE,
+                                                   VK_IMAGE_LAYOUT_UNDEFINED};
+    const VkDescriptorBufferInfo cloud_table_info{clouds->table(), 0, VK_WHOLE_SIZE};
+    std::array<VkWriteDescriptorSet, 9> fws{};
+    const std::array<std::uint32_t, 9> fw_bindings = {0, 1, 2, 3, 4, 5, 8, 9, 10};
+    for (std::uint32_t w = 0; w < fws.size(); ++w) {
+        fws[w].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        fws[w].dstSet = frame_set;
+        fws[w].dstBinding = fw_bindings[w];
+        fws[w].descriptorCount = 1;
+        fws[w].descriptorType = frame_types[fw_bindings[w]];
     }
+    fws[6].pImageInfo = &cloud_shape_info;
+    fws[7].pImageInfo = &cloud_sampler_info;
+    fws[8].pBufferInfo = &cloud_table_info;
     fws[0].pBufferInfo = &lighting_info;
     fws[1].pBufferInfo = &view_sky_info;
     fws[2].pImageInfo = &sky_view_info;

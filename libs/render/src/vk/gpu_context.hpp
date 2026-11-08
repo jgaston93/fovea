@@ -37,6 +37,11 @@ struct GpuContext {
     // set (the frame set has them too).
     VkImageView shadow_maps = VK_NULL_HANDLE;
     VkSampler shadow_sampler = VK_NULL_HANDLE;
+    // The clouds' shape, its sampler and its quantiles (step 6), for the
+    // terrain's own set.
+    VkImageView cloud_shape = VK_NULL_HANDLE;
+    VkSampler cloud_sampler = VK_NULL_HANDLE;
+    VkBuffer cloud_table = VK_NULL_HANDLE;
 };
 
 // What each view's shaders light with: mirrored as ViewLighting in

@@ -18,7 +18,6 @@
 [[vk::binding(0, 1)]] Sampler3D<float4> cloud_shape;
 [[vk::binding(1, 1)]] Sampler3D<float4> cloud_detail;
 [[vk::binding(2, 1)]] StructuredBuffer<uint> cloud_table;
-static const float kShapeCells = 4.0;
 static const float kDetailCells = 0.5;
 static const float kShapeSize = 128.0;
 
@@ -51,14 +50,6 @@ CloudPixel vs_clouds(uint id: SV_VulkanVertexID, uint instance: SV_VulkanInstanc
     return o;
 }
 
-// The value of the shape volume below which a share x of it lies.
-float shape_quantile(float x) {
-    const float i = saturate(x) * 255.0;
-    const uint lo = uint(floor(i));
-    const uint hi = min(lo + 1, 255u);
-    return lerp(asfloat(cloud_table[256 + lo]), asfloat(cloud_table[256 + hi]), i - float(lo));
-}
-
 // A layer's density at a point (its noise cells, as cloud_cells gives
 // them), 0 to 1: the shape above the coverage's quantile, so a share
 // `coverage` of the layer is cloud, rising toward each cloud's core; its
@@ -70,22 +61,7 @@ float shape_density(float coverage, float3 cells, float lod, bool erode, float w
         return 0.0;
     }
     const float base = cloud_shape.SampleLevel(cells / kShapeCells, lod).r;
-    float d;
-    if (coverage >= 1.0) {
-        d = 0.6 + 0.4 * base;  // overcast: whole, thicker and thinner
-    } else {
-        // Whole a third of the way up the values above the threshold (the
-        // shape's values bunch: over all of them, most cloud stayed thin,
-        // and the erosion took it).
-        // The coverage over the threshold, widened by `widen`: the erosion
-        // takes back about a fifth of a layer's (1.25), and a little less
-        // of a volume's, lit through its thin edges (1.1); each measured, on
-        // lavapipe and NVIDIA, which differ by about 0.03.
-        const float above = min(coverage * widen, 1.0);
-        const float threshold = shape_quantile(1.0 - above);
-        const float core = shape_quantile(1.0 - above * 0.67);
-        d = saturate((base - threshold) / max(core - threshold, 1e-3));
-    }
+    float d = cover_density(cloud_table, coverage, base, widen);
     if (erode) {
         // Two octaves of Worley, the finer one weaker: broken, wispy edges.
         const float4 e = cloud_detail.SampleLevel(cells / kDetailCells, max(lod - 2.0, 0.0));
@@ -168,7 +144,7 @@ CloudOut fs_clouds(CloudPixel i) {
         discard;
     }
     const float lod = shape_lod(footprint);
-    const float density = shape_density(l.w, cells, lod, true, 1.25);
+    const float density = shape_density(l.w, cells, lod, true, kLayerWiden);
     // Its depth mottled by the detail's finer octave, so a base isn't one
     // flat grey.
     const float mottle =
@@ -193,11 +169,11 @@ CloudOut fs_clouds(CloudPixel i) {
     const float3 across = to_light - up * dot(to_light, up);
     const float across_len = length(across);
     const float3 toward = across_len > 1e-3 ? across / across_len * 300.0 : float3(0.0);
-    const float ahead = shape_density(l.w, cloud_cells(rel + toward, i.layer), lod + 1.0, false, 1.25);
+    const float ahead = shape_density(l.w, cloud_cells(rel + toward, i.layer), lod + 1.0, false, kLayerWiden);
     // Shaded by the cloud around a part (its density four mips coarser, a
     // kilometre or so, mottled), not by the part alone: an edge is thin,
     // and lit by its own depth every edge shone as a rim.
-    const float body = shape_density(l.w, cells, lod + 4.0, false, 1.25);
+    const float body = shape_density(l.w, cells, lod + 4.0, false, kLayerWiden);
     const float tau_body = cloud_depth(l) * max(body, density) * lerp(0.5, 1.5, mottle);
     const float tau_light = lerp(cloud_depth(l) * max(ahead, body), tau_body, light_up);
     float3 colour;  // its radiance, before alpha
