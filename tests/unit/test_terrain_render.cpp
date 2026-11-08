@@ -603,6 +603,136 @@ TEST(TerrainRender, ModelsStandWhereTheirPlacementsPutThem) {
     EXPECT_GT(y1 - y0, 3.0 * (x1 - x0));  // north-south, as the heading says
 }
 
+// How much of a pixel's colour is `to` rather than `from`, along the line
+// between them: 0 for `from`, 1 for `to`,
+// in linear light (the output is sRGB-encoded).
+double mix_of(const std::vector<std::uint8_t>& px, std::uint32_t w, int x, int y,
+              const std::array<double, 3>& from, const std::array<double, 3>& to) {
+    const auto linear = [](double v) {
+        v /= 255.0;
+        return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+    };
+    const std::size_t at = (static_cast<std::size_t>(y) * w + static_cast<std::size_t>(x)) * 4;
+    double along = 0.0;
+    double length = 0.0;
+    for (std::size_t c = 0; c < 3; ++c) {
+        const double f = linear(from[c]);
+        const double t = linear(to[c]);
+        along += (linear(static_cast<double>(px[at + c])) - f) * (t - f);
+        length += (t - f) * (t - f);
+    }
+    return along / length;
+}
+
+// Multisampling (milestone 5 step 1, D-027): seen from straight above, a red
+// slab turned 10 degrees leaves pixels along its long sides between its red
+// and the grey ground, the more red the more of the pixel it covers; one
+// sample a pixel leaves only the two. (Not equal to the cover: the tone
+// curve, applied after the resolve, isn't straight.)
+TEST(TerrainRender, MultisamplingBlendsAnEdgeByHowMuchOfThePixelItCovers) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    s.placements = {{"slab", lat0, lon0, 120.0, 10.0F}};
+    s.models = {{"slab", box_glb(4.0F, 2.0F, 30.0F, {1.0F, 0.0F, 0.0F, 1.0F}, "")}};
+    const fs::path dir = write_db("edge", s);
+    constexpr std::uint32_t kSize = 256;
+    const SceneView v = view_at({lat0, lon0, 120.0}, 200.0, -90.0);
+    // The top's long sides, 4 m either side of its middle, as lines in the
+    // image (straight: the top is level, seen from above).
+    const DVec3 base = geodetic_to_ecef({lat0, lon0, 120.0});
+    const DMat3 ned = ned_to_ecef(lat0, lon0);
+    const double heading = glm::radians(10.0);
+    const auto at = [&](double along, double across) {
+        const DVec3 n(along * std::cos(heading) - across * std::sin(heading),
+                      along * std::sin(heading) + across * std::cos(heading), -2.0);
+        return project(v, ecef_to_geodetic(base + ned * n), kSize, kSize);
+    };
+    struct Side {
+        glm::dvec2 a;
+        glm::dvec2 b;
+        bool red_right;  // the slab to the side's right (greater x)
+    };
+    const std::array<Side, 2> sides = {Side{at(-20.0, -4.0), at(20.0, -4.0), true},
+                                       Side{at(-20.0, 4.0), at(20.0, 4.0), false}};
+    const int mid = static_cast<int>(kSize / 2);
+    for (const std::uint32_t msaa : {1U, 4U}) {
+        RendererOptions options;
+        options.msaa = msaa;
+        if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
+            options.validation = Validation::required;
+        }
+        auto r = make_renderer(kSize, kSize, options);
+        if (!r) {
+            GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+        }
+        (void)r->load_terrain(open_db(dir));
+        settle_models(*r, {v}, 1);
+        ASSERT_EQ(r->terrain_stats().placements_drawn, 1U);
+        EXPECT_EQ(r->validation_messages(), 0U);
+        const auto px = r->read_back_rgba(0);
+        const auto colour = [&](int x, int y) {
+            const std::size_t i =
+                (static_cast<std::size_t>(y) * kSize + static_cast<std::size_t>(x)) * 4;
+            return std::array<double, 3>{static_cast<double>(px[i]), static_cast<double>(px[i + 1]),
+                                         static_cast<double>(px[i + 2])};
+        };
+        const auto grey = colour(4, mid);
+        const auto red = colour(mid, mid);
+        // Each pixel across the sides along 60 rows: how much of it the
+        // slab covers (by where the side crosses the row's middle; the side
+        // leans less than a fifth of a pixel a row), and how red it is.
+        std::vector<std::pair<double, double>> partial;
+        int between = 0;
+        for (int y = mid - 30; y < mid + 30; ++y) {
+            for (const Side& side : sides) {
+                const double t = (y + 0.5 - side.a.y) / (side.b.y - side.a.y);
+                const double edge = side.a.x + t * (side.b.x - side.a.x);
+                const int e = static_cast<int>(std::floor(edge));
+                for (int x = e - 1; x <= e + 1; ++x) {
+                    const double right = std::clamp(x + 1 - edge, 0.0, 1.0);
+                    const double cover = side.red_right ? right : 1.0 - right;
+                    const double m = mix_of(px, kSize, x, y, grey, red);
+                    if (m > 0.05 && m < 0.95) {
+                        ++between;
+                    }
+                    if (cover > 0.0 && cover < 1.0) {
+                        partial.emplace_back(cover, m);
+                    }
+                }
+            }
+        }
+        if (msaa == 1) {
+            EXPECT_EQ(between, 0) << "pixels between the two colours with one sample";
+            continue;
+        }
+        // Many in between, as red as they're covered.
+        EXPECT_GT(between, 60);
+        ASSERT_GT(partial.size(), 100U);
+        double mc = 0.0;
+        double mm = 0.0;
+        for (const auto& [c, m] : partial) {
+            mc += c;
+            mm += m;
+        }
+        mc /= static_cast<double>(partial.size());
+        mm /= static_cast<double>(partial.size());
+        double cov = 0.0;
+        double vc = 0.0;
+        double vm = 0.0;
+        for (const auto& [c, m] : partial) {
+            cov += (c - mc) * (m - mm);
+            vc += (c - mc) * (c - mc);
+            vm += (m - mm) * (m - mm);
+        }
+        const double correlation = cov / std::sqrt(vc * vm);
+        std::printf("msaa %u: %d pixels between, cover and redness correlate %.3f\n", msaa, between,
+                    correlation);
+        // 0.92 on lavapipe: four samples cover a pixel in quarters.
+        EXPECT_GT(correlation, 0.85);
+    }
+}
+
 TEST(TerrainRender, AModelThatCannotLoadIsReportedAndTheRestDrawn) {
     double lat0 = 0.0;
     double lon0 = 0.0;

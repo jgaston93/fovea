@@ -175,7 +175,7 @@ private:
 };
 
 void parse_display(Parser& p, const toml::table& t, DisplayConfig& out) {
-    p.check_keys(t, {"presenter", "target_hz", "near_m"}, "display");
+    p.check_keys(t, {"presenter", "target_hz", "near_m", "msaa"}, "display");
     if (const auto* n = t.get("presenter")) {
         if (auto v = p.choice<PresenterKind>(*n, "display.presenter",
                                              {{"multi_swapchain", PresenterKind::multi_swapchain},
@@ -200,6 +200,15 @@ void parse_display(Parser& p, const toml::table& t, DisplayConfig& out) {
                         "'display.near_m' must be greater than 0 (got " + format_number(*v) + ")");
             }
             out.near_m = *v;
+        }
+    }
+    if (const auto* n = t.get("msaa")) {
+        if (auto v = p.integer(*n, "display.msaa", 1, 8)) {
+            if (*v != 1 && *v != 2 && *v != 4 && *v != 8) {
+                p.error(n->source(),
+                        "'display.msaa' must be 1, 2, 4 or 8 (got " + std::to_string(*v) + ")");
+            }
+            out.msaa = static_cast<std::uint32_t>(*v);
         }
     }
 }

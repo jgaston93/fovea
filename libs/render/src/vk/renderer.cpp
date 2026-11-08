@@ -33,6 +33,7 @@
 #include "fovea/render/renderer.hpp"
 #include "overlay_ui.hpp"
 #include "shaders/kFsModel.hpp"
+#include "shaders/kFsResolve.hpp"
 #include "shaders/kFsScene.hpp"
 #include "shaders/kFsTerrain.hpp"
 #include "shaders/kFsTonemap.hpp"
@@ -242,7 +243,9 @@ bool overlay_frame(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
 // written, with a reverse-Z depth buffer cleared to 0 if one is given; the
 // viewport and scissor cover the target.
 void begin_pass(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
-                VkImageView depth_view = VK_NULL_HANDLE) {
+                VkImageView depth_view = VK_NULL_HANDLE,
+                VkAttachmentLoadOp depth_load = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                VkAttachmentStoreOp depth_store = VK_ATTACHMENT_STORE_OP_DONT_CARE) {
     VkRenderingAttachmentInfo colour{};
     colour.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     colour.imageView = target;
@@ -253,8 +256,8 @@ void begin_pass(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
     depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     depth.imageView = depth_view;
     depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.loadOp = depth_load;
+    depth.storeOp = depth_store;
     depth.clearValue.depthStencil = {0.0F, 0};
     VkRenderingInfo info{};
     info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -272,9 +275,12 @@ void begin_pass(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 }
 
-// Draws the fullscreen triangle into one colour target.
-void draw_fullscreen(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent) {
-    begin_pass(cmd, target, extent);
+// Draws the fullscreen triangle into one colour target (and a depth target
+// it writes all of).
+void draw_fullscreen(VkCommandBuffer cmd, VkImageView target, VkExtent2D extent,
+                     VkImageView depth_view = VK_NULL_HANDLE) {
+    begin_pass(cmd, target, extent, depth_view, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+               VK_ATTACHMENT_STORE_OP_STORE);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRendering(cmd);
 }
@@ -303,6 +309,16 @@ struct HdrTarget {
     VkImage depth = VK_NULL_HANDLE;        // the scene's depth, for terrain
     VmaAllocation depth_memory = nullptr;
     VkImageView depth_view = VK_NULL_HANDLE;
+    // Multisampled (milestone 5, D-027): the scene renders into these, and
+    // the resolve (D-028) draws `image` and `depth` from them. Null when
+    // single-sampled.
+    VkImage ms = VK_NULL_HANDLE;
+    VmaAllocation ms_memory = nullptr;
+    VkImageView ms_view = VK_NULL_HANDLE;
+    VkImage ms_depth = VK_NULL_HANDLE;
+    VmaAllocation ms_depth_memory = nullptr;
+    VkImageView ms_depth_view = VK_NULL_HANDLE;
+    VkDescriptorSet resolve_set = VK_NULL_HANDLE;  // the resolve reads them through this
 };
 
 struct Swapchain {
@@ -373,6 +389,12 @@ struct Renderer::Impl {
     VkShaderModule fs_tonemap = VK_NULL_HANDLE;
     VkPipeline scene_pipeline = VK_NULL_HANDLE;
     std::vector<std::pair<VkFormat, VkPipeline>> tonemap_pipelines;
+    // Multisampling (milestone 5, D-027, D-028).
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    VkShaderModule fs_resolve = VK_NULL_HANDLE;
+    VkDescriptorSetLayout resolve_set_layout = VK_NULL_HANDLE;
+    VkPipelineLayout resolve_layout = VK_NULL_HANDLE;
+    VkPipeline resolve_pipeline = VK_NULL_HANDLE;
 
     // Terrain, once loaded (milestone 3 step 5).
     std::unique_ptr<TerrainGpu> terrain;
@@ -428,7 +450,9 @@ struct Renderer::Impl {
     void create_scene_resources(std::span<const VkExtent2D> render_extents);
     VkShaderModule make_module(std::span<const std::uint32_t> spirv) const;
     VkPipeline make_pipeline(VkPipelineLayout layout, VkShaderModule fragment, VkFormat format,
-                             VkFormat depth = VK_FORMAT_UNDEFINED) const;
+                             VkFormat depth = VK_FORMAT_UNDEFINED,
+                             VkSampleCountFlagBits sample_count = VK_SAMPLE_COUNT_1_BIT) const;
+    void choose_samples(std::uint32_t msaa);
     VkPipeline tonemap_pipeline(VkFormat format);
     VkImageView make_view(VkImage image, VkFormat format,
                           VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) const;
@@ -791,7 +815,8 @@ VkShaderModule Renderer::Impl::make_module(std::span<const std::uint32_t> spirv)
 }
 
 VkPipeline Renderer::Impl::make_pipeline(VkPipelineLayout layout, VkShaderModule fragment,
-                                         VkFormat format, VkFormat depth) const {
+                                         VkFormat format, VkFormat depth,
+                                         VkSampleCountFlagBits sample_count) const {
     std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -818,7 +843,7 @@ VkPipeline Renderer::Impl::make_pipeline(VkPipelineLayout layout, VkShaderModule
     raster.lineWidth = 1.0F;
     VkPipelineMultisampleStateCreateInfo multisample{};
     multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    multisample.rasterizationSamples = sample_count;
     VkPipelineColorBlendAttachmentState blend_attachment{};
     blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                       VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -837,9 +862,14 @@ VkPipeline Renderer::Impl::make_pipeline(VkPipelineLayout layout, VkShaderModule
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachmentFormats = &format;
     rendering.depthAttachmentFormat = depth;
-    // With a depth attachment, the fullscreen passes neither test nor write it.
+    // With a depth attachment, a fullscreen pass writes every pixel's depth
+    // (the sky the far plane, 0 in reverse-Z, as the clear does; the resolve
+    // the samples' nearest), with no test.
     VkPipelineDepthStencilStateCreateInfo depth_state{};
     depth_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depth_state.depthTestEnable = VK_TRUE;
+    depth_state.depthWriteEnable = VK_TRUE;
+    depth_state.depthCompareOp = VK_COMPARE_OP_ALWAYS;
 
     VkGraphicsPipelineCreateInfo ci{};
     ci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -872,6 +902,38 @@ VkPipeline Renderer::Impl::tonemap_pipeline(VkFormat format) {
     return p;
 }
 
+void Renderer::Impl::choose_samples(std::uint32_t msaa) {
+    // Supported for both the HDR colour and the depth format, drawn into and
+    // read by the resolve, as the device and the formats themselves allow.
+    const VkPhysicalDeviceLimits& limits = physical.properties.limits;
+    VkSampleCountFlags ok =
+        limits.framebufferColorSampleCounts & limits.framebufferDepthSampleCounts;
+    const auto format_counts = [&](VkFormat f, VkImageUsageFlags usage) {
+        VkImageFormatProperties props{};
+        return vkGetPhysicalDeviceImageFormatProperties(physical.physical_device, f,
+                                                        VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                                                        usage, 0, &props) == VK_SUCCESS
+                   ? props.sampleCounts
+                   : VkSampleCountFlags{0};
+    };
+    ok &= limits.sampledImageColorSampleCounts & limits.sampledImageDepthSampleCounts;
+    ok &=
+        format_counts(kHdrFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    ok &= format_counts(kDepthFormat,
+                        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    const bool known = msaa == 1 || msaa == 2 || msaa == 4 || msaa == 8;
+    if (!known || (ok & msaa) == 0) {
+        std::string can;
+        for (const std::uint32_t c : {1U, 2U, 4U, 8U}) {
+            if ((ok & c) != 0) {
+                can += (can.empty() ? "" : ", ") + std::to_string(c);
+            }
+        }
+        fail("msaa " + std::to_string(msaa) + ": this GPU can do " + can);
+    }
+    samples = static_cast<VkSampleCountFlagBits>(msaa);
+}
+
 void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_extents) {
     vs_fullscreen = make_module(kVsFullscreen);
     fs_scene = make_module(kFsScene);
@@ -899,13 +961,30 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     check(vkCreateDescriptorSetLayout(device.device, &lci, nullptr, &set_layout),
           "vkCreateDescriptorSetLayout");
 
+    // The resolve's: the multisampled colour and depth.
+    std::array<VkDescriptorSetLayoutBinding, 2> ms_bindings{};
+    for (std::uint32_t b = 0; b < ms_bindings.size(); ++b) {
+        ms_bindings[b].binding = b;
+        ms_bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        ms_bindings[b].descriptorCount = 1;
+        ms_bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo ms_lci{};
+    ms_lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    ms_lci.bindingCount = static_cast<std::uint32_t>(ms_bindings.size());
+    ms_lci.pBindings = ms_bindings.data();
+    check(vkCreateDescriptorSetLayout(device.device, &ms_lci, nullptr, &resolve_set_layout),
+          "vkCreateDescriptorSetLayout (resolve)");
+
     const auto count = static_cast<std::uint32_t>(render_extents.size());
-    VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count};
+    const std::array<VkDescriptorPoolSize, 2> pool_sizes = {
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 2}};
     VkDescriptorPoolCreateInfo pci{};
     pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pci.maxSets = count;
-    pci.poolSizeCount = 1;
-    pci.pPoolSizes = &pool_size;
+    pci.maxSets = count * 2;
+    pci.poolSizeCount = static_cast<std::uint32_t>(pool_sizes.size());
+    pci.pPoolSizes = pool_sizes.data();
     check(vkCreateDescriptorPool(device.device, &pci, nullptr, &descriptor_pool),
           "vkCreateDescriptorPool");
 
@@ -926,7 +1005,20 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     check(vkCreatePipelineLayout(device.device, &tonemap_lci, nullptr, &tonemap_layout),
           "vkCreatePipelineLayout");
 
-    scene_pipeline = make_pipeline(scene_layout, fs_scene, kHdrFormat, kDepthFormat);
+    scene_pipeline = make_pipeline(scene_layout, fs_scene, kHdrFormat, kDepthFormat, samples);
+    if (samples != VK_SAMPLE_COUNT_1_BIT) {
+        fs_resolve = make_module(kFsResolve);
+        VkPushConstantRange resolve_push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(std::uint32_t)};
+        VkPipelineLayoutCreateInfo resolve_lci{};
+        resolve_lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        resolve_lci.setLayoutCount = 1;
+        resolve_lci.pSetLayouts = &resolve_set_layout;
+        resolve_lci.pushConstantRangeCount = 1;
+        resolve_lci.pPushConstantRanges = &resolve_push;
+        check(vkCreatePipelineLayout(device.device, &resolve_lci, nullptr, &resolve_layout),
+              "vkCreatePipelineLayout (resolve)");
+        resolve_pipeline = make_pipeline(resolve_layout, fs_resolve, kHdrFormat, kDepthFormat);
+    }
     (void)tonemap_pipeline(kOffscreenFormat);
     for (const Swapchain& s : swapchains) {
         if (s.chain.swapchain != VK_NULL_HANDLE) {
@@ -957,6 +1049,38 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
         check(vmaCreateImage(allocator, &ici, &aci, &t.depth, &t.depth_memory, nullptr),
               "vmaCreateImage (depth)");
         t.depth_view = make_view(t.depth, kDepthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
+        if (samples != VK_SAMPLE_COUNT_1_BIT) {
+            ici.samples = samples;
+            ici.format = kHdrFormat;
+            ici.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            check(vmaCreateImage(allocator, &ici, &aci, &t.ms, &t.ms_memory, nullptr),
+                  "vmaCreateImage (multisampled)");
+            t.ms_view = make_view(t.ms, kHdrFormat);
+            ici.format = kDepthFormat;
+            ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            check(vmaCreateImage(allocator, &ici, &aci, &t.ms_depth, &t.ms_depth_memory, nullptr),
+                  "vmaCreateImage (multisampled depth)");
+            t.ms_depth_view = make_view(t.ms_depth, kDepthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
+            VkDescriptorSetAllocateInfo rai{};
+            rai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            rai.descriptorPool = descriptor_pool;
+            rai.descriptorSetCount = 1;
+            rai.pSetLayouts = &resolve_set_layout;
+            check(vkAllocateDescriptorSets(device.device, &rai, &t.resolve_set),
+                  "vkAllocateDescriptorSets (resolve)");
+            const std::array<VkDescriptorImageInfo, 2> ms_info = {
+                VkDescriptorImageInfo{VK_NULL_HANDLE, t.ms_view,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                VkDescriptorImageInfo{VK_NULL_HANDLE, t.ms_depth_view,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
+            VkWriteDescriptorSet w{};
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = t.resolve_set;
+            w.descriptorCount = static_cast<std::uint32_t>(ms_info.size());
+            w.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            w.pImageInfo = ms_info.data();
+            vkUpdateDescriptorSets(device.device, 1, &w, 0, nullptr);
+        }
         VkDescriptorSetAllocateInfo ai{};
         ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         ai.descriptorPool = descriptor_pool;
@@ -1050,10 +1174,12 @@ Frame& Renderer::Impl::begin_frame() {
 void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::size_t i,
                                   const SceneView& view) {
     const HdrTarget& t = hdr[i];
-    // After the previous frame's tone-map pass read this target (write after
-    // read: an execution dependency is enough).
-    transition(cmd, t.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
+    const bool multisampled = t.ms != VK_NULL_HANDLE;
+    // The scene's colour target (the HDR target itself, or its multisampled
+    // twin), after the previous frame's tone-map or resolve pass read it
+    // (write after read: an execution dependency is enough).
+    transition(cmd, multisampled ? t.ms : t.image, VK_IMAGE_LAYOUT_UNDEFINED,
+               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scene_pipeline);
@@ -1064,35 +1190,82 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
     push.eye_offset_m[0] = view.eye_offset_m.x;
     push.eye_offset_m[1] = view.eye_offset_m.y;
     vkCmdPushConstants(cmd, scene_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
-    // The depth buffer, cleared each frame: after the previous frame's
-    // tests and writes to it.
-    VkImageMemoryBarrier2 db{};
-    db.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    db.srcStageMask =
-        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    db.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    db.dstStageMask = db.srcStageMask;
-    db.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                       VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    db.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    db.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    db.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    db.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    db.image = t.depth;
-    db.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    // The depth buffer the scene draws into, cleared each frame: after the
+    // previous frame's tests and writes to it (and, multisampled, the
+    // resolve's reads of it).
+    std::array<VkImageMemoryBarrier2, 2> dbs{};
+    for (VkImageMemoryBarrier2& db : dbs) {
+        db.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        db.srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                          VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT |
+                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        db.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        db.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                          VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        db.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                           VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        db.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        db.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        db.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        db.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        db.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    }
+    // Multisampled, the resolve writes the single-sampled depth after the
+    // scene: it waits only for the previous frame's resolve.
+    dbs[0].image = multisampled ? t.ms_depth : t.depth;
+    dbs[1].image = t.depth;
     VkDependencyInfo dep{};
     dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep.imageMemoryBarrierCount = 1;
-    dep.pImageMemoryBarriers = &db;
+    dep.imageMemoryBarrierCount = multisampled ? 2 : 1;
+    dep.pImageMemoryBarriers = dbs.data();
     vkCmdPipelineBarrier2(cmd, &dep);
 
-    begin_pass(cmd, t.view, t.extent, t.depth_view);
+    if (multisampled) {
+        begin_pass(cmd, t.ms_view, t.extent, t.ms_depth_view, VK_ATTACHMENT_LOAD_OP_CLEAR,
+                   VK_ATTACHMENT_STORE_OP_STORE);
+    } else {
+        begin_pass(cmd, t.view, t.extent, t.depth_view);
+    }
     vkCmdDraw(cmd, 3, 1, 0, 0);
     if (terrain) {
         (void)terrain->record(cmd, static_cast<std::uint32_t>(slot), static_cast<std::uint32_t>(i),
                               view, t.extent);
     }
     vkCmdEndRendering(cmd);
+    if (multisampled) {
+        // The weighted resolve (D-028) into the HDR target, and the nearest
+        // sample's depth into its depth.
+        transition(cmd, t.ms, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        VkImageMemoryBarrier2 rb = dbs[0];
+        rb.srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                          VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        rb.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        rb.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        rb.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        rb.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        rb.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkDependencyInfo rdep{};
+        rdep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        rdep.imageMemoryBarrierCount = 1;
+        rdep.pImageMemoryBarriers = &rb;
+        vkCmdPipelineBarrier2(cmd, &rdep);
+        transition(cmd, t.image, VK_IMAGE_LAYOUT_UNDEFINED,
+                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
+                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_layout, 0, 1,
+                                &t.resolve_set, 0, nullptr);
+        const auto count = static_cast<std::uint32_t>(samples);
+        vkCmdPushConstants(cmd, resolve_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(count),
+                           &count);
+        draw_fullscreen(cmd, t.view, t.extent, t.depth_view);
+    }
     transition(cmd, t.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1435,12 +1608,22 @@ Renderer::Impl::~Impl() {
             vmaDestroyImage(allocator, t.image, t.memory);
             vkDestroyImageView(device.device, t.depth_view, nullptr);
             vmaDestroyImage(allocator, t.depth, t.depth_memory);
+            if (t.ms != VK_NULL_HANDLE) {
+                vkDestroyImageView(device.device, t.ms_view, nullptr);
+                vmaDestroyImage(allocator, t.ms, t.ms_memory);
+                vkDestroyImageView(device.device, t.ms_depth_view, nullptr);
+                vmaDestroyImage(allocator, t.ms_depth, t.ms_depth_memory);
+            }
         }
         vkDestroyQueryPool(device.device, timestamps, nullptr);
         for (const auto& [format, p] : tonemap_pipelines) {
             vkDestroyPipeline(device.device, p, nullptr);
         }
         vkDestroyPipeline(device.device, scene_pipeline, nullptr);
+        vkDestroyPipeline(device.device, resolve_pipeline, nullptr);
+        vkDestroyPipelineLayout(device.device, resolve_layout, nullptr);
+        vkDestroyDescriptorSetLayout(device.device, resolve_set_layout, nullptr);
+        vkDestroyShaderModule(device.device, fs_resolve, nullptr);
         vkDestroyPipelineLayout(device.device, tonemap_layout, nullptr);
         vkDestroyPipelineLayout(device.device, scene_layout, nullptr);
         vkDestroyDescriptorPool(device.device, descriptor_pool, nullptr);
@@ -1498,6 +1681,7 @@ std::unique_ptr<Renderer> Renderer::for_windows(Platform& platform,
         impl->swapchains.push_back(std::move(s));
     }
     impl->create_device(true);
+    impl->choose_samples(options.msaa);
     for (Swapchain& s : impl->swapchains) {
         impl->build_swapchain(s);  // deferred while a window has no size
     }
@@ -1517,6 +1701,7 @@ std::unique_ptr<Renderer> Renderer::offscreen(std::span<const OffscreenOutput> o
     impl->claim();
     impl->create_instance({}, options.validation);
     impl->create_device(false);
+    impl->choose_samples(options.msaa);
     std::vector<VkExtent2D> render_extents;
     for (const OffscreenOutput& o : outputs) {
         impl->create_offscreen(o);
@@ -1560,7 +1745,8 @@ TerrainLoad Renderer::load_terrain(std::unique_ptr<TerrainDatabase> database,
                          m.queue_family,
                          m.bc_textures,
                          m.max_anisotropy,
-                         m.timeline};
+                         m.timeline,
+                         m.samples};
     const std::array<VkShaderModule, 4> modules = {
         m.make_module(kVsTerrain), m.make_module(kFsTerrain), m.make_module(kVsModel),
         m.make_module(kFsModel)};

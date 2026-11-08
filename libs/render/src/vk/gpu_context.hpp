@@ -21,6 +21,9 @@ struct GpuContext {
     // Signalled by every frame's submit with the frame's number plus one:
     // the paging thread reads it to reuse what a frame's uploads used.
     VkSemaphore timeline = VK_NULL_HANDLE;
+    // The scene pass's samples per pixel (milestone 5, D-027): the terrain
+    // and model pipelines draw into it.
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 };
 
 }  // namespace fovea
