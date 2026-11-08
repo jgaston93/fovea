@@ -848,6 +848,51 @@ double brightness(const std::vector<std::uint8_t>& px, std::uint32_t w, glm::dve
     return c[0] + c[1] + c[2];
 }
 
+// Rain and snow fall from an overcast (step 6; clouds aren't drawn yet,
+// #73): under a band of rain the ground has only its grey light, no sun, so
+// a post's shadow is gone; and the ground is darker than in the sun.
+TEST(TerrainRender, RainTakesTheSunAndItsShadows) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    s.placements = {{"post", lat0, lon0, 120.0, 0.0F}};
+    s.models = {{"post", box_glb(0.5F, 20.0F, 0.5F, {1.0F, 1.0F, 1.0F, 1.0F}, "")}};
+    const fs::path dir = write_db("rain", s);
+    constexpr std::uint32_t kSize = 128;
+    const SkyBodies sky = sun_at_elevation(lat0, lon0, 40.0);
+    const DMat3 ned = ned_to_ecef(lat0, lon0);
+    const DVec3 base = geodetic_to_ecef({lat0, lon0, 120.0});
+    const DVec3 sun = glm::transpose(ned) * sky.sun;
+    const glm::dvec2 away = -glm::normalize(glm::dvec2(sun.x, sun.y));
+    const double length = 20.0 * glm::length(glm::dvec2(sun.x, sun.y)) / -sun.z;
+    const Geodetic middle =
+        ecef_to_geodetic(base + ned * DVec3(away.x * length / 2.0, away.y * length / 2.0, 0.0));
+    // 30 m up, so the rain's haze leaves the ground to be seen.
+    const SceneView down = view_at(middle, 30.0, -90.0, 0.0, 20.0);
+    const auto at = [&](double across) {
+        const glm::dvec2 side(-away.y, away.x);
+        return project(
+            down, ecef_to_geodetic(base + ned * DVec3(away * (length * 0.5) + side * across, 0.0)),
+            kSize, kSize);
+    };
+    const std::array<WeatherLayer, 1> rain = {
+        WeatherLayer{WeatherKind::rain, 0.0, 1500.0, 1.0, 5000.0}};
+    const auto sunny = draw_weather(dir, down, kSize, sky, {});
+    if (sunny.empty()) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const auto wet = draw_weather(dir, down, kSize, sky, rain);
+    const double sunny_dark = brightness(sunny, kSize, at(0.0));
+    const double sunny_lit = brightness(sunny, kSize, at(6.0));
+    const double wet_dark = brightness(wet, kSize, at(0.0));
+    const double wet_lit = brightness(wet, kSize, at(6.0));
+    std::printf("sun: shadow %.0f, beside it %.0f; rain: %.0f, %.0f\n", sunny_dark, sunny_lit,
+                wet_dark, wet_lit);
+    EXPECT_LT(sunny_dark, sunny_lit * 0.8);
+    EXPECT_NEAR(wet_dark, wet_lit, 3.0) << "a shadow in the rain";
+    EXPECT_LT(wet_lit, sunny_lit) << "the rain's overcast no darker than the sun";
+}
+
 // A fog layer hides what is in it and not what is above it (step 6): a
 // white post 200 m tall, seen from 250 m up and 400 m away, through fog
 // from below the ground to 60 m up, of 30 m visibility. Its foot is lost in
