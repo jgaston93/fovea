@@ -220,6 +220,18 @@ The environment adds three packets: Celestial Sphere Control, Atmosphere Control
   - Scattered coverage lets about that fraction of sky through.
   - A fog layer hides terrain within it and not above it.
 
+### Step 6 results (2026-11-08)
+
+- **The state.** `EnvironmentState` carries up to six `WeatherLayer`s (cloud, fog, rain or snow; base and thickness above the ellipsoid; a cloud's coverage; a band's visibility). Config's `[[environment.layer]]` gives heights above sea level, made ellipsoidal with `[host]`'s geoid height, as the host's altitudes are. The renderer takes them each frame (`set_weather`).
+- **Fog, rain and snow** are bands of extinction (3.912 / visibility), integrated exactly along each ray, per pixel, between two spheres (`weather.slang`), not put into the atmosphere's tables: a band 60 m thick would fall between their rows. The air in them scatters the light on level ground at the eye. Stars and the sky's discs are seen through them too.
+- **Cloud layers** are drawn after the resolve and the stars, a full-screen triangle a layer, farthest first, where each ray meets the layer's base, tested against the resolved depth. Coverage thresholds 3D value noise (five octaves, 3 km cells; its spread measured, so a coverage of c covers about c). Octaves finer than half a pixel fade, and the density tends to the coverage, so distant broken cloud reads as a thin layer rather than flickering. A layer is lit by the sun, moon and sky at the eye, reflecting from above what it doesn't let through below (two-stream, conservative), with a forward glow at thin edges toward the sun.
+- **Under cloud** the ground loses the sun by the cloud's depth toward it, and the sky's light becomes what the cloud above lets through of all the light on it (3 octaves, per pixel). The air between the eye and anything under cloud is lit by the clouds' diffuse light for the share of the sky they cover.
+- **Not yet.** Exposure follows the clear sky's light, so the scene under an overcast is darker than an eye would adapt to (about 1.5 stops); in-cloud visibility (flying through a layer) and wind drift wait for the host's values (step 7).
+- **Tests.** Config parsing and its errors. On the GPU: under a full overcast, a post's shadow is gone (46 against 46 beside it), the sun's place shows the cloud's grey (442 against 442 off it), and from above the layer is even and brighter than the ground it hides; scattered coverage of 0.3 and 0.7 covers 0.29 and 0.67 from below (within 0.05 at five places), and 0.29 and 0.65 from above; fog 60 m deep hides a post's foot as it does the ground beside it, while 100 m up the post matches clear air.
+- **On the desk** (NVIDIA): 60 Hz held through four looks (broken cloud over the airport, an overcast approach, morning ground fog, scattered cloud below), 0 validation messages; the weather costs 0.1 to 0.5 ms an output.
+  - A full overcast let the sun's disc through: NVIDIA blends a half-float target in half floats, so 1 - alpha doesn't go below about 5e-4, and the disc behind (some 60,000) showed. A cloud letting less than a thousandth through is now opaque. The sky pass's output is also clamped within half floats.
+  - The first look showed bright rims on cloud edges from below, and a dark band where an overcast met the horizon (the air under it lit as clear air, scaled). The edge's density now rises over a wider band, and the air under cloud takes the cloud's diffuse light.
+
 ## Step 7: The host sets the environment
 
 - **The packets.** The CIGI codec and adapter take three packets, each from the ICD and tested byte for byte, then fuzzed:
