@@ -100,7 +100,7 @@ The codec is Fovea's own: fixed-size encode and decode of the packets in use, wi
 
 *Amended 2026-11-07:* the milestones were renumbered (`fovea-plan.md`): "milestones 2 and 6" above are the eyepoint and the entities, now milestones 2 and 9. The environment milestone (6) adds the packets that set time of day, the atmosphere and the weather; its plan amends this decision with them, from the ICD. UDP sockets are a thin non-blocking wrapper in one file of `libs/net`, with no networking library.
 
-*Amendment proposed 2026-11-08 (milestone 6's plan):* the environment adds Celestial Sphere Control (ICD 4.1.9, p. 82), Atmosphere Control (4.1.10, p. 85) and Weather Control (4.1.12, p. 100, global layers). Environmental Region Control (4.1.11, p. 88), regional layers and weather entities are accepted and ignored for now, counted in the stats.
+*Amended 2026-11-08 (milestone 6's plan):* the environment adds Celestial Sphere Control (ICD 4.1.9, p. 82), Atmosphere Control (4.1.10, p. 85) and Weather Control (4.1.12, p. 100, global layers). Environmental Region Control (4.1.11, p. 88), regional layers and weather entities are accepted and ignored for now, counted in the stats.
 
 Packet layouts come from the ICD itself, never from memory: `tools/fetch-cigi-icd.sh` downloads the CIGI 3.3 ICD (Boeing document TST08I016, 3 Nov 2008) and its errata (Appendix C, 4 May 2009) into the git-ignored `docs/reference/`, checked against pinned SHA-256 hashes. The ICD calls itself "intended to be a public domain document" but asks not to be reproduced for modifying the interface, so it isn't committed. Codec code cites the ICD section and page for each packet. One ICD quirk: the 3.3 document gives Minor Version = 2 in IG Control and Start of Frame, and the errata don't change it. Fovea sends 2, as written, and accepts any minor version on receive, checking only Major Version = 3.
 
@@ -192,36 +192,36 @@ Each pixel's colour is its samples' weighted mean in linear HDR, c = sum(c_i w_i
 
 ## D-029 Environment state is scene state
 
-**Status:** Proposed (2026-11-08)
+**Status:** Accepted (2026-11-08)
 
 Date and time (UTC, as CIGI has it, an epoch with the host time it was set at, so a running clock is the epoch plus elapsed time and every channel agrees), whether time runs, visibility and the global weather layers are protocol-neutral scene state in `libs/core`, written by the host adapter or by config and read by the render thread from the snapshot. The renderer derives the sun's and moon's directions (the Almanac's low-precision sun; Meeus's truncated lunar theory with the eye's parallax; geometric, in double precision on the CPU) and the lighting from it each frame, and writes them with the atmosphere's parameters into a per-frame uniform buffer; push constants can't hold them.
 
 ## D-030 A physically based sky and aerial perspective, from precomputed tables
 
-**Status:** Proposed (2026-11-08)
+**Status:** Accepted (2026-11-08)
 
 The sky and the haze over distance follow Hillaire (2020): transmittance and multiple-scattering tables, and a sky-view table and an aerial-perspective volume per view, rebuilt by compute shaders as the sun or atmosphere changes; Rayleigh and Mie scattering and ozone over a spherical Earth centred under the eye, its altitude the ellipsoidal height. The terrain and model shaders apply the aerial perspective per sample in the multisampled pass (a pass after the resolve would read one depth per pixel and haze edges wrongly). Visibility sets the aerosol density at the ground by Koschmieder's relation (extinction 3.912 / V). Bruneton's 4D tables cover every sun angle but take far longer than a frame to rebuild when the atmosphere changes (visibility, weather); analytic skies have no aerial perspective or twilight.
 
 ## D-031 One exposure for all channels, from the light
 
-**Status:** Proposed (2026-11-08)
+**Status:** Accepted (2026-11-08)
 
 Exposure follows the illuminance at the eye from the sky model (sun, moon and sky), smoothed over about a second, the same in every view, shifted by config's offset. Exposure from each view's histogram would let neighbouring channels disagree and show the seams between displays.
 
 ## D-032 Cascaded shadow maps, per view
 
-**Status:** Proposed (2026-11-08)
+**Status:** Accepted (2026-11-08)
 
 The sun (or the moon, at night) casts shadows through 4 cascades fitted to each view's frustum, 2048² in 32-bit depth, filtered: 64 MB and four depth passes a view. Models cast onto terrain and each other, terrain onto models and itself. The terrain's imagery already holds its day's shadows, so terrain receives only what the imagery lacks: models' shadows, and terrain's at a low sun.
 
 ## D-033 Airport lights are a tile layer, drawn as points after the resolve
 
-**Status:** Proposed (2026-11-08)
+**Status:** Accepted (2026-11-08)
 
 The compiler builds the `lights` layer (D-018) from the runways' FAA geometry (D-022) and a committed light file per airport naming each runway's systems from the FAA's published data, laid out by the FAA's standard (AC 150/5340-30) in code. The lights' points are drawn after the resolve (D-028), GPU-driven, single-sampled, at least a pixel across, by inverse square and the atmosphere's transmittance, coloured and directed by type. Clustered lighting (foundational decision 4) handles the light they cast on surfaces (none yet), not their points. Lit windows are models' emissive materials (glTF `emissiveFactor`, `emissiveTexture`, `KHR_materials_emissive_strength`).
 
 ## D-034 Clouds are 2D layers first; precipitation is visibility for now
 
-**Status:** Proposed (2026-11-08)
+**Status:** Accepted (2026-11-08)
 
 Each global cloud layer is a lit, textured layer at its base (the ICD's mean-sea-level heights converted with the database's geoid height, D-020), its coverage shaping procedural noise, shadowing the ground below; ground fog is a band of density in the atmosphere; precipitation layers reduce visibility within them, their streaks waiting for particles (milestone 10). Volumetric clouds, regional weather and wet or snowy ground come later, as the frame allows.

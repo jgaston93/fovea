@@ -23,7 +23,7 @@ As before, each step is its own pull request. Steps 1 to 6 and 8 run in WSL and 
 - **CIGI.** The codec handles IG Control, Entity Control and Start of Frame, and skips everything else. The ICD's environment packets are listed under step 7.
 - **Lights.** D-018 names a `lights` layer for later; none exists. The runways' FAA ends and widths are in `data/airports/*.toml` (D-022). The models' materials carry a base colour, a texture and a material ID, but no emissive.
 
-## Decisions (proposed, in `decisions.md`)
+## Decisions (accepted 2026-11-08, in `decisions.md`)
 
 ### D-029 Environment state is scene state
 
@@ -172,6 +172,6 @@ The environment adds three packets: Celestial Sphere Control, Atmosphere Control
 
 | Needed by | Input |
 |---|---|
-| Plan | D-029 to D-034, and D-014's amendment |
+| Plan | ~~D-029 to D-034, and D-014's amendment~~ accepted |
 | Step 8 | The airports' light systems: I'll draft them from the FAA's published data for you to check |
 | Steps 2 to 9 | Time at the desk: the sky, dusk, night, shadows and the lights |
