@@ -41,9 +41,25 @@ As before, each step is its own pull request. Steps 1 and 2 run in WSL and CI (l
 
 - On the desk: GPU time and memory at 1, 2, 4 and 8 samples on the KHSV and KHUA routes, the default chosen from them (4 unless the cost says otherwise), and the owner's look at crawling edges (runway edges and markings, buildings, the tower's antenna, the horizon) against `msaa = 1`. Results recorded; anything unexpected becomes an issue.
 
+### Step 3 results (2026-11-07)
+
+On the desk (RTX 5070 Ti; 2560 x 1440 and two 1080 x 1920 views; `config/khsv.toml` with `msaa` set, release build, validation on), each route 120 s at each sample count (`khsv-airport.toml` and `khua-low.toml`); GPU memory read 30 s into a separate 40 s run of `khsv-airport.toml`:
+
+| Samples | KHSV airport: GPU time, worst output (mean / max), missed | KHUA low | GPU memory in use (KHSV airport) |
+|---|---|---|---|
+| 1 | 1.09 / 1.93 ms, 1 | 1.18 / 2.31 ms, 0 | 2705 MiB |
+| 2 | 1.20 / 2.04 ms, 0 | 1.25 / 2.32 ms, 1 | 2892 MiB |
+| 4 | 1.28 / 2.06 ms, 1 | 1.37 / 2.43 ms, 1 | 3070 MiB |
+| 8 | 1.63 / 2.43 ms, 2 | 1.82 / 3.24 ms, 1 | 3432 MiB |
+
+- Every run held 60 Hz with no validation messages; its missed frames all fell in its first 0.07 s (the start-up miss, #41).
+- 4 samples over 1 costs about 0.2 ms an output in the mean (0.1 ms in the worst frame) and 365 MiB (48 bytes a rendered pixel predicts 358 MiB); 8 over 4 another 0.35 to 0.45 ms in the mean, up to 0.8 ms in the worst frame (KHUA), and 362 MiB. All within the frame many times over.
+- In screenshots, 4 samples smooths the buildings' roof lines and corners, stair-stepped at 1. The runways' edges and markings are imagery, not geometry: multisampling leaves them as they were, and they are texture filtering's to smooth (full mip chains and anisotropic filtering), and weren't judged on their own here.
+- The default stays 4: watching the airport route at 1 and then 4 samples, the owner found 4 much better overall (the look wasn't broken down by feature). 8 is left to look at later (#62).
+
 ## Inputs needed from you
 
 | Needed by | Input |
 |---|---|
 | Plan | ~~D-027 and D-028~~ accepted |
-| Step 3 | Time at the desk: comparing edges with and without |
+| Step 3 | ~~Time at the desk: comparing edges with and without~~ done |
