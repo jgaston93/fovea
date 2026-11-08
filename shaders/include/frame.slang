@@ -31,8 +31,9 @@ struct ViewLighting {
     uint shadow_light;  // 0 none, 1 the sun, 2 the moon
     // The weather (step 6, D-034; weather.slang): the eye's height above
     // the ellipsoid, metres; how many layers; the up at the eye (ECEF); and
-    // the layers, lowest first: base and top (metres) and extinction per
-    // metre. Fog, rain and snow only: cloud layers aren't drawn yet (#73).
+    // the layers, lowest first: base and top (metres), extinction per metre,
+    // and 0 for fog, 1 for rain or snow. Cloud layers aren't drawn yet
+    // (#73).
     float eye_height_m;
     uint layer_count;
     float unused2;
@@ -181,4 +182,12 @@ float3 irradiance_on(float3 n, ViewSky s, float2 lit) {
 }
 
 #include "weather.slang"
+
+// The same, at a point relative to the eye: under rain or snow, only their
+// overcast's grey light (step 6).
+float3 irradiance_at(float3 rel, float3 n, ViewSky s, float2 lit) {
+    return under_precipitation(rel) ? overcast_light(s) : irradiance_on(n, s, lit);
+}
+
+
 #endif
