@@ -139,8 +139,8 @@ void cs_multi_scattering(uint3 id: SV_DispatchThreadID) {
     }
 }
 
-// The sky seen from the eye in every direction (excluding the sun's disc
-// and the ground), for this frame's sun.
+// The sky seen from the eye in every direction, for this frame's sun:
+// the sun's disc left out, the ground below the horizon lit by the sun.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void cs_sky_view(uint3 id: SV_DispatchThreadID) {
@@ -183,6 +183,15 @@ void cs_sky_view(uint3 id: SV_DispatchThreadID) {
         light += through * (s - s * step_t) / safe;
         through *= step_t;
     }
+    if (ground >= 0.0) {
+        // The ground where no terrain is drawn over it (beyond a database's
+        // edge): its albedo, lit by the sun through the air, seen through
+        // the air between.
+        const float3 g = float3(0.0, r, 0.0) + dir * ground;
+        const float mu_g = dot(normalize(g), sun);
+        light += through * sun_transmittance(atmosphere.bottom_radius, mu_g) * saturate(mu_g) *
+                 atmosphere.ground_albedo / kPi;
+    }
     sky_view_out[uint3(id.xy, push.view)] = float4(light * atmosphere.sun_illuminance, 1.0);
 }
 
@@ -223,14 +232,17 @@ void cs_irradiance(uint3 id: SV_DispatchThreadID) {
     }
 }
 
-// The exposure all views share (D-031), from the first view's light on
-// level ground: moved toward its target by `adapt`, in stops.
+// The exposure all views share (D-031), from the first view's light: the
+// sun's on a surface facing it, and the sky's. Not the light on level
+// ground: that falls toward nothing as the sun sets, while the air toward
+// the sun stays bright, and an exposure following it washed dusk out.
+// Moved toward its target by `adapt`, in stops.
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void cs_exposure(uint3 id: SV_DispatchThreadID) {
     const ViewSky s = view_sky_out[0];
-    const float level = luminance(s.sun_irradiance * max(push.mu_s, 0.0) + s.sky_irradiance);
-    const float target = push.key / max(level, push.floor_illuminance);
+    const float light = luminance(s.sun_irradiance + s.sky_irradiance);
+    const float target = push.key / max(light, push.floor_illuminance);
     float stops = log2(target);
     if (exposure_state[1] != 0.0) {
         // Not lerp(): a + (b - a) t leaves a settled exposure exactly as it was.

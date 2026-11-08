@@ -75,8 +75,9 @@ struct ScenePush {
     float eye_height_m = 0.0F;
     float grid_spacing_m = 0.0F;
     float eye_offset_m[2] = {};  // NOLINT(modernize-avoid-c-arrays): the shader's float2
+    std::uint32_t grid = 1;      // 0: terrain is loaded; no grid or horizon line
 };
-static_assert(sizeof(ScenePush) == 80, "must match ScenePush in reference_scene.slang");
+static_assert(sizeof(ScenePush) == 84, "must match ScenePush in reference_scene.slang");
 
 struct TonemapPush {
     float exposure = 1.0F;
@@ -1385,6 +1386,7 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
     push.grid_spacing_m = view.grid_spacing_m;
     push.eye_offset_m[0] = view.eye_offset_m.x;
     push.eye_offset_m[1] = view.eye_offset_m.y;
+    push.grid = terrain ? 0U : 1U;
     vkCmdPushConstants(cmd, scene_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
     const std::uint32_t offset = lighting_offset(slot, i);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scene_layout, 1, 1, &frame_set, 1,

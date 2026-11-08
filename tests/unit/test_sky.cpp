@@ -245,11 +245,13 @@ TEST(Sky, EveryViewTakesTheSameExposure) {
 // The light follows the sun (milestone 6 step 1, now through the air): a
 // level surface gets more at noon than at 8 am, and none from the sun at
 // night; each first frame takes its exposure at once, so it is exactly the
-// key over the light, or over night's floor.
+// key over the light (the sun's facing it, and the sky's), or over night's
+// floor.
 TEST(Sky, TheLightFollowsTheDateAndTime) {
     const SceneView v = view_towards(0.0, 10.0, 64, 32);
     struct Light {
         double level = 0.0;
+        double light = 0.0;  // facing the sun, and the sky's: what exposure follows
         double exposure = 0.0;
     };
     const auto light_at = [&](double hours) -> std::optional<Light> {
@@ -263,6 +265,7 @@ TEST(Sky, TheLightFollowsTheDateAndTime) {
         const SkyReadback s = r->read_back_sky(0);
         EXPECT_EQ(r->validation_messages(), 0U);
         Light l;
+        l.light = luminance(s.sun_irradiance) + luminance(s.sky_irradiance);
         l.level = luminance(s.sun_irradiance) * std::max(sun_at(v, sky).mu, 0.0) +
                   luminance(s.sky_irradiance);
         l.exposure = static_cast<double>(s.exposure);
@@ -278,11 +281,11 @@ TEST(Sky, TheLightFollowsTheDateAndTime) {
                 night->level);
     EXPECT_GT(noon->level, morning->level * 1.5);
     EXPECT_LT(night->level, noon->level * 1e-4);
-    // The exposure's key (pi) over the light; at night, over the floor, a
+    // The exposure's key (pi) over that light; at night, over the floor, a
     // ten-thousandth of the sun's illuminance.
     const double key = 3.14159265358979;
-    EXPECT_NEAR(noon->exposure * noon->level, key, key * 1e-3);
-    EXPECT_NEAR(morning->exposure * morning->level, key, key * 1e-3);
+    EXPECT_NEAR(noon->exposure * noon->light, key, key * 1e-3);
+    EXPECT_NEAR(morning->exposure * morning->light, key, key * 1e-3);
     const double floor = 1e-4 * Atmosphere{}.sun_illuminance[0];
     EXPECT_NEAR(night->exposure, key / floor, key / floor * 1e-3);
 }
