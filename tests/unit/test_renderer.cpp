@@ -116,7 +116,10 @@ struct Image {
     }
     bool sky(std::uint32_t x, std::uint32_t y) const {
         const Rgb c = at(x, y);
-        return c.b > c.r + 15;  // blue sky; the ground and lines are not blue
+        // Not the ground (olive: greener than blue) nor the horizon line
+        // (gold: redder than blue). The sky, blue overhead, is nearly white
+        // at the horizon toward the sun, so isn't told by its blue.
+        return c.g <= c.b + 8 && c.r <= c.b + 20;
     }
     int brightness(std::uint32_t x, std::uint32_t y) const {
         const Rgb c = at(x, y);

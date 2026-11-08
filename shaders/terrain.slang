@@ -32,15 +32,9 @@ struct TerrainPush {
 };
 [[vk::push_constant]] ConstantBuffer<TerrainPush> push;
 
-// Each view's lighting (milestone 6, D-029), set 1: mirrored as ViewLighting
-// in gpu_context.hpp.
-struct ViewLighting {
-    float3 sun;      // towards the sun, ECEF axes
-    float moon_lit;  // the fraction of the moon's disc lit
-    float3 moon;     // towards the moon from the eye, ECEF axes
-    float sun_up;    // how much of the sun's disc is above the eye's horizon
-};
-[[vk::binding(0, 1)]] ConstantBuffer<ViewLighting> lighting;
+// Each view's lighting (milestone 6), set 1.
+#define FRAME_SET 1
+#include "include/frame.slang"
 
 [[vk::binding(0, 0)]] StructuredBuffer<Control> controls;
 [[vk::binding(1, 0)]] StructuredBuffer<TileDraw> draws;
@@ -130,8 +124,13 @@ float4 fs_terrain(TerrainVertex i) : SV_Target {
     // sRGB textures: the sample is linear already.
     const float3 albedo =
         imagery[NonUniformResourceIndex(i.tile)].Sample(imagery_sampler, i.uv).rgb;
-    // The photographs carry their own shading; the sun only adds a little
-    // relief, so lighting stays close to what was photographed.
-    const float sun = saturate(dot(normalize(i.normal), lighting.sun)) * lighting.sun_up;
-    return float4(albedo * (0.75 + 0.25 * sun), 1.0);
+    // The photographs carry their own shading: the sun lights them mostly
+    // as level ground, a quarter by the slope's own angle, so they stay
+    // close to what was photographed while the light's strength and colour
+    // follow the sun and sky. Pre-exposed (D-031).
+    const ViewSky s = view_sky[lighting.view];
+    const float level = saturate(-lighting.sun_local.z);
+    const float slope = saturate(dot(normalize(i.normal), lighting.sun));
+    const float3 e = s.sun_irradiance * lerp(level, slope, 0.25) + s.sky_irradiance;
+    return float4(albedo * e * kInvPi * s.exposure, 1.0);
 }

@@ -17,6 +17,7 @@
 #include "fovea/core/math.hpp"
 #include "fovea/core/scene.hpp"
 #include "fovea/platform/platform.hpp"
+#include "fovea/render/atmosphere.hpp"
 #include "fovea/render/view.hpp"
 #include "fovea/terrain/database.hpp"
 
@@ -256,6 +257,10 @@ public:
     // D-029): the frame loop sets them each frame from the scene's date and
     // time. Until then, those of EnvironmentState's default date and time.
     void set_sky(const SkyBodies& sky);
+
+    // The sky's tables and an output's light, as the last frame left them
+    // (milestone 6 step 2). For tests: waits for the GPU, and allocates.
+    SkyReadback read_back_sky(std::uint32_t output);
 
     // Shows the debug overlay (Dear ImGui) on one output, drawn after the
     // tone map whenever draw_scene_frame is given content. One output only,

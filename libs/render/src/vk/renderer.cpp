@@ -33,6 +33,11 @@
 #include "fovea/core/geodesy.hpp"
 #include "fovea/render/renderer.hpp"
 #include "overlay_ui.hpp"
+#include "shaders/kCsExposure.hpp"
+#include "shaders/kCsIrradiance.hpp"
+#include "shaders/kCsMultiScattering.hpp"
+#include "shaders/kCsSkyView.hpp"
+#include "shaders/kCsTransmittance.hpp"
 #include "shaders/kFsModel.hpp"
 #include "shaders/kFsResolve.hpp"
 #include "shaders/kFsScene.hpp"
@@ -41,6 +46,7 @@
 #include "shaders/kVsFullscreen.hpp"
 #include "shaders/kVsModel.hpp"
 #include "shaders/kVsTerrain.hpp"
+#include "sky.hpp"
 #include "terrain.hpp"
 
 namespace fovea {
@@ -411,6 +417,12 @@ struct Renderer::Impl {
     VmaAllocation lighting_memory = nullptr;
     void* lighting_mapped = nullptr;
     VkDeviceSize lighting_stride = 0;
+    // The sky's tables and each view's light (milestone 6 step 2), made
+    // each frame before the views; the inputs sized once.
+    std::unique_ptr<SkyGpu> sky_tables;
+    std::vector<SkyViewInput> sky_inputs;
+    LocalTime last_scene_frame;
+    bool drew_scene = false;
 
     // Terrain, once loaded (milestone 3 step 5).
     std::unique_ptr<TerrainGpu> terrain;
@@ -483,6 +495,11 @@ struct Renderer::Impl {
     Frame& begin_frame();
     std::uint32_t draw(const DrawRequest& request);
     void record_scene(VkCommandBuffer cmd, std::size_t slot, std::size_t i, const SceneView& view);
+    // Each view's lighting into its slot's block, and the sky's passes.
+    void record_sky(VkCommandBuffer cmd, std::size_t slot, std::span<const SceneView> views);
+    std::uint32_t lighting_offset(std::size_t slot, std::size_t i) const {
+        return static_cast<std::uint32_t>((slot * hdr.size() + i) * lighting_stride);
+    }
 };
 
 void Renderer::Impl::create_instance(const std::vector<std::string>& extensions,
@@ -997,23 +1014,32 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
           "vkCreateDescriptorSetLayout (resolve)");
 
     // The lighting's: one dynamic uniform buffer, offset to the view's block.
-    VkDescriptorSetLayoutBinding frame_binding{};
-    frame_binding.binding = 0;
-    frame_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-    frame_binding.descriptorCount = 1;
-    frame_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    // The sky's (milestone 6 step 2): each view's light, the views'
+    // sky-view tables and the atmosphere (shaders/include/frame.slang).
+    const std::array<VkDescriptorType, 4> frame_types = {
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
+    std::array<VkDescriptorSetLayoutBinding, 4> frame_bindings{};
+    for (std::uint32_t b = 0; b < frame_bindings.size(); ++b) {
+        frame_bindings[b].binding = b;
+        frame_bindings[b].descriptorType = frame_types[b];
+        frame_bindings[b].descriptorCount = 1;
+        frame_bindings[b].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
     VkDescriptorSetLayoutCreateInfo frame_lci{};
     frame_lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    frame_lci.bindingCount = 1;
-    frame_lci.pBindings = &frame_binding;
+    frame_lci.bindingCount = static_cast<std::uint32_t>(frame_bindings.size());
+    frame_lci.pBindings = frame_bindings.data();
     check(vkCreateDescriptorSetLayout(device.device, &frame_lci, nullptr, &frame_layout),
           "vkCreateDescriptorSetLayout (frame)");
 
     const auto count = static_cast<std::uint32_t>(render_extents.size());
-    const std::array<VkDescriptorPoolSize, 3> pool_sizes = {
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count},
+    const std::array<VkDescriptorPoolSize, 5> pool_sizes = {
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count + 1},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 2},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1}};
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
     VkDescriptorPoolCreateInfo pci{};
     pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pci.maxSets = count * 2 + 1;
@@ -1046,18 +1072,56 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     fai.pSetLayouts = &frame_layout;
     check(vkAllocateDescriptorSets(device.device, &fai, &frame_set),
           "vkAllocateDescriptorSets (frame)");
-    VkDescriptorBufferInfo lighting_info{lighting, 0, sizeof(ViewLighting)};
-    VkWriteDescriptorSet fw{};
-    fw.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    fw.dstSet = frame_set;
-    fw.descriptorCount = 1;
-    fw.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-    fw.pBufferInfo = &lighting_info;
-    vkUpdateDescriptorSets(device.device, 1, &fw, 0, nullptr);
+
+    const GpuContext gpu{
+        physical.physical_device, device.device, allocator, queue,        queue_family, bc_textures,
+        max_anisotropy,           timeline,      samples,   frame_layout, frame_set};
+    const std::array<VkShaderModule, 5> sky_modules = {
+        make_module(kCsTransmittance), make_module(kCsMultiScattering), make_module(kCsSkyView),
+        make_module(kCsIrradiance), make_module(kCsExposure)};
+    try {
+        sky_tables = std::make_unique<SkyGpu>(gpu, count, Atmosphere{}, sky_modules);
+    } catch (...) {
+        for (VkShaderModule m : sky_modules) {
+            vkDestroyShaderModule(device.device, m, nullptr);
+        }
+        throw;
+    }
+    for (VkShaderModule m : sky_modules) {
+        vkDestroyShaderModule(device.device, m, nullptr);
+    }
+    sky_inputs.resize(count);
+
+    const VkDescriptorBufferInfo lighting_info{lighting, 0, sizeof(ViewLighting)};
+    const VkDescriptorBufferInfo view_sky_info{sky_tables->view_sky(), 0,
+                                               sky_tables->view_sky_size()};
+    const VkDescriptorImageInfo sky_view_info{sky_tables->sampler(), sky_tables->sky_view_tables(),
+                                              VK_IMAGE_LAYOUT_GENERAL};
+    const VkDescriptorBufferInfo atmosphere_info{sky_tables->atmosphere_buffer(), 0,
+                                                 SkyGpu::atmosphere_size()};
+    std::array<VkWriteDescriptorSet, 4> fws{};
+    for (std::uint32_t b = 0; b < fws.size(); ++b) {
+        fws[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        fws[b].dstSet = frame_set;
+        fws[b].dstBinding = b;
+        fws[b].descriptorCount = 1;
+        fws[b].descriptorType = frame_types[b];
+    }
+    fws[0].pBufferInfo = &lighting_info;
+    fws[1].pBufferInfo = &view_sky_info;
+    fws[2].pImageInfo = &sky_view_info;
+    fws[3].pBufferInfo = &atmosphere_info;
+    vkUpdateDescriptorSets(device.device, static_cast<std::uint32_t>(fws.size()), fws.data(), 0,
+                           nullptr);
 
     VkPushConstantRange scene_push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ScenePush)};
+    // The frame set is the scene pass's set 1; set 0, the tone map's, it
+    // leaves unbound.
+    const std::array<VkDescriptorSetLayout, 2> scene_sets = {set_layout, frame_layout};
     VkPipelineLayoutCreateInfo scene_lci{};
     scene_lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    scene_lci.setLayoutCount = static_cast<std::uint32_t>(scene_sets.size());
+    scene_lci.pSetLayouts = scene_sets.data();
     scene_lci.pushConstantRangeCount = 1;
     scene_lci.pPushConstantRanges = &scene_push;
     check(vkCreatePipelineLayout(device.device, &scene_lci, nullptr, &scene_layout),
@@ -1241,6 +1305,48 @@ Frame& Renderer::Impl::begin_frame() {
 
 // The scene for output i into its HDR target, ready for the tone-map pass:
 // the reference scene (sky and grid), then any terrain over it.
+void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
+                                std::span<const SceneView> views) {
+    for (std::size_t i = 0; i < hdr.size(); ++i) {
+        const SceneView view = i < views.size() ? views[i] : SceneView{};
+        // The sun from the Earth's centre (its parallax is 9 arc-seconds),
+        // the moon from the eye.
+        const Geodetic eye = ecef_to_geodetic(view.eye_ecef);
+        const DMat3 level = ned_to_ecef(eye.lat_deg, eye.lon_deg);
+        const DVec3 up = level * DVec3(0.0, 0.0, -1.0);
+        const DVec3 moon = glm::normalize(sky.moon_m - view.eye_ecef);
+        const DVec3 sun_local = glm::transpose(level) * sky.sun;
+        ViewLighting l;
+        l.sun = {static_cast<float>(sky.sun.x), static_cast<float>(sky.sun.y),
+                 static_cast<float>(sky.sun.z)};
+        l.moon_lit = static_cast<float>(sky.moon_lit);
+        l.moon = {static_cast<float>(moon.x), static_cast<float>(moon.y),
+                  static_cast<float>(moon.z)};
+        const double sun_up = disc_above_horizon(sky.sun, up, kSunRadiusDeg);
+        l.sun_up = static_cast<float>(sun_up);
+        l.sun_local = {static_cast<float>(sun_local.x), static_cast<float>(sun_local.y),
+                       static_cast<float>(sun_local.z)};
+        l.view = static_cast<std::uint32_t>(i);
+        const double height_km = std::max(eye.alt_m, 0.0) / 1000.0;
+        l.eye_radius_km = static_cast<float>(Atmosphere{}.bottom_radius_km + height_km);
+        const std::uint32_t at = lighting_offset(slot, i);
+        std::memcpy(static_cast<std::uint8_t*>(lighting_mapped) + at, &l, sizeof(l));
+        (void)vmaFlushAllocation(allocator, lighting_memory, at, sizeof(l));
+        sky_inputs[i] = {height_km, -sun_local.z, sun_up};
+    }
+    // Exposure moves toward its target with a time constant of a second
+    // (D-031); the first frame takes it at once.
+    const LocalTime t = now();
+    float adapt = 1.0F;
+    if (drew_scene) {
+        const double dt = std::chrono::duration<double>(t - last_scene_frame).count();
+        adapt = static_cast<float>(1.0 - std::exp(-std::max(dt, 0.0) / 1.0));
+    }
+    last_scene_frame = t;
+    drew_scene = true;
+    sky_tables->record(cmd, sky_inputs, adapt);
+}
+
 void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::size_t i,
                                   const SceneView& view) {
     const HdrTarget& t = hdr[i];
@@ -1260,6 +1366,9 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
     push.eye_offset_m[0] = view.eye_offset_m.x;
     push.eye_offset_m[1] = view.eye_offset_m.y;
     vkCmdPushConstants(cmd, scene_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+    const std::uint32_t offset = lighting_offset(slot, i);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scene_layout, 1, 1, &frame_set, 1,
+                            &offset);
     // The depth buffer the scene draws into, cleared each frame: after the
     // previous frame's tests and writes to it (and, multisampled, the
     // resolve's reads of it).
@@ -1299,25 +1408,8 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
     }
     vkCmdDraw(cmd, 3, 1, 0, 0);
     if (terrain) {
-        // The view's lighting, in its slot's block: the sun from the Earth's
-        // centre (its parallax is 9 arc-seconds), the moon from the eye.
-        const auto at = static_cast<std::uint32_t>((slot * hdr.size() + i) * lighting_stride);
-        const DVec3 moon = glm::normalize(sky.moon_m - view.eye_ecef);
-        ViewLighting l;
-        l.sun[0] = static_cast<float>(sky.sun.x);
-        l.sun[1] = static_cast<float>(sky.sun.y);
-        l.sun[2] = static_cast<float>(sky.sun.z);
-        l.moon_lit = static_cast<float>(sky.moon_lit);
-        l.moon[0] = static_cast<float>(moon.x);
-        l.moon[1] = static_cast<float>(moon.y);
-        l.moon[2] = static_cast<float>(moon.z);
-        const Geodetic eye = ecef_to_geodetic(view.eye_ecef);
-        const DVec3 up = ned_to_ecef(eye.lat_deg, eye.lon_deg) * DVec3(0.0, 0.0, -1.0);
-        l.sun_up = static_cast<float>(disc_above_horizon(sky.sun, up, kSunRadiusDeg));
-        std::memcpy(static_cast<std::uint8_t*>(lighting_mapped) + at, &l, sizeof(l));
-        (void)vmaFlushAllocation(allocator, lighting_memory, at, sizeof(l));
         (void)terrain->record(cmd, static_cast<std::uint32_t>(slot), static_cast<std::uint32_t>(i),
-                              view, t.extent, at);
+                              view, t.extent, lighting_offset(slot, i));
     }
     vkCmdEndRendering(cmd);
     if (multisampled) {
@@ -1445,6 +1537,10 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
                                  first_query + static_cast<std::uint32_t>(output) * 2 + which);
         }
     };
+
+    if (request.scene) {
+        record_sky(f.cmd, slot, request.views);
+    }
 
     // The stage that first touches an acquired image: the clear's transfer,
     // or the tone-map pass's colour output. The acquire semaphore is waited
@@ -1703,6 +1799,7 @@ Renderer::Impl::~Impl() {
             vmaDestroyImage(allocator, o.image, o.image_memory);
         }
         terrain.reset();
+        sky_tables.reset();
         vkDestroySemaphore(device.device, timeline, nullptr);
         for (HdrTarget& t : hdr) {
             vkDestroyImageView(device.device, t.view, nullptr);
@@ -1838,6 +1935,13 @@ std::uint32_t Renderer::draw_scene_frame(std::span<const SceneView> views,
 
 void Renderer::set_sky(const SkyBodies& sky) {
     impl_->sky = sky;
+}
+
+SkyReadback Renderer::read_back_sky(std::uint32_t output) {
+    if (!impl_->sky_tables || impl_->frame_number == 0) {
+        fail("read_back_sky: nothing has been drawn yet");
+    }
+    return impl_->sky_tables->read_back(output);
 }
 
 TerrainLoad Renderer::load_terrain(std::unique_ptr<TerrainDatabase> database,

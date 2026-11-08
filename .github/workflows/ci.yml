@@ -24,7 +24,7 @@ env:
   # full-verification.yml runs every test under the strict ASan build (Debug,
   # -Og) and Clang. Add a test here if it takes more than about 1 s in
   # Release. Empty means none are skipped.
-  SLOW_TESTS: ""
+  SLOW_TESTS: 'Sky\.TablesMatchACpuIntegralOfTheSameModel'
 
 jobs:
   ubuntu:
