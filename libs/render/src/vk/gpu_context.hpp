@@ -9,6 +9,8 @@
 #include <array>
 #include <cstdint>
 
+#include "fovea/core/math.hpp"
+
 namespace fovea {
 
 struct GpuContext {
@@ -30,6 +32,10 @@ struct GpuContext {
     // take this layout as their set 1, bound with the view's offset.
     VkDescriptorSetLayout frame_layout = VK_NULL_HANDLE;
     VkDescriptorSet frame_set = VK_NULL_HANDLE;
+    // The shadow maps and their sampler (step 5), for the terrain's own
+    // set (the frame set has them too).
+    VkImageView shadow_maps = VK_NULL_HANDLE;
+    VkSampler shadow_sampler = VK_NULL_HANDLE;
 };
 
 // What each view's shaders light with: mirrored as ViewLighting in
@@ -47,7 +53,14 @@ struct ViewLighting {
     std::uint32_t views = 1;                            // how many views share the sky's arrays
     std::array<float, 3> moon_local{0.0F, 0.0F, 1.0F};  // the eye's level frame
     float moon_up = 0.0F;  // how much of the moon's disc is above the eye's horizon
+    // The shadow maps (step 5): relative to the eye to each cascade's map,
+    // a texel's width there (metres), and whose light (0 none, 1 the sun,
+    // 2 the moon).
+    std::array<Mat4, 4> cascade{};
+    std::array<float, 4> cascade_texel{};
+    std::uint32_t shadow_light = 0;
+    std::array<float, 3> unused2{};
 };
-static_assert(sizeof(ViewLighting) == 80, "must match ViewLighting in frame.slang");
+static_assert(sizeof(ViewLighting) == 368, "must match ViewLighting in frame.slang");
 
 }  // namespace fovea

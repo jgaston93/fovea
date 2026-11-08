@@ -40,6 +40,7 @@
 #include "shaders/kCsSkyView.hpp"
 #include "shaders/kCsTransmittance.hpp"
 #include "shaders/kFsModel.hpp"
+#include "shaders/kFsModelShadow.hpp"
 #include "shaders/kFsResolve.hpp"
 #include "shaders/kFsScene.hpp"
 #include "shaders/kFsStars.hpp"
@@ -47,8 +48,11 @@
 #include "shaders/kFsTonemap.hpp"
 #include "shaders/kVsFullscreen.hpp"
 #include "shaders/kVsModel.hpp"
+#include "shaders/kVsModelShadow.hpp"
 #include "shaders/kVsStars.hpp"
 #include "shaders/kVsTerrain.hpp"
+#include "shaders/kVsTerrainShadow.hpp"
+#include "shadows.hpp"
 #include "sky.hpp"
 #include "stars.hpp"
 #include "terrain.hpp"
@@ -427,6 +431,12 @@ struct Renderer::Impl {
     // each frame before the views; the inputs sized once.
     std::unique_ptr<SkyGpu> sky_tables;
     std::unique_ptr<StarsGpu> stars;  // step 4
+    // The shadow maps (step 5): each view's cascades and their light this
+    // frame (record_sky), and whether the terrain casts (the light low).
+    std::unique_ptr<ShadowMaps> shadows;
+    std::vector<ShadowCascades> view_cascades;
+    std::vector<bool> terrain_casts;
+    std::vector<bool> shadows_lit;  // a light casts this frame: else the maps are only cleared
     std::vector<SkyViewInput> sky_inputs;
     bool drew_scene = false;
     double frame_period_s = 1.0 / 60.0;  // RendererOptions::frame_rate_hz
@@ -444,7 +454,9 @@ struct Renderer::Impl {
                 timeline,
                 samples,
                 frame_layout,
-                frame_set};
+                frame_set,
+                shadows ? shadows->maps() : VK_NULL_HANDLE,
+                shadows ? shadows->sampler() : VK_NULL_HANDLE};
     }
 
     // Terrain, once loaded (milestone 3 step 5).
@@ -1039,11 +1051,12 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     // The lighting's: one dynamic uniform buffer, offset to the view's block.
     // The sky's (milestone 6 step 2): each view's light, the views'
     // sky-view tables and the atmosphere (shaders/include/frame.slang).
-    const std::array<VkDescriptorType, 6> frame_types = {
+    const std::array<VkDescriptorType, 8> frame_types = {
         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
-    std::array<VkDescriptorSetLayoutBinding, 6> frame_bindings{};
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          VK_DESCRIPTOR_TYPE_SAMPLER};
+    std::array<VkDescriptorSetLayoutBinding, 8> frame_bindings{};
     for (std::uint32_t b = 0; b < frame_bindings.size(); ++b) {
         frame_bindings[b].binding = b;
         frame_bindings[b].descriptorType = frame_types[b];
@@ -1058,9 +1071,10 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
           "vkCreateDescriptorSetLayout (frame)");
 
     const auto count = static_cast<std::uint32_t>(render_extents.size());
-    const std::array<VkDescriptorPoolSize, 5> pool_sizes = {
+    const std::array<VkDescriptorPoolSize, 6> pool_sizes = {
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count + 3},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 2},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 2 + 1},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 1},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
@@ -1137,7 +1151,15 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
                                             VK_IMAGE_LAYOUT_GENERAL};
     const VkDescriptorImageInfo transmittance_info{
         sky_tables->sampler(), sky_tables->transmittance_table(), VK_IMAGE_LAYOUT_GENERAL};
-    std::array<VkWriteDescriptorSet, 6> fws{};
+    shadows = std::make_unique<ShadowMaps>(gpu, count);
+    view_cascades.resize(count);
+    terrain_casts.assign(count, false);
+    shadows_lit.assign(count, false);
+    const VkDescriptorImageInfo shadow_info{VK_NULL_HANDLE, shadows->maps(),
+                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo compare_info{shadows->sampler(), VK_NULL_HANDLE,
+                                             VK_IMAGE_LAYOUT_UNDEFINED};
+    std::array<VkWriteDescriptorSet, 8> fws{};
     for (std::uint32_t b = 0; b < fws.size(); ++b) {
         fws[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         fws[b].dstSet = frame_set;
@@ -1151,6 +1173,8 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     fws[3].pBufferInfo = &atmosphere_info;
     fws[4].pImageInfo = &aerial_info;
     fws[5].pImageInfo = &transmittance_info;
+    fws[6].pImageInfo = &shadow_info;
+    fws[7].pImageInfo = &compare_info;
     vkUpdateDescriptorSets(device.device, static_cast<std::uint32_t>(fws.size()), fws.data(), 0,
                            nullptr);
 
@@ -1377,6 +1401,26 @@ void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
         l.moon_local = {static_cast<float>(moon_local.x), static_cast<float>(moon_local.y),
                         static_cast<float>(moon_local.z)};
         l.moon_up = static_cast<float>(moon_up);
+        // The shadows' light (step 5): the sun while any of it is up, else
+        // the moon, else none; their cascades for this view.
+        const bool by_sun = sun_up > 0.0;
+        const bool by_moon = !by_sun && moon_up > 0.0;
+        shadows_lit[i] = by_sun || by_moon;
+        if (by_sun || by_moon) {
+            const DVec3 towards = by_sun ? sky.sun : moon;
+            view_cascades[i] = fit_shadow_cascades(view.eye_ecef, view.ecef_to_clip, towards);
+            // The terrain casts only with the light under 30 degrees: higher,
+            // its imagery holds its shadows (D-032).
+            terrain_casts[i] = glm::dot(towards, up) < std::sin(glm::radians(30.0));
+            l.shadow_light = by_sun ? 1U : 2U;
+            for (std::size_t c = 0; c < kShadowCascades; ++c) {
+                l.cascade[c] = Mat4(view_cascades[i].to_map[c]);
+                l.cascade_texel[c] = static_cast<float>(view_cascades[i].texel_m[c]);
+            }
+        } else {
+            terrain_casts[i] = false;
+            l.shadow_light = 0;
+        }
         const std::uint32_t at = lighting_offset(slot, i);
         std::memcpy(static_cast<std::uint8_t*>(lighting_mapped) + at, &l, sizeof(l));
         (void)vmaFlushAllocation(allocator, lighting_memory, at, sizeof(l));
@@ -1398,6 +1442,24 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
                                   const SceneView& view) {
     const HdrTarget& t = hdr[i];
     const bool multisampled = t.ms != VK_NULL_HANDLE;
+    if (terrain) {
+        // The view's tiles, then its shadow maps from the light (step 5):
+        // the casters' depths, before the scene that samples them. Drawn
+        // (cleared, at least) every frame, so the maps are always ready to
+        // read.
+        const auto s = static_cast<std::uint32_t>(slot);
+        const auto o = static_cast<std::uint32_t>(i);
+        (void)terrain->prepare(s, o, view, t.extent);
+        for (std::uint32_t c = 0; c < kShadowCascades; ++c) {
+            shadows->begin(cmd, o, c);
+            if (shadows_lit[i]) {
+                terrain->draw_shadow(cmd, s, o, c, view, Mat4(view_cascades[i].to_map[c]),
+                                     terrain_casts[i]);
+            }
+            vkCmdEndRendering(cmd);
+        }
+        shadows->done(cmd, o);
+    }
     // The scene's colour target (the HDR target itself, or its multisampled
     // twin), after the previous frame's tone-map or resolve pass read it
     // (write after read: an execution dependency is enough).
@@ -1456,8 +1518,8 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
     }
     vkCmdDraw(cmd, 3, 1, 0, 0);
     if (terrain) {
-        (void)terrain->record(cmd, static_cast<std::uint32_t>(slot), static_cast<std::uint32_t>(i),
-                              view, t.extent, lighting_offset(slot, i));
+        terrain->draw(cmd, static_cast<std::uint32_t>(slot), static_cast<std::uint32_t>(i), view,
+                      lighting_offset(slot, i));
     }
     vkCmdEndRendering(cmd);
     if (multisampled) {
@@ -1895,6 +1957,7 @@ Renderer::Impl::~Impl() {
         terrain.reset();
         stars.reset();
         sky_tables.reset();
+        shadows.reset();
         vkDestroySemaphore(device.device, timeline, nullptr);
         for (HdrTarget& t : hdr) {
             vkDestroyImageView(device.device, t.view, nullptr);
@@ -2055,9 +2118,12 @@ TerrainLoad Renderer::load_terrain(std::unique_ptr<TerrainDatabase> database,
     }
     check(vkDeviceWaitIdle(m.device.device), "vkDeviceWaitIdle");
     const GpuContext gpu = m.gpu_context();
-    const std::array<VkShaderModule, 4> modules = {
-        m.make_module(kVsTerrain), m.make_module(kFsTerrain), m.make_module(kVsModel),
-        m.make_module(kFsModel)};
+    const std::array<VkShaderModule, 7> modules = {
+        m.make_module(kVsTerrain),    m.make_module(kFsTerrain), m.make_module(kVsTerrainShadow),
+        m.make_module(kVsModel),      m.make_module(kFsModel),   m.make_module(kVsModelShadow),
+        m.make_module(kFsModelShadow)};
+    const TerrainShaders shaders{modules[0], modules[1], modules[2],
+                                 ModelShaders{modules[3], modules[4], modules[5], modules[6]}};
     const auto release = [&] {
         for (VkShaderModule s : modules) {
             vkDestroyShaderModule(m.device.device, s, nullptr);
@@ -2066,8 +2132,7 @@ TerrainLoad Renderer::load_terrain(std::unique_ptr<TerrainDatabase> database,
     TerrainLoad report;
     try {
         m.terrain = TerrainGpu::load(gpu, std::move(database), options, kFramesInFlight,
-                                     m.output_total(), modules[0], modules[1], modules[2],
-                                     modules[3], kHdrFormat, kDepthFormat, report);
+                                     m.output_total(), shaders, kHdrFormat, kDepthFormat, report);
     } catch (...) {
         release();
         throw;

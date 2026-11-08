@@ -41,6 +41,11 @@ struct TerrainPush {
 [[vk::binding(2, 0)]] SamplerState imagery_sampler;
 [[vk::binding(3, 0)]] Texture2D<float> heights[];
 [[vk::binding(4, 0)]] Texture2D<float4> imagery[];
+// The shadow maps and their sampler (step 5), in this set rather than
+// the frame set's (6 and 7): lavapipe crashes compiling this fragment
+// shader with any image of the frame set.
+[[vk::binding(5, 0)]] Texture2DArray<float> terrain_shadow_maps;
+[[vk::binding(6, 0)]] SamplerState terrain_shadow_sampler;
 
 static const uint kControls = 9;
 
@@ -84,11 +89,20 @@ struct TerrainVertex {
     float2 uv;
     float3 normal;
     float4 air;  // the air between it and the eye (aerial_perspective)
+    float3 rel;  // relative to the eye, ECEF axes, metres (for the shadows)
     nointerpolation uint tile;
 };
 
-[shader("vertex")]
-TerrainVertex vs_terrain(uint vertex: SV_VulkanVertexID, uint instance: SV_VulkanInstanceID) {
+// A vertex of a tile: where it is relative to the eye (ECEF axes, metres),
+// its normal and its place in the tile's imagery.
+struct TerrainPoint {
+    float3 rel;
+    float3 normal;
+    float2 uv;
+    uint tile;
+};
+
+TerrainPoint terrain_point(uint vertex, uint instance) {
     const TileDraw d = draws[instance];
     const int n = int(push.samples);
     const int side = n + 2;
@@ -105,14 +119,24 @@ TerrainVertex vs_terrain(uint vertex: SV_VulkanVertexID, uint instance: SV_Vulka
     const float3 w = surface(d.tile, cc - 1, rc, height_at(d.tile, cc - 1, rc)).position;
     const float3 no = surface(d.tile, cc, rc + 1, height_at(d.tile, cc, rc + 1)).position;
     const float3 so = surface(d.tile, cc, rc - 1, height_at(d.tile, cc, rc - 1)).position;
-    const float3 normal = normalize(cross(e - w, no - so));
     if (skirt) {
         s.position -= s.up * d.skirt_m;
     }
+    TerrainPoint p;
+    p.rel = d.offset + s.position;
+    p.normal = normalize(cross(e - w, no - so));
+    // Texel centres lie inside the tile: its edges are the texture's edges,
+    // row 0 at the south as in the grid.
+    p.uv = float2(float(cc), float(rc)) / float(n - 1);
+    p.tile = d.tile;
+    return p;
+}
 
+[shader("vertex")]
+TerrainVertex vs_terrain(uint vertex: SV_VulkanVertexID, uint instance: SV_VulkanInstanceID) {
+    const TerrainPoint p = terrain_point(vertex, instance);
     TerrainVertex o;
-    const float3 rel = d.offset + s.position;
-    o.position = mul(push.ecef_to_clip, float4(rel, 1.0));
+    o.position = mul(push.ecef_to_clip, float4(p.rel, 1.0));
     // Through the air to the eye (step 3), at each vertex: terrain's
     // triangles are a few pixels across, where the haze barely changes.
     // (In the fragment shader, any image of the frame set makes lavapipe,
@@ -123,13 +147,20 @@ TerrainVertex vs_terrain(uint vertex: SV_VulkanVertexID, uint instance: SV_Vulka
     // the middle column's. Off the screen, the edge columns serve.
     const float2 uv =
         o.position.w > 1e-6 ? o.position.xy / o.position.w * 0.5 + 0.5 : float2(0.5, 0.5);
-    o.air = aerial_perspective_uv(uv, length(rel) * 0.001);
-    // Texel centres lie inside the tile: its edges are the texture's edges,
-    // row 0 at the south as in the grid.
-    o.uv = float2(float(cc), float(rc)) / float(n - 1);
-    o.normal = normal;
-    o.tile = d.tile;
+    o.air = aerial_perspective_uv(uv, length(p.rel) * 0.001);
+    o.uv = p.uv;
+    o.normal = p.normal;
+    o.rel = p.rel;
+    o.tile = p.tile;
     return o;
+}
+
+// The shadow maps (step 5): depth only, push's matrix taking points
+// relative to the eye to the cascade's map.
+[shader("vertex")]
+float4 vs_terrain_shadow(uint vertex: SV_VulkanVertexID, uint instance: SV_VulkanInstanceID)
+    : SV_Position {
+    return mul(push.ecef_to_clip, float4(terrain_point(vertex, instance).rel, 1.0));
 }
 
 [shader("fragment")]
@@ -146,7 +177,12 @@ float4 fs_terrain(TerrainVertex i) : SV_Target {
     const float slope = saturate(dot(normalize(i.normal), lighting.sun));
     const float moon_level = saturate(-lighting.moon_local.z);
     const float moon_slope = saturate(dot(normalize(i.normal), lighting.moon));
-    const float3 e = s.sun_irradiance * lerp(level, slope, 0.25) +
-                     s.moon_irradiance * lerp(moon_level, moon_slope, 0.25) + s.sky_irradiance;
+    // In the shadows of models, and of terrain when the light is low (step
+    // 5, D-032: the photographs hold the rest).
+    const float2 shade = shadowed(
+        shadow_lit(terrain_shadow_maps, terrain_shadow_sampler, i.rel, normalize(i.normal)));
+    const float3 e = s.sun_irradiance * lerp(level, slope, 0.25) * shade.x +
+                     s.moon_irradiance * lerp(moon_level, moon_slope, 0.25) * shade.y +
+                     s.sky_irradiance;
     return float4((albedo * e * kInvPi * i.air.a + i.air.rgb) * s.exposure, 1.0);
 }

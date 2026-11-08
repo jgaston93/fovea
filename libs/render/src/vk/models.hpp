@@ -30,6 +30,7 @@
 #include "fovea/core/math.hpp"
 #include "fovea/models/model.hpp"
 #include "fovea/render/renderer.hpp"
+#include "fovea/render/shadow_cascades.hpp"
 #include "fovea/terrain/tile_file.hpp"
 #include "gpu_context.hpp"
 
@@ -47,12 +48,20 @@ inline constexpr std::uint32_t kMaxModelDraws = 8192;  // primitives drawn per v
 // for that (a spatial structure comes with more).
 inline constexpr std::uint32_t kMaxPlacements = 4096;
 
+// The models' shader modules.
+struct ModelShaders {
+    VkShaderModule vertex = VK_NULL_HANDLE;
+    VkShaderModule fragment = VK_NULL_HANDLE;
+    VkShaderModule shadow_vertex = VK_NULL_HANDLE;    // step 5
+    VkShaderModule shadow_fragment = VK_NULL_HANDLE;  // cut-outs
+};
+
 class ModelGpu {
 public:
     // Throws std::runtime_error.
     ModelGpu(const GpuContext& gpu, std::filesystem::path database_dir,
              std::span<const Placement> placements, std::uint32_t slots, std::uint32_t outputs,
-             VkShaderModule vertex, VkShaderModule fragment, VkFormat colour, VkFormat depth);
+             const ModelShaders& shaders, VkFormat colour, VkFormat depth);
     ~ModelGpu();  // the GPU must be idle, the paging thread stopped
     ModelGpu(const ModelGpu&) = delete;
     ModelGpu& operator=(const ModelGpu&) = delete;
@@ -80,6 +89,11 @@ public:
     std::uint32_t record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
                          const SceneView& view, std::uint32_t lighting_offset,
                          std::uint32_t& dropped);
+    // Draws the placements inside a shadow map's box into it (step 5),
+    // inside its depth-only pass: `to_map` takes points relative to the
+    // eye to the map. No allocation.
+    void record_shadow(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
+                       std::uint32_t cascade, const SceneView& view, const Mat4& to_map);
     std::uint32_t loaded() const { return loaded_; }
 
 private:
@@ -148,6 +162,9 @@ private:
     VkDescriptorSet set_ = VK_NULL_HANDLE;
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
+    VkPipeline shadow_pipeline_ = VK_NULL_HANDLE;
+    // Per slot and output: the view's region of draws, then a cascade's each.
+    static constexpr std::uint32_t kRegions = 1 + kShadowCascades;
 };
 
 }  // namespace fovea

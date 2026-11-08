@@ -6,12 +6,14 @@ add_library(fovea_render STATIC
     src/frame_loop.cpp
     src/resolve.cpp
     src/scene_view.cpp
+    src/shadow_cascades.cpp
     src/terrain_cache.cpp
     src/terrain_lod.cpp
     src/view.cpp
     src/vk/models.cpp
     src/vk/overlay_ui.cpp
     src/vk/renderer.cpp
+    src/vk/shadows.cpp
     src/vk/sky.cpp
     src/vk/stars.cpp
     src/vk/terrain.cpp
@@ -44,10 +46,16 @@ fovea_add_shader(fovea_render "${terrain_shader}" vs_terrain vertex kVsTerrain
                  ${terrain_capabilities})
 fovea_add_shader(fovea_render "${terrain_shader}" fs_terrain fragment kFsTerrain
                  ${terrain_capabilities})
+fovea_add_shader(fovea_render "${terrain_shader}" vs_terrain_shadow vertex kVsTerrainShadow
+                 ${terrain_capabilities})
 # Models (milestone 4 step 3).
 set(model_shader "${PROJECT_SOURCE_DIR}/shaders/model.slang")
 fovea_add_shader(fovea_render "${model_shader}" vs_model vertex kVsModel ${terrain_capabilities})
 fovea_add_shader(fovea_render "${model_shader}" fs_model fragment kFsModel ${terrain_capabilities})
+fovea_add_shader(fovea_render "${model_shader}" vs_model_shadow vertex kVsModelShadow
+                 ${terrain_capabilities})
+fovea_add_shader(fovea_render "${model_shader}" fs_model_shadow fragment kFsModelShadow
+                 ${terrain_capabilities})
 # The weighted resolve of multisampled scenes (milestone 5 step 1).
 fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/resolve.slang" fs_resolve fragment
                  kFsResolve)

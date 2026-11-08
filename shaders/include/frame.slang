@@ -23,6 +23,15 @@ struct ViewLighting {
     uint views;        // how many views share the sky's arrays
     float3 moon_local;  // towards the moon, the eye's level frame
     float moon_up;      // how much of the moon's disc is above the eye's horizon
+    // The shadow maps (step 5, D-032): points relative to the eye (ECEF
+    // axes, metres) to each cascade's map, x and y -1 to 1, z 0 nearest the
+    // light; a texel's width there, metres; and whose light they are.
+    float4x4 cascade[4];
+    float4 cascade_texel;
+    uint shadow_light;  // 0 none, 1 the sun, 2 the moon
+    float unused2;      // single floats: a float3 would align to 16
+    float unused3;
+    float unused4;
 };
 
 // Written by the sky's compute passes for each view: mirrored as ViewSky in
@@ -52,6 +61,56 @@ static const float3 kAirglow = float3(0.55, 0.65, 0.6) * (2e-5 / kPi);
 [[vk::binding(4, FRAME_SET)]] Sampler3D<float4> aerial_volume;
 // The atmosphere's transmittance table (for the stars and the moon's disc).
 [[vk::binding(5, FRAME_SET)]] Sampler2D<float4> transmittance_table;
+// The views' shadow maps, kShadowCascades layers a view (step 5).
+[[vk::binding(6, FRAME_SET)]] Texture2DArray<float> shadow_maps;
+// Nearest-texel, the comparison made in shadow_lit.
+[[vk::binding(7, FRAME_SET)]] SamplerState shadow_sampler;
+
+// How much of the shadow light reaches a point relative to the eye (ECEF,
+// metres) with normal n: the first cascade whose map holds it, its depth
+// compared with the nearest caster's over 3 x 3 texels. The point is moved
+// a texel along its normal first, and toward the light, so a surface
+// doesn't shadow itself. Taking the maps as arguments lets the terrain pass its own copy
+// (see terrain.slang). The depths are read with Sample and a nearest
+// sampler, and compared here: in the terrain's fragment shader, lavapipe
+// (Mesa 25.2.8, LLVM 20) crashes compiling Load, SampleLevel or SampleCmp
+// of an image, though not Sample.
+float shadow_lit(Texture2DArray<float> maps, SamplerState nearest, float3 rel, float3 n) {
+    if (lighting.shadow_light == 0) {
+        return 1.0;
+    }
+    // Toward the light too, the more the light grazes the surface (a texel
+    // there spans more depth): along the light's own ray, which doesn't
+    // move a shadow's edge.
+    const float3 l = lighting.shadow_light == 1 ? lighting.sun : lighting.moon;
+    const float ndl = max(dot(n, l), 0.05);
+    const float grazing = min(sqrt(saturate(1.0 - ndl * ndl)) / ndl, 10.0);
+    for (uint c = 0; c < 4; ++c) {
+        const float texel_m = lighting.cascade_texel[c];
+        const float3 p = rel + n * texel_m + l * texel_m * (1.0 + 1.5 * grazing);
+        const float4 m = mul(lighting.cascade[c], float4(p, 1.0));
+        if (all(abs(m.xy) < 0.98) && m.z >= 0.0 && m.z <= 1.0) {
+            const float2 uv = m.xy * 0.5 + 0.5;
+            const float layer = float(lighting.view * 4 + c);
+            const float texel = 1.0 / 2048.0;
+            float lit = 0.0;
+            for (int y = -1; y <= 1; ++y) {
+                for (int x = -1; x <= 1; ++x) {
+                    const float caster =
+                        maps.Sample(nearest, float3(uv + float2(x, y) * texel, layer));
+                    lit += m.z <= caster ? 1.0 : 0.0;
+                }
+            }
+            return lit / 9.0;
+        }
+    }
+    return 1.0;
+}
+
+// What of the sun's and the moon's light a shadow leaves: (sun, moon).
+float2 shadowed(float lit) {
+    return float2(lighting.shadow_light == 1 ? lit : 1.0, lighting.shadow_light == 2 ? lit : 1.0);
+}
 // Binding 3, the atmosphere (atmosphere.slang's Atmosphere), is declared by
 // the shaders that take it.
 
@@ -88,8 +147,8 @@ float4 aerial_perspective_uv(float2 uv, float distance_km) {
 // (its irradiance counts only the disc above the horizon), and the sky's,
 // as on level ground, which a model's walls also take for now. The moon's
 // too (step 4).
-float3 irradiance_on(float3 n, ViewSky s) {
-    return s.sun_irradiance * saturate(dot(n, lighting.sun)) +
-           s.moon_irradiance * saturate(dot(n, lighting.moon)) + s.sky_irradiance;
+float3 irradiance_on(float3 n, ViewSky s, float2 lit) {
+    return s.sun_irradiance * saturate(dot(n, lighting.sun)) * lit.x +
+           s.moon_irradiance * saturate(dot(n, lighting.moon)) * lit.y + s.sky_irradiance;
 }
 #endif

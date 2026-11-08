@@ -1,5 +1,7 @@
 #include "terrain.hpp"
 
+#include "shadows.hpp"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -834,10 +836,8 @@ private:
 std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
                                              std::unique_ptr<TerrainDatabase> db,
                                              const TerrainOptions& options, std::uint32_t slots,
-                                             std::uint32_t outputs, VkShaderModule vertex,
-                                             VkShaderModule fragment, VkShaderModule model_vertex,
-                                             VkShaderModule model_fragment, VkFormat colour,
-                                             VkFormat depth, TerrainLoad& report) {
+                                             std::uint32_t outputs, const TerrainShaders& shaders,
+                                             VkFormat colour, VkFormat depth, TerrainLoad& report) {
     const auto start = std::chrono::steady_clock::now();
     std::unique_ptr<TerrainGpu> t(new TerrainGpu(gpu));
     t->db_ = std::move(db);
@@ -1001,6 +1001,7 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
     t->last_eye_.resize(t->outputs_);
     t->last_eye_at_.resize(t->outputs_);
     t->has_last_eye_.assign(t->outputs_, false);
+    t->drawn_.assign(t->outputs_, 0);
 
     VkSamplerCreateInfo sci{};
     sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -1017,7 +1018,7 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
     }
     check(vkCreateSampler(gpu.device, &sci, nullptr, &t->sampler_), "vkCreateSampler");
 
-    std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -1025,11 +1026,16 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
                    nullptr};
     bindings[4] = {4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, capacity, VK_SHADER_STAGE_FRAGMENT_BIT,
                    nullptr};
+    // The shadow maps (step 5), here as well as in the frame set: lavapipe
+    // crashes compiling the terrain's fragment shader with any image of the
+    // frame set.
+    bindings[5] = {5, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[6] = {6, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     // The image arrays update after bind (filled as tiles arrive, while
     // frames using the set are in flight) and are partly bound.
     constexpr VkDescriptorBindingFlags kArray =
         VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
-    const std::array<VkDescriptorBindingFlags, 5> flags = {0, 0, 0, kArray, kArray};
+    const std::array<VkDescriptorBindingFlags, 7> flags = {0, 0, 0, kArray, kArray, 0, 0};
     VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info{};
     flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
     flags_info.bindingCount = static_cast<std::uint32_t>(flags.size());
@@ -1044,8 +1050,8 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
           "vkCreateDescriptorSetLayout");
     const std::array<VkDescriptorPoolSize, 3> sizes = {
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 1},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, capacity * 2}};
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 2},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, capacity * 2 + 1}};
     VkDescriptorPoolCreateInfo pci{};
     pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pci.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
@@ -1063,17 +1069,24 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
     const VkDescriptorBufferInfo draws_info{t->draws_.buffer, 0, VK_WHOLE_SIZE};
     const VkDescriptorImageInfo sampler_info{t->sampler_, VK_NULL_HANDLE,
                                              VK_IMAGE_LAYOUT_UNDEFINED};
-    std::array<VkWriteDescriptorSet, 3> writes{};
+    const VkDescriptorImageInfo shadow_info{VK_NULL_HANDLE, gpu.shadow_maps,
+                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo compare_info{gpu.shadow_sampler, VK_NULL_HANDLE,
+                                             VK_IMAGE_LAYOUT_UNDEFINED};
+    std::array<VkWriteDescriptorSet, 5> writes{};
+    const std::array<std::uint32_t, 5> write_bindings = {0, 1, 2, 5, 6};
     for (std::uint32_t w = 0; w < writes.size(); ++w) {
         writes[w].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[w].dstSet = t->set_;
-        writes[w].dstBinding = w;
+        writes[w].dstBinding = write_bindings[w];
         writes[w].descriptorCount = 1;
-        writes[w].descriptorType = bindings[w].descriptorType;
+        writes[w].descriptorType = bindings[write_bindings[w]].descriptorType;
     }
     writes[0].pBufferInfo = &controls_info;
     writes[1].pBufferInfo = &draws_info;
     writes[2].pImageInfo = &sampler_info;
+    writes[3].pImageInfo = &shadow_info;
+    writes[4].pImageInfo = &compare_info;
     vkUpdateDescriptorSets(gpu.device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0,
                            nullptr);
     for (const auto& [slot, i] : root_slots) {
@@ -1096,11 +1109,11 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
     std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vertex;
+    stages[0].module = shaders.vertex;
     stages[0].pName = "main";
     stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fragment;
+    stages[1].module = shaders.fragment;
     stages[1].pName = "main";
     VkPipelineVertexInputStateCreateInfo vertex_input{};
     vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -1158,6 +1171,9 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
     ci.layout = t->layout_;
     check(vkCreateGraphicsPipelines(gpu.device, VK_NULL_HANDLE, 1, &ci, nullptr, &t->pipeline_),
           "vkCreateGraphicsPipelines (terrain)");
+    // The shadow maps' (step 5): the same tiles, depth only.
+    t->shadow_pipeline_ = make_shadow_pipeline(gpu.device, t->layout_, shaders.shadow_vertex,
+                                               VK_NULL_HANDLE, nullptr);
 
     // Placements (milestone 4 step 3): from the roots, always resident.
     // Finer levels would page them with their tiles; not yet needed.
@@ -1176,9 +1192,8 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
         report.placements = placements.size();
         // Models are optional: the terrain draws without them.
         try {
-            t->models_ =
-                std::make_unique<ModelGpu>(gpu, t->db_->dir(), placements, slots, t->outputs_,
-                                           model_vertex, model_fragment, colour, depth);
+            t->models_ = std::make_unique<ModelGpu>(gpu, t->db_->dir(), placements, slots,
+                                                    t->outputs_, shaders.models, colour, depth);
             report.models = t->models_->model_count();
         } catch (const std::exception& e) {
             report.problems.push_back(std::string("models: ") + e.what() + " (none drawn)");
@@ -1197,6 +1212,7 @@ TerrainGpu::TerrainGpu(const GpuContext& gpu) : gpu_(gpu) {}
 TerrainGpu::~TerrainGpu() {
     pager_.reset();  // stops the paging thread first
     vkDestroyPipeline(gpu_.device, pipeline_, nullptr);
+    vkDestroyPipeline(gpu_.device, shadow_pipeline_, nullptr);
     vkDestroyPipelineLayout(gpu_.device, layout_, nullptr);
     vkDestroyDescriptorPool(gpu_.device, pool_, nullptr);
     vkDestroyDescriptorSetLayout(gpu_.device, set_layout_, nullptr);
@@ -1330,9 +1346,8 @@ void TerrainGpu::request_children(const SceneView& view, const TileSelection& se
     stats_.requests += asked;
 }
 
-std::uint32_t TerrainGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
-                                 const SceneView& view, VkExtent2D extent,
-                                 std::uint32_t lighting_offset) {
+std::uint32_t TerrainGpu::prepare(std::uint32_t slot, std::uint32_t output, const SceneView& view,
+                                  VkExtent2D extent) {
     LodView lv;
     lv.eye_ecef = view.eye_ecef;
     lv.ecef_to_clip = view.ecef_to_clip;
@@ -1390,19 +1405,8 @@ std::uint32_t TerrainGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::u
     stats_.failures = cs.failures;
 
     const auto drawn = static_cast<std::uint32_t>(sel.drawn);
-    if (drawn > 0) {
-        draw_tiles(cmd, slot, o, view, drawn, lighting_offset);
-    }
-    if (models_) {
-        stats_.placements_drawn +=
-            models_->record(cmd, slot, o, view, lighting_offset, stats_.placements_dropped);
-    }
-    return drawn;
-}
-
-void TerrainGpu::draw_tiles(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t o,
-                            const SceneView& view, std::uint32_t drawn,
-                            std::uint32_t lighting_offset) {
+    drawn_[o] = drawn;
+    // The selected tiles' records, relative to the eye, for the draws.
     const std::uint32_t capacity = cache_->capacity();
     const std::uint32_t base = (slot * outputs_ + o) * capacity;
     auto* records = static_cast<TileDraw*>(draws_.mapped) + base;
@@ -1418,7 +1422,51 @@ void TerrainGpu::draw_tiles(VkCommandBuffer cmd, std::uint32_t slot, std::uint32
     }
     (void)vmaFlushAllocation(gpu_.allocator, draws_.memory, base * sizeof(TileDraw),
                              drawn * sizeof(TileDraw));
+    return drawn;
+}
 
+void TerrainGpu::draw(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
+                      const SceneView& view, std::uint32_t lighting_offset) {
+    const std::uint32_t o = std::min(output, outputs_ - 1);
+    const std::uint32_t drawn = drawn_[o];
+    if (drawn > 0) {
+        draw_tiles(cmd, slot, o, view, drawn, lighting_offset);
+    }
+    if (models_) {
+        stats_.placements_drawn +=
+            models_->record(cmd, slot, o, view, lighting_offset, stats_.placements_dropped);
+    }
+}
+
+void TerrainGpu::draw_shadow(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
+                             std::uint32_t cascade, const SceneView& view, const Mat4& to_map,
+                             bool terrain_casts) {
+    const std::uint32_t o = std::min(output, outputs_ - 1);
+    const std::uint32_t drawn = drawn_[o];
+    if (terrain_casts && drawn > 0) {
+        // The view's selected tiles: they cover what it sees, though not
+        // hills outside it toward the light.
+        TerrainPush push;
+        push.ecef_to_clip = to_map;
+        push.samples = samples_;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_pipeline_);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set_, 0,
+                                nullptr);
+        vkCmdBindIndexBuffer(cmd, indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(push), &push);
+        vkCmdDrawIndexed(cmd, index_count_, drawn, 0, 0,
+                         (slot * outputs_ + o) * cache_->capacity());
+    }
+    if (models_) {
+        models_->record_shadow(cmd, slot, o, cascade, view, to_map);
+    }
+}
+
+void TerrainGpu::draw_tiles(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t o,
+                            const SceneView& view, std::uint32_t drawn,
+                            std::uint32_t lighting_offset) {
+    const std::uint32_t base = (slot * outputs_ + o) * cache_->capacity();
     TerrainPush push;
     push.ecef_to_clip = view.ecef_to_clip;
     push.samples = samples_;

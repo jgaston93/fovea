@@ -25,6 +25,7 @@
 #include "fovea/core/geodesy.hpp"
 #include "fovea/core/image_file.hpp"
 #include "fovea/render/renderer.hpp"
+#include "fovea/render/shadow_cascades.hpp"
 #include "fovea/terrain/database.hpp"
 #include "fovea/terrain/tile_file.hpp"
 #include "fovea/terrain/tile_key.hpp"
@@ -223,15 +224,16 @@ std::unique_ptr<TerrainDatabase> open_db(const fs::path& dir) {
 }
 
 // The view: from `eye_height_m` above `origin` (ellipsoid heights here: no
-// host, no geoid), turned by yaw and pitch, a 60 x 60 degree frustum.
+// host, no geoid), turned by yaw and pitch, a frustum 60 degrees square
+// unless told otherwise.
 SceneView view_at(const Geodetic& origin, double eye_height_m, double pitch_deg,
-                  double yaw_deg = 0.0) {
+                  double yaw_deg = 0.0, double half_fov_deg = 30.0) {
     ReferenceScene scene;
     scene.origin = origin;
     scene.eye_height_m = eye_height_m;
     ViewDesc v;
     v.pose.rotation = {yaw_deg, pitch_deg, 0.0};
-    v.projection.frustum = {-30.0, 30.0, 30.0, -30.0};
+    v.projection.frustum = {-half_fov_deg, half_fov_deg, half_fov_deg, -half_fov_deg};
     return reference_scene_view(v, scene);
 }
 
@@ -723,6 +725,150 @@ TEST(TerrainRender, TheSunLightsTheWallsThatFaceItAndNoneFromUnderTheHorizon) {
     std::printf("dusk, sun %.1f degrees: north wall %.0f, south wall %.0f\n", elevation, n, so);
     EXPECT_GT(n, 10.0);  // lit by the sky, not black
     EXPECT_NEAR(n, so, 1.0);
+}
+
+// The sky on the June solstice when the sun, in the morning, first stands
+// `elevation_deg` above the level at (lat, lon): to the second.
+SkyBodies sun_at_elevation(double lat, double lon, double elevation_deg) {
+    const DVec3 up = ned_to_ecef(lat, lon) * DVec3(0.0, 0.0, -1.0);
+    const auto elevation = [&](double seconds) {
+        const SkyBodies sky = sky_bodies(julian_date(2026, 6, 21, seconds));
+        return glm::degrees(std::asin(glm::dot(sky.sun, up)));
+    };
+    double lo = 10.0 * 3600.0;  // 5 am local, before sunrise
+    double hi = 18.0 * 3600.0;  // noon local
+    for (int i = 0; i < 40; ++i) {
+        const double mid = (lo + hi) / 2.0;
+        (elevation(mid) < elevation_deg ? lo : hi) = mid;
+    }
+    return sky_bodies(julian_date(2026, 6, 21, hi));
+}
+
+// Shadows (milestone 6 step 5, D-032): a white post 20 m tall and 1 m
+// square on flat ground, seen from straight above, casts its shadow away
+// from the sun, as long as its height over the tangent of the sun's
+// elevation (and its footprint's reach that way): its tip within two of the
+// shadow map's texels and a pixel of where the geometry puts it, at 30 and
+// 60 degrees. The sunlit ground beside it is even (no acne).
+TEST(TerrainRender, APostsShadowFallsWhereTheSunPutsIt) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    constexpr double kHeight = 20.0;
+    s.placements = {{"post", lat0, lon0, 120.0, 0.0F}};
+    s.models = {
+        {"post", box_glb(0.5F, static_cast<float>(kHeight), 0.5F, {1.0F, 1.0F, 1.0F, 1.0F}, "")}};
+    const fs::path dir = write_db("shadow", s);
+    constexpr std::uint32_t kSize = 256;
+    // 300 m up, 12 degrees across (about a quarter of a metre a pixel), over
+    // the middle of the shadow.
+    const double pixel_m = 2.0 * 300.0 * std::tan(glm::radians(6.0)) / kSize;
+    const DMat3 ned = ned_to_ecef(lat0, lon0);
+    const DVec3 base = geodetic_to_ecef({lat0, lon0, 120.0});
+    for (const double elevation : {30.0, 60.0}) {
+        const SkyBodies sky = sun_at_elevation(lat0, lon0, elevation);
+        // The sun in the level frame: the shadow runs the other way.
+        const DVec3 sun = glm::transpose(ned) * sky.sun;
+        const glm::dvec2 away = -glm::normalize(glm::dvec2(sun.x, sun.y));  // north, east
+        const double length = kHeight * glm::length(glm::dvec2(sun.x, sun.y)) / -sun.z;
+        // The footprint (1 m square, its sides north-south and east-west)
+        // reaches half a metre times |north| + |east| further that way.
+        const double tip = length + 0.5 * (std::abs(away.x) + std::abs(away.y));
+        const Geodetic middle =
+            ecef_to_geodetic(base + ned * DVec3(away.x * tip / 2.0, away.y * tip / 2.0, 0.0));
+        const SceneView v = view_at(middle, 300.0, -90.0, 0.0, 6.0);
+        const auto px = draw_settled(dir, v, kSize, 4, &sky);
+        if (px.empty()) {
+            GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+        }
+        const auto brightness_at = [&](double along) {
+            const DVec3 p = base + ned * DVec3(away.x * along, away.y * along, 0.0);
+            const glm::dvec2 at = project(v, ecef_to_geodetic(p), kSize, kSize);
+            const auto c = colour_at(px, kSize, static_cast<int>(at.x), static_cast<int>(at.y));
+            return c[0] + c[1] + c[2];
+        };
+        const double dark = brightness_at(tip * 0.5);
+        const double lit = brightness_at(tip + 8.0);
+        double found = -1.0;
+        for (double along = tip * 0.5; along < tip + 8.0; along += 0.02) {
+            if (brightness_at(along) >= (dark + lit) / 2.0) {
+                found = along;
+                break;
+            }
+        }
+        const ShadowCascades cascades = fit_shadow_cascades(v.eye_ecef, v.ecef_to_clip, sky.sun);
+        std::uint32_t c = 0;
+        while (c + 1 < kShadowCascades && cascades.far_m[c] < 300.0) {
+            ++c;
+        }
+        const double tolerance = 2.0 * cascades.texel_m[c] + pixel_m;
+        std::printf(
+            "sun %.0f degrees: shadow %.2f m long, its tip at %.2f m (expected %.2f; "
+            "%.0f dark, %.0f lit; tolerance %.2f m)\n",
+            elevation, length, found, tip, dark, lit, tolerance);
+        EXPECT_LT(dark, lit * 0.8);
+        EXPECT_NEAR(found, tip, tolerance);
+
+        // No acne: the sunlit ground beside the shadow, 5 to 15 m off its
+        // line, along its length, even.
+        double lo = 1e9;
+        double hi = -1e9;
+        const glm::dvec2 across(-away.y, away.x);
+        for (double along = 0.0; along <= tip; along += 0.5) {
+            const DVec3 p = base + ned * DVec3(away.x * along + across.x * 10.0,
+                                               away.y * along + across.y * 10.0, 0.0);
+            const glm::dvec2 at = project(v, ecef_to_geodetic(p), kSize, kSize);
+            const auto rgb = colour_at(px, kSize, static_cast<int>(at.x), static_cast<int>(at.y));
+            const double b = rgb[0] + rgb[1] + rgb[2];
+            lo = std::min(lo, b);
+            hi = std::max(hi, b);
+        }
+        EXPECT_LE(hi - lo, 3.0) << "sunlit ground uneven: acne";
+    }
+}
+
+// The terrain casts with the sun low (D-032): a hill 60 m high, the sun 10
+// degrees up in the east, shades the ground behind it (west) and not the
+// ground before it.
+TEST(TerrainRender, AHillShadesTheGroundBehindItInALowSun) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    const double clat = lat0;
+    const double clon = lon0;
+    s.height = [clat, clon](double lat, double lon) {
+        const double n = (lat - clat) * 111000.0;
+        const double e = (lon - clon) * 91000.0;
+        return 120.0 + 60.0 * std::exp(-(n * n + e * e) / (2.0 * 40.0 * 40.0));
+    };
+    s.placements = {{"post", lat0 + 0.0012, lon0, 120.0, 0.0F}};  // draw_settled wants one
+    s.models = {{"post", box_glb(0.5F, 1.0F, 0.5F, {1.0F, 1.0F, 1.0F, 1.0F}, "")}};
+    const fs::path dir = write_db("hill_shadow", s);
+    constexpr std::uint32_t kSize = 256;
+    const SceneView v = view_at({lat0, lon0, 120.0}, 1200.0, -90.0, 0.0, 20.0);
+    const SkyBodies sky = sun_at_elevation(lat0, lon0, 10.0);
+    const auto px = draw_settled(dir, v, kSize, 4, &sky);
+    if (px.empty()) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const DMat3 ned = ned_to_ecef(lat0, lon0);
+    const DVec3 sun = glm::transpose(ned) * sky.sun;
+    const glm::dvec2 toward = glm::normalize(glm::dvec2(sun.x, sun.y));
+    // 130 m from the hill's top, before it and behind it, where the ground
+    // is flat again (the hill is 40 m wide there, its shadow reaching about
+    // 340 m) and inside the database (about 200 m to its west edge).
+    const auto brightness_at = [&](double along) {
+        const double n = toward.x * along;
+        const double e = toward.y * along;
+        const Geodetic g{lat0 + n / 111000.0, lon0 + e / 91000.0, 120.0};
+        const glm::dvec2 at = project(v, g, kSize, kSize);
+        const auto c = colour_at(px, kSize, static_cast<int>(at.x), static_cast<int>(at.y));
+        return c[0] + c[1] + c[2];
+    };
+    const double before = brightness_at(130.0);
+    const double behind = brightness_at(-130.0);
+    std::printf("a hill in a low sun: ground before it %.0f, behind it %.0f\n", before, behind);
+    EXPECT_LT(behind, before * 0.85);
 }
 
 // Multisampling (milestone 5 step 1, D-027): seen from straight above, a red
