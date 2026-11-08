@@ -23,6 +23,7 @@ struct CloudShaders {
     VkShaderModule vertex = VK_NULL_HANDLE;
     VkShaderModule layer = VK_NULL_HANDLE;   // fs_clouds
     VkShaderModule volume = VK_NULL_HANDLE;  // fs_clouds_volume
+    VkShaderModule skybox = VK_NULL_HANDLE;  // fs_clouds_skybox
     VkShaderModule shape = VK_NULL_HANDLE;   // cs_shape
     VkShaderModule detail = VK_NULL_HANDLE;  // cs_detail
     VkShaderModule quantiles = VK_NULL_HANDLE;

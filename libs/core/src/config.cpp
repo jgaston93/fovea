@@ -177,9 +177,10 @@ private:
 void parse_display(Parser& p, const toml::table& t, DisplayConfig& out) {
     p.check_keys(t, {"presenter", "target_hz", "near_m", "msaa", "clouds"}, "display");
     if (const auto* n = t.get("clouds")) {
-        if (auto v = p.choice<CloudModel>(
-                *n, "display.clouds",
-                {{"layer", CloudModel::layer}, {"volumetric", CloudModel::volumetric}})) {
+        if (auto v = p.choice<CloudModel>(*n, "display.clouds",
+                                          {{"layer", CloudModel::layer},
+                                           {"volumetric", CloudModel::volumetric},
+                                           {"skybox", CloudModel::skybox}})) {
             out.clouds = *v;
         }
     }

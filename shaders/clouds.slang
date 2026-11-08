@@ -187,6 +187,45 @@ CloudOut fs_clouds(CloudPixel i) {
     return finish(i.position, lit, alpha, hit.x, rel, mu, s);
 }
 
+// The layer as a skybox: painted on the sky at infinity, its pattern fixed
+// to no place, so it doesn't pass overhead as the eye moves, and drawn only
+// where the sky shows (depth 0). Seen from the eye's height (at least
+// kSkyboxBelowM under the base), so its clouds are their size. The
+// cheapest model; it can't be flown to or over.
+static const float kSkyboxBelowM = 300.0;
+
+[shader("fragment")]
+CloudOut fs_clouds_skybox(CloudPixel i) {
+    const float4 l = lighting.layer[i.layer];
+    const float4 p = mul(push.clip_to_rel, float4(i.ndc, 1.0, 1.0));
+    const float3 d = normalize(p.xyz / p.w);
+    const float mu = dot(d, lighting.up);
+    const float h = min(lighting.eye_height_m, l.x - kSkyboxBelowM);
+    const float2 span = sphere_span(h, mu, l.x);
+    const bool hits = span.x <= span.y && span.y > 0.0;
+    // Its cells about a fixed point, not the eye's place.
+    const float3 rel = d * (hits ? span.y : 0.0);
+    const float3 cells = rel / kCloudCellM + float3(61.0, 17.0, 29.0) * float(i.layer + 1);
+    const float footprint = max(length(ddx(cells)), length(ddy(cells)));
+    if (!hits) {
+        discard;
+    }
+    const float density = shape_density(l.w, cells, shape_lod(footprint), true, 1.1);
+    const float tau = cloud_depth(l) * density;
+    const float alpha = opaque_alpha(exp(-tau));
+    if (alpha < 1e-3) {
+        discard;
+    }
+    const ViewSky s = view_sky[lighting.view];
+    const float through = cloud_diffuse(tau);
+    float3 lit = light_on_top(s, lighting.up) * max(through - exp(-tau), 0.0) * kInvPi;
+    const float c = dot(d, lighting.sun);
+    lit += s.sun_irradiance * henyey_greenstein(0.6, c) * tau * exp(-tau);
+    CloudOut o = finish(i.position, lit, alpha, span.y, rel, mu, s);
+    o.depth = 0.0;  // at infinity: only where the sky shows
+    return o;
+}
+
 float henyey_greenstein(float g, float c) {
     return (1.0 - g * g) / (4.0 * kPi * pow(max(1.0 + g * g - 2.0 * g * c, 1e-4), 1.5));
 }
