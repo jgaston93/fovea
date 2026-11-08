@@ -91,7 +91,7 @@ float shape_density(float coverage, float3 cells, float lod, bool erode, float w
         const float4 e = cloud_detail.SampleLevel(cells / kDetailCells, max(lod - 2.0, 0.0));
         const float4 f =
             cloud_detail.SampleLevel(cells / (kDetailCells * 0.25), max(lod - 4.0, 0.0));
-        const float erosion = 0.3 * e.r + 0.2 * f.g;
+        const float erosion = 0.45 * e.r + 0.3 * f.g;
         d = saturate((d - erosion) / (1.0 - erosion));
     }
     // About the mean density of a layer of this coverage.
@@ -197,8 +197,8 @@ CloudOut fs_clouds(CloudPixel i) {
     // Shaded by the cloud around a part (its density four mips coarser, a
     // kilometre or so, mottled), not by the part alone: an edge is thin,
     // and lit by its own depth every edge shone as a rim.
-    const float body = shape_density(l.w, cells, lod + 4.0, false, 1.1) * lerp(0.6, 1.4, mottle);
-    const float tau_body = cloud_depth(l) * max(body, density);
+    const float body = shape_density(l.w, cells, lod + 4.0, false, 1.1);
+    const float tau_body = cloud_depth(l) * max(body, density) * lerp(0.5, 1.5, mottle);
     const float tau_light = lerp(cloud_depth(l) * max(ahead, body), tau_body, light_up);
     float3 colour;  // its radiance, before alpha
     if (below) {
@@ -218,9 +218,12 @@ CloudOut fs_clouds(CloudPixel i) {
     float3 lit = colour * alpha;
     // Seen from below toward the sun, its thin edges glow with the light
     // scattered forward through them (single scattering, optical depth
-    // tau: at most where tau is 1).
+    // tau: at most where tau is 1): only near the sun (a narrow lobe), and
+    // only at the cloud's true edges (where its body is thin), else every
+    // edge shone as a rim.
     if (below) {
-        lit += light * henyey_greenstein(0.6, dot(d, to_light)) * tau * exp(-tau);
+        lit += light * henyey_greenstein(0.85, dot(d, to_light)) * tau * exp(-tau) *
+               saturate(1.0 - body * 2.0);
     }
     return finish(i.position, lit, alpha, hit.x, rel, mu, s);
 }
