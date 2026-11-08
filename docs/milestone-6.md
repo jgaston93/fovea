@@ -1,0 +1,176 @@
+# Milestone 6: Environment
+
+The goal from `fovea-plan.md`: the sky, the light and the weather, which the first milestones left as a placeholder. That means:
+
+- a physically based sky, with haze over distant terrain
+- the sun and moon placed from the date, time and place, through dawn, dusk and night, with stars
+- shadows
+- airport lights and lit windows at night
+- visibility, fog and cloud layers
+- all of it set by the host over CIGI, or in config without one
+
+Everything after it (close-range detail, cultural features, effects) is judged under this light.
+
+As before, each step is its own pull request. Steps 1 to 6 and 8 run in WSL and CI on lavapipe; each also gets a look at the desk, and step 9 is the desk's.
+
+## Where things stand (checked 2026-11-08)
+
+- **Sky.** It is a fixed gradient: the reference scene's fullscreen triangle (`shaders/reference_scene.slang`), drawn first in each scene pass, with the terrain and models over it.
+- **Sun.** It is fixed at 45° elevation, azimuth 135° (`terrain.cpp`, `sun_direction()`), and pushed to the terrain and model shaders. Terrain is shaded `albedo * (0.75 + 0.25 N·L)`, because the imagery already holds its own shading. Models are shaded `colour * (0.35 + 0.65 N·L)`. There is no specular term, no emissive and no shadows.
+- **Tone mapping.** ACES (Narkowicz's fit) at a fixed exposure, set from config as `reference_scene.exposure_ev`.
+- **Passes.** Each view draws its scene pass multisampled, then the weighted resolve (D-028; it also resolves the depth, nearest sample), then the tone map. Everything is pushed as constants; there is no per-frame buffer.
+- **Environment state.** `fovea::EnvironmentState` (`libs/core/scene.hpp`) holds only `time_of_day_h`, which nothing reads or writes.
+- **CIGI.** The codec handles IG Control, Entity Control and Start of Frame, and skips everything else. The ICD's environment packets are listed under step 7.
+- **Lights.** D-018 names a `lights` layer for later; none exists. The runways' FAA ends and widths are in `data/airports/*.toml` (D-022). The models' materials carry a base colour, a texture and a material ID, but no emissive.
+
+## Decisions (proposed, in `decisions.md`)
+
+### D-029 Environment state is scene state
+
+- **The state.** Date and time (UTC, as CIGI has it), whether time runs (the ICD's ephemeris model), visibility, and the global weather layers. They are protocol-neutral scene state in `libs/core`, written by the host adapter or by config (`[environment]`), and read by the render thread from the snapshot like the eyepoint.
+- **Derived each frame.** The renderer computes the sun's and moon's directions and the lighting from that state, then writes them with the atmosphere's parameters into one per-frame uniform buffer per frame in flight. Push constants (128 bytes, already used for matrices) can't hold them.
+- **Ephemeris.** The sun and moon come from published low-precision formulas (the *Astronomical Almanac*'s, about 0.01° for the sun and a few arc-minutes for the moon), in double precision on the CPU. The moon's phase comes from the same formulas.
+
+### D-030 A physically based sky and aerial perspective, from precomputed tables
+
+- **The method.** The sky and the haze over distance use Hillaire's method ("A Scalable and Production Ready Sky and Atmosphere Rendering Technique", 2020).
+- **The tables.** Small lookup tables, rebuilt by compute shaders when the sun or atmosphere changes:
+  - transmittance
+  - multiple scattering
+  - a sky-view table per view
+  - an aerial-perspective volume per view, along its frustum
+- **Model and distance shading.** Rayleigh and Mie scattering and ozone absorption, over a spherical Earth (WGS84 mean radius). The terrain and model shaders apply the aerial perspective per sample, inside the multisampled pass. A pass after the resolve would read one depth per pixel and haze edges wrongly.
+- **Visibility.** It sets the aerosol (Mie) density at the ground through Koschmieder's relation (extinction 3.912 / V for visibility V), so the host's visibility means what an observer means by it: a dark object fades to 2% contrast at V.
+- **Why this method.** Bruneton's precomputed 4D tables are also exact but slower to rebuild when the time changes. An analytic sky (Preetham, Hosek-Wilkie) has no aerial perspective and no twilight.
+- **Cost.** About 0.2 ms a view on a desktop GPU in the paper's figures. The desk measures it.
+
+### D-031 One exposure for all channels, from the light, not the image
+
+- **The rule.** Exposure follows the scene's illuminance at the eye (sun, moon and sky, from the same model), smoothed over about a second, and is the same in every view. A config offset (today's `exposure_ev`) shifts it.
+- **Why.** Exposure from each view's own histogram would let neighbouring channels disagree: a view looking at the sun would darken while the one beside it doesn't, and the seam between the displays would show. It would also change with what each view sees.
+- **Range.** Night needs about 15 EV less exposure than noon. HDR rendering has the range; the exposure moves.
+
+### D-032 Cascaded shadow maps, per view
+
+- **The maps.** The sun (or the moon, when it is up and the sun isn't) casts shadows through cascaded shadow maps: 4 cascades, fitted to each view's frustum, 2048² each in 32-bit depth, filtered (PCF).
+- **What casts.** Models cast onto terrain and onto each other. Terrain casts onto models and onto itself, for hills at a low sun.
+- **Terrain at a high sun.** The terrain's imagery already holds the shadows of the day it was taken (NAIP's, mostly near noon). Shadowing the imagery again doubles them, so terrain receives only the part of a shadow its imagery doesn't already have: models' shadows, and terrain shadows at a low sun.
+- **Why per view.** Each channel's frustum differs. Sharing one map would waste resolution in all of them.
+- **Cost.** About 64 MB a view and four depth passes a frame. The desk measures it.
+
+### D-033 Airport lights are a tile layer, drawn as points after the resolve
+
+- **Building the layer.** The compiler builds the `lights` layer (D-018) for each airport from:
+  - its runways' FAA geometry (D-022)
+  - a committed light file per airport, which names each runway's systems (edge, threshold and end, centreline, touchdown zone, approach lighting such as MALSR or ALSF-2, PAPI or VASI) from the FAA's published data
+  - extra fixtures with positions, if any
+- **Placing the fixtures.** Fixtures are laid out by the FAA's standards (AC 150/5340-30: spacing, colours and directions), in code, not by hand.
+- **Drawing them.** Each light is drawn after the resolve, single-sampled, as D-028 says. It is at least a pixel across, with its intensity falling off by inverse square and through the atmosphere's transmittance, and its colour and beam direction from its type, so a runway's lights look different from each end.
+- **Clustered lighting.** It is for lights that light the ground (apron floodlights, entity landing lights later), drawn in the scene pass. This milestone reserves it, since no light here lights the ground yet.
+- **Lit windows.** Models' emissive materials (glTF's `emissiveFactor`, `emissiveTexture` and `KHR_materials_emissive_strength`), read by `libs/models` and set in the model scripts.
+
+### D-034 Clouds are 2D layers first; precipitation is visibility for now
+
+- **Cloud layers.** Each global weather layer of a cloud type is a textured, lit layer at its base elevation: procedural noise shaped by its coverage, scattered by the sun through the same atmosphere, and shading the ground below it in the shadow pass.
+- **Fog layers.** Each fog layer is a band of extra density in the atmosphere.
+- **Precipitation.** It reduces visibility (the ICD's rate sets it). The streaks themselves are particles, milestone 10's.
+- **Later.** Volumetric clouds, regional weather (Environmental Region Control) and wet or snow-covered ground, once the frame shows room.
+
+### D-014, amended
+
+The environment adds three packets: Celestial Sphere Control, Atmosphere Control and Weather Control (global layers). Their layouts come from the ICD (step 7). Environmental Region Control, and Weather Control's regional layers and weather entities, are accepted and ignored for now. That is the same as other packets not yet supported, with a count in the stats.
+
+## Step 1: Environment state, the per-frame buffer and the sun
+
+- **State and config.** `EnvironmentState` takes date and time (UTC), whether time runs, and visibility. Config takes `[environment]`: `date`, `time`, `time_runs`, `visibility_m`. The render thread advances time when it runs.
+- **Ephemeris.** The sun's and moon's directions in ECEF, from the location of each view's eye.
+- **Buffer and shaders.** The per-frame uniform buffer replaces the pushed sun. The terrain and model shaders take the sun from it, with its colour and the ambient as they are now.
+- **Done when:**
+  - The sun's elevation and azimuth at KHSV on several dates and times (the solstices and equinoxes, sunrise and sunset) match NOAA's solar calculator within 0.05°.
+  - The moon's position and phase match the US Naval Observatory's published values within 0.2°.
+  - Golden images change only where the sun moved.
+  - Drawing still allocates nothing.
+
+## Step 2: The sky
+
+- **The sky.** The transmittance, multiple-scattering and sky-view tables (D-030) replace the gradient, with the sun's disc in it.
+- **The light.** The sun's colour reaching the ground comes from the transmittance, and the ambient from the sky.
+- **Exposure.** It follows the light (D-031). The reference scene's grid stays below the horizon for its tests.
+- **Done when:**
+  - A GPU test finds the sky blue overhead and paler at the horizon at noon, and reddened toward the sun at sunset.
+  - The sun's disc is where step 1 puts it, within a pixel.
+  - The tables against a reference computation on the CPU (a ray-marched integral) agree within 1% in transmittance and 3% in sky radiance.
+  - Exposure is the same in every view of a frame.
+  - Goldens regenerated and looked at.
+
+## Step 3: Aerial perspective and visibility
+
+- **The haze.** Terrain and models fade into the sky with distance through the aerial-perspective volume. Visibility sets the haze (D-030).
+- **Done when:**
+  - A GPU test of a dark box against the sky at distances around the set visibility finds its contrast near 2% at V (within a factor of 1.5, the tone curve bending it).
+  - Doubling visibility moves that distance with it.
+  - At 100 km visibility, a terrain golden still shows the far hills.
+  - Where terrain levels of detail meet in the distance, the seam softens (looked at on the desk).
+
+## Step 4: Night
+
+- **The night sky.** The sky through twilight into night, the moon with its phase (and moonlight, through the same atmosphere), and stars from the Yale Bright Star Catalogue (public domain; about 9,000 stars to magnitude 6.5, drawn as points after the resolve, their brightness by magnitude).
+- **Exposure.** It follows into night (D-031).
+- **Done when:**
+  - GPU tests at noon, sunset, civil twilight and midnight find the sky's brightness falling in that order, the stars visible only after twilight, and the moon's lit side toward the sun.
+  - A run through dusk at the desk shows no jump.
+
+## Step 5: Shadows
+
+- **The maps.** Cascaded shadow maps (D-032) from the sun or moon.
+- **Done when:**
+  - A GPU test of a box on flat ground finds its shadow where the sun's direction puts it (its edge within two texels of the cascade) and of the right length at 30° and 60° elevation.
+  - No shadow acne on lit flat ground.
+  - A hill at a low sun shades the ground behind it.
+  - The desk's GPU time is measured with and without (step 9).
+
+## Step 6: Weather layers and fog
+
+- **The layers.** Global cloud layers (D-034): base, thickness, coverage and type. Fog layers. Precipitation as reduced visibility.
+- **Setting them.** Config sets them (`[[environment.layer]]`) until step 7 brings the host.
+- **Done when:**
+  - A GPU test above and below a full overcast finds the sun hidden and the ground lit only by the sky below it, and the layer seen from above.
+  - Scattered coverage lets about that fraction of sky through.
+  - A fog layer hides terrain within it and not above it.
+
+## Step 7: The host sets the environment
+
+- **The packets.** The CIGI codec and adapter take three packets, each from the ICD and tested byte for byte, then fuzzed:
+  - Celestial Sphere Control: ICD 4.1.9, p. 82, packet 9, 16 bytes
+  - Atmosphere Control: 4.1.10, p. 85, packet 10, 32 bytes
+  - Weather Control: 4.1.12, p. 100, packet 12, 56 bytes, global layers
+- **Other packets.** Region packets (Environmental Region Control, 4.1.11, p. 88, packet 11) and regional layers are counted and ignored (D-014 amended).
+- **The test host.** It gains script segments that set time, visibility and layers, and a script that flies a dawn approach into KHSV through a cloud layer.
+- **Done when:**
+  - Codec round trips against the ICD's layouts.
+  - An end-to-end test (test host to headless IG) changes the time and visibility and finds the image change.
+  - The host's settings override config's, field by field, as the ICD's valid flags say.
+
+## Step 8: Airport lights and lit windows
+
+- **The lights.** The light files for KHSV and KHUA (from the FAA's published data, checked with the owner), the compiler's `lights` layer (D-033), and the lights drawn after the resolve.
+- **Lit windows.** Emissive materials in `libs/models` and the landmark scripts (lit windows on the terminal and the tower).
+- **Done when:**
+  - A compiler test lays out a runway's edge lights at the standard's spacing, and its threshold and end lights at its ends, green outward and red inward.
+  - A GPU test at night finds each light at least a pixel, on its point within a pixel, dimmer with distance and haze, and its colour from the side the standard gives.
+  - Emissive materials glow at night and don't by day.
+  - At the desk: a night approach into KHSV (looked at).
+
+## Step 9: Hardware check
+
+- **On the desk.** GPU time and memory with each part on and off (sky and tables, aerial perspective, shadows, clouds, lights) on the KHSV and KHUA routes, at noon, at dusk and at night.
+- **The owner's look.** A dawn approach and a night approach, the seams between the channels at sunrise, and shadows on the landmarks.
+- Results recorded; anything unexpected becomes an issue.
+
+## Inputs needed from you
+
+| Needed by | Input |
+|---|---|
+| Plan | D-029 to D-034, and D-014's amendment |
+| Step 8 | The airports' light systems: I'll draft them from the FAA's published data for you to check |
+| Steps 2 to 9 | Time at the desk: the sky, dusk, night, shadows and the lights |
