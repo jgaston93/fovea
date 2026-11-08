@@ -115,6 +115,21 @@ The environment adds three packets: Celestial Sphere Control, Atmosphere Control
   - Exposure is the same in every view of a frame.
   - Goldens regenerated and looked at.
 
+### Step 2 results (2026-11-08)
+
+- **The tables against the CPU.** A CPU integral of the same model (`tests/support/atmosphere_reference.cpp`) uses 2,000 steps per ray for transmittance and 576 directions of 60 steps for multiple scattering. Against it, on lavapipe and NVIDIA alike, the GPU's transmittance table is within 0.86%, and its sky-view table within 0.4 to 0.8% (with the sun 74° and 14° up).
+- **A bug the reference found.** At exactly ground level, `r^2 (mu^2 - 1) + R^2` cancels to nothing in floats, so rays from the ground missed it. The GPU's multiple scattering came out 35% high near the ground, the sky 16% too blue at the horizon, and the reference passed some directions through the Earth. Both now take the discriminant as `(r mu)^2 - (r - R)(r + R)` and test the horizon by its angle. This test takes 1.7 s in Release, so it is on CI's slow list.
+- **Colours.** At noon the zenith is 3.7 times bluer than red, and the horizon 1.3. At sunset the sky toward the sun is 45 times redder than blue near the horizon, while overhead stays blue (2.4).
+- **The sun's disc** lands within 0.07 px of where the view's matrix puts the sun.
+- **Exposure.** Every view takes the same exposure. Light on level ground is 9,300 at noon, 4,000 at 8 am, and none at night: exposure rises as the light falls, until night's floor.
+- **Pre-exposure.** Exposure is applied where light is shaded (sky, ground, terrain, models), so the HDR target and the multisampling resolve (D-028) hold display-range values whatever the light. Its key takes a level surface's light to pi, so a white one shows as 1 before tone mapping. Its floor is a ten-thousandth of the sun's illuminance; step 4 tunes it for night. Config's `exposure_ev` still shifts the tone map.
+- **Lighting.** Terrain is lit by the sun through the air, mostly as level ground (the imagery keeps its own shading), plus the sky. Models are Lambertian under both. At 10:30 local the terrain is as bright as before: a mean of 211 against 206 (out of 255) over the middle display's ground. Models' shaded sides, lit by the sky alone, are darker and bluer than the old fixed ambient.
+- **On the desk.**
+  - The sky's passes (the tables once; each frame, three views' sky-view tables, light and the exposure) cost about 0.07 ms a frame. They are counted in output 0's GPU time: 1.49 ms over the airport route's first minute, against 1.43 before.
+  - Every run held 60 Hz, its missed frames in the first 0.12 s (#41), with no validation messages.
+  - The sky matches across the seam between the two portrait displays.
+- **Goldens.** All five were regenerated and looked at. The reference scene has a blue sky; the terrain is unchanged; the boxes' shaded sides take the sky's blue. NVIDIA differs from them on at most 0.41% of pixels by more than 4.
+
 ## Step 3: Aerial perspective and visibility
 
 - **The haze.** Terrain and models fade into the sky with distance through the aerial-perspective volume. Visibility sets the haze (D-030).
