@@ -21,6 +21,22 @@ time = 15:30:00                 # UTC; 10:30 at Huntsville in March (CDT)
 time_runs = true                # false: the time stays as set
 visibility_m = 50000            # drawn from milestone 6 step 3
 
+# Weather layers (milestone 6 step 6), up to six: heights above mean sea
+# level, made ellipsoidal with [host]'s geoid_height_m. A cloud layer is
+# drawn at its base; coverage is the share of the sky it covers (1:
+# overcast). Fog, rain and snow are bands of the visibility given (fog's
+# 200 m, rain's 5,000 and snow's 1,500 if not).
+# [[environment.layer]]
+# kind = "cloud"                # cloud, fog, rain or snow
+# base_m = 1500
+# thickness_m = 400
+# coverage = 0.5                # clouds only
+# [[environment.layer]]
+# kind = "fog"
+# base_m = 150
+# thickness_m = 120
+# visibility_m = 300            # fog, rain and snow only
+
 # The milestone 1 reference scene (all optional).
 [reference_scene]
 eye_height_m = 2.0              # the eye above the ground grid

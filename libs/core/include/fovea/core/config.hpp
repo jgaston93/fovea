@@ -13,7 +13,9 @@
 
 #include "fovea/core/attitude.hpp"
 #include "fovea/core/geodesy.hpp"
+#include "fovea/core/containers.hpp"
 #include "fovea/core/math.hpp"
+#include "fovea/core/scene.hpp"
 
 namespace fovea {
 
@@ -97,6 +99,9 @@ struct EnvironmentConfig {
     double utc_seconds = 15.5 * 3600.0;  // since midnight
     bool time_runs = true;
     double visibility_m = 50000.0;
+    // [[environment.layer]] (step 6): heights above mean sea level, as a
+    // host gives them, converted with [host]'s geoid height.
+    FixedArray<WeatherLayer, kMaxWeatherLayers> layers;
 };
 
 struct DisplayConfig {

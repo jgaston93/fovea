@@ -172,6 +172,9 @@ float4 fs_scene(Fullscreen i) : SV_Target {
         colour += disc * min(s.sun_irradiance * s.exposure / (kPi * r * r), float3(60000.0));
         colour += min(moon_disc(ray, sun_width) * s.exposure, float3(60000.0));
     }
+    // Through the fog, rain and snow (step 6): to the ground plane, or out
+    // of them.
+    colour = through_bands(colour, -ray.z, ray.z > 0.0 && scene.grid != 0 ? t : 1e9, s, s.exposure);
     // The horizon line: where the ray is level, as wide as a grid line.
     if (scene.grid != 0) {
         const float level = abs(ray.z) / max(ray_z_width, 1e-6);

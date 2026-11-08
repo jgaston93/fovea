@@ -133,6 +133,51 @@ TEST(Config, EnvironmentSetsTheDateTimeAndVisibility) {
     }
 }
 
+// The weather layers (milestone 6 step 6): [[environment.layer]] tables,
+// each checked; fog, rain and snow take a visibility of their own kind's
+// unless given one.
+TEST(Config, EnvironmentLayersAreReadAndChecked) {
+    const auto r = parse(
+        "[[environment.layer]]\nkind = \"cloud\"\nbase_m = 1500\nthickness_m = 400\n"
+        "coverage = 0.4\n"
+        "[[environment.layer]]\nkind = \"fog\"\nbase_m = 180\nthickness_m = 60\n"
+        "[[environment.layer]]\nkind = \"rain\"\nbase_m = 0\nthickness_m = 1400\n"
+        "visibility_m = 3000\n" +
+        kMinimal);
+    ASSERT_TRUE(r.ok()) << r.errors.at(0).to_string();
+    const auto& layers = r.config->environment.layers;
+    ASSERT_EQ(layers.size(), 3U);
+    EXPECT_EQ(layers[0].kind, WeatherKind::cloud);
+    EXPECT_EQ(layers[0].base_m, 1500.0);
+    EXPECT_EQ(layers[0].thickness_m, 400.0);
+    EXPECT_EQ(layers[0].coverage, 0.4);
+    EXPECT_EQ(layers[1].kind, WeatherKind::fog);
+    EXPECT_EQ(layers[1].visibility_m, 200.0);
+    EXPECT_EQ(layers[2].kind, WeatherKind::rain);
+    EXPECT_EQ(layers[2].visibility_m, 3000.0);
+    EXPECT_EQ(parse(kMinimal).config->environment.layers.size(), 0U);
+
+    const std::string base = "base_m = 100\nthickness_m = 50\n";
+    for (const std::string& bad : std::vector<std::string>{
+             "kind = \"hail\"\n" + base, "kind = 3\n" + base, base,
+             "kind = \"cloud\"\nthickness_m = 50\n", "kind = \"cloud\"\nbase_m = 100\n",
+             "kind = \"fog\"\n" + base + "coverage = 0.5\n",
+             "kind = \"cloud\"\n" + base + "visibility_m = 500\n",
+             "kind = \"cloud\"\n" + base + "coverage = 1.5\n",
+             "kind = \"fog\"\nbase_m = 100\nthickness_m = 0\n",
+             "kind = \"fog\"\n" + base + "visibility_m = 0\n",
+             "kind = \"fog\"\n" + base + "colour = 1\n"}) {
+        const auto e = parse("[[environment.layer]]\n" + bad + kMinimal);
+        EXPECT_FALSE(e.ok()) << bad;
+    }
+    std::string seven;
+    for (int i = 0; i < 7; ++i) {
+        seven += "[[environment.layer]]\nkind = \"cloud\"\n" + base;
+    }
+    EXPECT_FALSE(parse(seven + kMinimal).ok());
+    EXPECT_FALSE(parse("[environment]\nlayer = 1\n" + kMinimal).ok());
+}
+
 TEST(Config, IntegersAreAcceptedForNumbers) {
     const auto r = parse(minimal_with("left = -30.0, right = 30.0", "left = -30, right = 30") +
                          "eye_offset = { x = 1, y = -0.5, z = 0 }\n");

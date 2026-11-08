@@ -182,8 +182,15 @@ float4 fs_terrain(TerrainVertex i) : SV_Target {
     const float2 shade = shadowed(
         shadow_lit(terrain_shadow_maps, terrain_shadow_sampler, i.rel, normalize(i.normal),
                    ddx(i.rel), ddy(i.rel)));
-    const float3 e = s.sun_irradiance * lerp(level, slope, 0.25) * shade.x +
-                     s.moon_irradiance * lerp(moon_level, moon_slope, 0.25) * shade.y +
-                     s.sky_irradiance;
-    return float4((albedo * e * kInvPi * i.air.a + i.air.rgb) * s.exposure, 1.0);
+    // Under the clouds, through the air and then the fog, rain and snow
+    // (step 6, D-034).
+    const float4 clouds = under_clouds(i.rel, s);
+    const float3 e = (s.sun_irradiance * lerp(level, slope, 0.25) * shade.x +
+                      s.moon_irradiance * lerp(moon_level, moon_slope, 0.25) * shade.y) *
+                         clouds.x +
+                     clouds.yzw;
+    const float3 lit = albedo * e * kInvPi * i.air.a + i.air.rgb * lighting.weather_light;
+    const float dist = length(i.rel);
+    const float mu = dot(i.rel, lighting.up) / max(dist, 1e-3);
+    return float4(through_bands(lit, mu, dist, s, 1.0) * s.exposure, 1.0);
 }

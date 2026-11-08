@@ -266,6 +266,11 @@ public:
     // default. A change remakes the atmosphere's tables on the next frame.
     void set_visibility(double visibility_m);
 
+    // The weather layers (milestone 6 step 6, D-034), heights above the
+    // ellipsoid: those the frames drawn from now on show. Until set, none.
+    // No allocation; at most kMaxWeatherLayers are kept.
+    void set_weather(std::span<const WeatherLayer> layers);
+
     // The sky's tables and an output's light, as the last frame left them
     // (milestone 6 step 2). For tests: waits for the GPU, and allocates.
     SkyReadback read_back_sky(std::uint32_t output);

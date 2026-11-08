@@ -827,6 +827,224 @@ TEST(TerrainRender, APostsShadowFallsWhereTheSunPutsIt) {
     }
 }
 
+// The image `v` gives of the database in `dir` lit by `sky`, under the
+// weather `layers` (step 6): settled, read back. Empty without Vulkan.
+std::vector<std::uint8_t> draw_weather(const fs::path& dir, const SceneView& v, std::uint32_t size,
+                                       const SkyBodies& sky, std::span<const WeatherLayer> layers) {
+    auto r = make_renderer(size, size);
+    if (!r) {
+        return {};
+    }
+    r->set_sky(sky);
+    r->set_weather(layers);
+    (void)r->load_terrain(open_db(dir));
+    settle_models(*r, {v}, 1);
+    EXPECT_EQ(r->validation_messages(), 0U);
+    return r->read_back_rgba(0);
+}
+
+double brightness(const std::vector<std::uint8_t>& px, std::uint32_t w, glm::dvec2 at) {
+    const auto c = colour_at(px, w, static_cast<int>(at.x), static_cast<int>(at.y));
+    return c[0] + c[1] + c[2];
+}
+
+// The weather (milestone 6 step 6, D-034): under a full overcast, 1,500 m
+// up and 400 m thick, the sun is hidden (looking at it shows the cloud's
+// grey, not the disc, at most a faint glow: the haze under the cloud is
+// still lit as clear air is, if less, D-034) and the ground is lit only by the light the
+// cloud lets through, so a post's shadow is gone; from above, the layer
+// hides the ground, the post with it, and its top is brighter than the
+// ground was.
+TEST(TerrainRender, AFullOvercastHidesTheSunAndLeavesOnlyItsDiffuseLight) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    s.placements = {{"post", lat0, lon0, 120.0, 0.0F}};
+    s.models = {{"post", box_glb(0.5F, 20.0F, 0.5F, {1.0F, 1.0F, 1.0F, 1.0F}, "")}};
+    const fs::path dir = write_db("overcast", s);
+    constexpr std::uint32_t kSize = 128;
+    const SkyBodies sky = sun_at_elevation(lat0, lon0, 40.0);
+    const std::array<WeatherLayer, 1> overcast = {
+        WeatherLayer{WeatherKind::cloud, 1620.0, 400.0, 1.0, 1000.0}};
+    const DMat3 ned = ned_to_ecef(lat0, lon0);
+    const DVec3 base = geodetic_to_ecef({lat0, lon0, 120.0});
+    const DVec3 sun = glm::transpose(ned) * sky.sun;
+    const glm::dvec2 away = -glm::normalize(glm::dvec2(sun.x, sun.y));
+    const double length = 20.0 * glm::length(glm::dvec2(sun.x, sun.y)) / -sun.z;
+
+    // From 300 m above the shadow's middle: in the shadow, and beside it.
+    const Geodetic middle =
+        ecef_to_geodetic(base + ned * DVec3(away.x * length / 2.0, away.y * length / 2.0, 0.0));
+    const SceneView down = view_at(middle, 300.0, -90.0, 0.0, 6.0);
+    const auto at = [&](double along, double across) {
+        const glm::dvec2 side(-away.y, away.x);
+        return project(down,
+                       ecef_to_geodetic(base + ned * DVec3(away * along + side * across, 0.0)),
+                       kSize, kSize);
+    };
+    const auto clear = draw_weather(dir, down, kSize, sky, {});
+    if (clear.empty()) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const auto under = draw_weather(dir, down, kSize, sky, overcast);
+    const double clear_dark = brightness(clear, kSize, at(length * 0.5, 0.0));
+    const double clear_lit = brightness(clear, kSize, at(length * 0.5, 10.0));
+    const double under_dark = brightness(under, kSize, at(length * 0.5, 0.0));
+    const double under_lit = brightness(under, kSize, at(length * 0.5, 10.0));
+    std::printf("clear: shadow %.0f, beside it %.0f; overcast: %.0f, %.0f\n", clear_dark, clear_lit,
+                under_dark, under_lit);
+    EXPECT_LT(clear_dark, clear_lit * 0.8);
+    EXPECT_NEAR(under_dark, under_lit, 3.0) << "a shadow under a full overcast";
+    EXPECT_LT(under_lit, clear_lit * 0.8) << "the overcast takes the sun's light";
+    EXPECT_GT(under_lit, 0.0);
+
+    // From the ground, looking at the sun.
+    const glm::dvec2 sun_ne = glm::normalize(glm::dvec2(sun.x, sun.y));
+    const double yaw = glm::degrees(std::atan2(sun_ne.y, sun_ne.x));
+    const double pitch = glm::degrees(std::asin(-sun.z));
+    const SceneView up = view_at({lat0 + 0.002, lon0, 120.0}, 2.0, pitch, yaw, 10.0);
+    const auto sunny = draw_weather(dir, up, kSize, sky, {});
+    const auto grey = draw_weather(dir, up, kSize, sky, overcast);
+    const glm::dvec2 centre(kSize / 2.0, kSize / 2.0);
+    const double disc = brightness(sunny, kSize, centre);
+    const double hidden = brightness(grey, kSize, centre);
+    const double aside = brightness(grey, kSize, centre + glm::dvec2(30.0, 30.0));
+    std::printf("the sun: clear %.0f, overcast %.0f (and 30 pixels off it %.0f)\n", disc, hidden,
+                aside);
+    EXPECT_GT(disc, 700.0);
+    EXPECT_LT(hidden, aside * 1.1) << "the sun shows through a full overcast";
+    EXPECT_LT(hidden, disc * 0.8);
+
+    // From 3,000 m, above the layer: it hides the ground and the post.
+    const SceneView above = view_at({lat0, lon0, 120.0}, 2880.0, -90.0, 0.0, 6.0);
+    const auto ground = draw_weather(dir, above, kSize, sky, {});
+    const auto tops = draw_weather(dir, above, kSize, sky, overcast);
+    double lo = 1e9;
+    double hi = -1e9;
+    for (std::uint32_t y = 0; y < kSize; y += 4) {
+        for (std::uint32_t x = 0; x < kSize; x += 4) {
+            const double b = brightness(tops, kSize, {x, y});
+            lo = std::min(lo, b);
+            hi = std::max(hi, b);
+        }
+    }
+    const double was = brightness(ground, kSize, centre);
+    std::printf("from above: the ground %.0f; the cloud's top %.0f to %.0f\n", was, lo, hi);
+    EXPECT_GT(lo, was) << "the cloud's top no brighter than the ground it hides";
+    EXPECT_LE(hi - lo, 6.0) << "the ground or the post shows through";
+}
+
+// Scattered cloud lets about its share of the sky through (step 6): seen
+// from below, 10 km up, in three places 100 km apart, a layer of coverage
+// c covers about c of the view: the pixels nearer a full overcast's than
+// the clear sky's (tone-mapped, so a blend's own fraction isn't linear).
+TEST(TerrainRender, ScatteredCloudLetsAboutItsShareOfTheSkyThrough) {
+    std::vector<OffscreenOutput> outputs(3, {96, 96});
+    RendererOptions options;
+    if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
+        options.validation = Validation::required;
+    }
+    std::unique_ptr<Renderer> r;
+    try {
+        r = Renderer::offscreen(outputs, options);
+    } catch (const std::runtime_error& e) {
+        if (std::getenv("FOVEA_REQUIRE_VULKAN") != nullptr) {
+            ADD_FAILURE() << "no Vulkan: " << e.what();
+        }
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    std::vector<SceneView> views;
+    for (int k = 0; k < 3; ++k) {
+        views.push_back(view_at({34.6, -86.8 + 1.1 * k, 0.0}, 100.0, 90.0, 0.0, 50.0));
+    }
+    r->set_sky(sun_at_elevation(34.6, -86.8, 45.0));
+    const auto draw = [&](double coverage) {
+        std::vector<std::vector<std::uint8_t>> out;
+        const std::array<WeatherLayer, 1> layer = {
+            WeatherLayer{WeatherKind::cloud, 10000.0, 400.0, coverage, 1000.0}};
+        r->set_weather(coverage > 0.0 ? std::span<const WeatherLayer>(layer)
+                                      : std::span<const WeatherLayer>());
+        r->draw_scene_frame(views);
+        for (std::uint32_t o = 0; o < 3; ++o) {
+            out.push_back(r->read_back_rgba(o));
+        }
+        return out;
+    };
+    const auto clear = draw(0.0);
+    const auto full = draw(1.0);
+    for (const double coverage : {0.3, 0.7}) {
+        const auto some = draw(coverage);
+        double cover = 0.0;
+        int counted = 0;
+        for (std::uint32_t o = 0; o < 3; ++o) {
+            for (std::uint32_t y = 0; y < 96; ++y) {
+                for (std::uint32_t x = 0; x < 96; ++x) {
+                    const double c = brightness(clear[o], 96, {x, y});
+                    const double f = brightness(full[o], 96, {x, y});
+                    if (std::abs(f - c) < 20.0) {
+                        continue;
+                    }
+                    const double v = brightness(some[o], 96, {x, y});
+                    cover += (v - c) / (f - c) > 0.5 ? 1.0 : 0.0;
+                    ++counted;
+                }
+            }
+        }
+        std::printf("coverage %.1f: %.3f of %d pixels covered\n", coverage, cover / counted,
+                    counted);
+        EXPECT_GT(counted, 3 * 96 * 96 * 9 / 10);
+        // Within 0.05 at five places tried (the noise's few cells in view
+        // vary it).
+        EXPECT_NEAR(cover / counted, coverage, 0.07);
+    }
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
+// A fog layer hides what is in it and not what is above it (step 6): a
+// white post 200 m tall, seen from 250 m up and 400 m away, through fog
+// from below the ground to 60 m up, of 30 m visibility. Its foot is lost in
+// the fog, as the ground beside it is; 100 m up, it shows as it does in
+// clear air.
+TEST(TerrainRender, AFogLayerHidesWhatIsInItAndNotWhatIsAbove) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    s.placements = {{"post", lat0, lon0, 120.0, 0.0F}};
+    s.models = {{"post", box_glb(5.0F, 200.0F, 5.0F, {1.0F, 1.0F, 1.0F, 1.0F}, "")}};
+    const fs::path dir = write_db("fog", s);
+    constexpr std::uint32_t kSize = 128;
+    const SkyBodies sky = sun_at_elevation(lat0, lon0, 40.0);
+    const DMat3 ned = ned_to_ecef(lat0, lon0);
+    const DVec3 base = geodetic_to_ecef({lat0, lon0, 120.0});
+    const Geodetic eye = ecef_to_geodetic(base + ned * DVec3(-400.0, 0.0, 0.0));
+    const SceneView v = view_at(eye, 250.0, -20.0, 0.0, 20.0);
+    const std::array<WeatherLayer, 1> fog = {
+        WeatherLayer{WeatherKind::fog, 70.0, 110.0, 1.0, 30.0}};
+    const auto clear = draw_weather(dir, v, kSize, sky, {});
+    if (clear.empty()) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const auto foggy = draw_weather(dir, v, kSize, sky, fog);
+    const auto on_post = [&](double up) {
+        return project(v, ecef_to_geodetic(base + ned * DVec3(0.0, 0.0, -up)), kSize, kSize);
+    };
+    const glm::dvec2 beside =
+        project(v, ecef_to_geodetic(base + ned * DVec3(0.0, 40.0, 0.0)), kSize, kSize);
+    const double foot_clear = brightness(clear, kSize, on_post(10.0));
+    const double foot_fog = brightness(foggy, kSize, on_post(10.0));
+    const double ground_fog = brightness(foggy, kSize, beside);
+    std::printf("the post's foot: clear %.0f, fog %.0f (the ground beside it %.0f)\n", foot_clear,
+                foot_fog, ground_fog);
+    EXPECT_GT(std::abs(foot_clear - brightness(clear, kSize, beside)), 60.0);
+    EXPECT_NEAR(foot_fog, ground_fog, 6.0) << "the post's foot shows through the fog";
+    for (const double up : {100.0, 150.0}) {
+        const double a = brightness(clear, kSize, on_post(up));
+        const double b = brightness(foggy, kSize, on_post(up));
+        std::printf("%.0f m up the post: clear %.0f, fog %.0f\n", up, a, b);
+        EXPECT_NEAR(a, b, 3.0) << "fog above its top";
+    }
+}
+
 // Shadows across views (step 5): three views of terrain with a model, the
 // sun up, drawn under validation (synchronization included): each view's
 // maps are drawn before its scene, and every view's are readable before
