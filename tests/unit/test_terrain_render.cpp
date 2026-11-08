@@ -967,7 +967,13 @@ TEST(TerrainRender, ASkyboxsCloudsCastNoShadows) {
         GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
     }
     const auto under = draw_weather(dir, down, kSize, sky, overcast, CloudModel::skybox);
-    EXPECT_EQ(clear, under);
+    // Within 2 levels a channel (NVIDIA's frames differ by a level).
+    ASSERT_EQ(clear.size(), under.size());
+    int worst = 0;
+    for (std::size_t k = 0; k < clear.size(); ++k) {
+        worst = std::max(worst, std::abs(int{clear[k]} - int{under[k]}));
+    }
+    EXPECT_LE(worst, 2);
 }
 
 // Scattered cloud lets about its share of the sky through (step 6): seen
