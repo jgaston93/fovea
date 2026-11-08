@@ -1538,9 +1538,15 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
         }
     };
 
-    if (request.scene) {
-        record_sky(f.cmd, slot, request.views);
-    }
+    // The sky's passes, before the first output's scene, inside its timing:
+    // the first output's GPU time includes them.
+    bool sky_recorded = false;
+    const auto sky_first = [&] {
+        if (request.scene && !sky_recorded) {
+            record_sky(f.cmd, slot, request.views);
+            sky_recorded = true;
+        }
+    };
 
     // The stage that first touches an acquired image: the clear's transfer,
     // or the tone-map pass's colour output. The acquire semaphore is waited
@@ -1568,6 +1574,7 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
     std::uint32_t wait_count = 0;
     for (std::size_t i = 0; i < swapchains.size(); ++i) {
         stamp(i, 0);
+        sky_first();
         if (image_index[i] == UINT32_MAX) {
             stamp(i, 1);
             continue;
@@ -1629,6 +1636,7 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
     for (std::size_t i = 0; i < offscreen.size(); ++i) {
         const OffscreenImage& o = offscreen[i];
         stamp(swapchains.size() + i, 0);
+        sky_first();
         // After the previous frame's copy out of this image (write after read).
         if (request.scene) {
             record_scene(f.cmd, slot, i, i < request.views.size() ? request.views[i] : SceneView{});
