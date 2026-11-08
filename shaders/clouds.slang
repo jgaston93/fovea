@@ -64,7 +64,12 @@ CloudOut fs_clouds(CloudPixel i) {
     }
     const float density = cloud_density(l.w, cells, 5, kCloudSpread, footprint);
     const float tau = cloud_depth(l) * density;
-    const float alpha = 1.0 - exp(-tau);
+    // Opaque where it lets less than a thousandth through: NVIDIA blends a
+    // half-float target in half floats, where 1 - alpha can't go below
+    // about 5e-4, and the sun's disc behind (some 60,000) then shone through
+    // even a full overcast. A thinner cloud dims the disc, as cloud does.
+    const float through_sky = exp(-tau);
+    const float alpha = through_sky < 1e-3 ? 1.0 : 1.0 - through_sky;
     if (alpha < 1e-3) {
         discard;
     }
