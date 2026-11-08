@@ -43,7 +43,11 @@ struct ViewSky {
 // Binding 3, the atmosphere (atmosphere.slang's Atmosphere), is declared by
 // the shaders that take it.
 
-// What the air between the eye and a point adds and takes away (D-030):
+// What the air between the eye and a point adds and takes away (D-030).
+// The transmittance is grey, the mean of red, green and blue, as Hillaire's
+// volume keeps it: distant lit surfaces lose a little of the reddening that
+// blue's faster extinction would give them, while the light scattered in
+// keeps its colour.
 // `pixel` the fragment's position (SV_Position.xy), `distance_km` its
 // distance from the eye. Returns the light scattered in (rgb, before
 // exposure) and the transmittance (a). The volume's first slice is faded in

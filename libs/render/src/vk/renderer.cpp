@@ -1351,7 +1351,7 @@ void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
         l.eye_radius_km = static_cast<float>(sky_tables->atmosphere().bottom_radius_km + height_km);
         l.inv_width = 1.0F / static_cast<float>(std::max(hdr[i].extent.width, 1U));
         l.inv_height = 1.0F / static_cast<float>(std::max(hdr[i].extent.height, 1U));
-        l.views = static_cast<std::uint32_t>(hdr.size());
+        l.views = sky_tables->views();  // the volumes' stacking, as SkyGpu made them
         const std::uint32_t at = lighting_offset(slot, i);
         std::memcpy(static_cast<std::uint8_t*>(lighting_mapped) + at, &l, sizeof(l));
         (void)vmaFlushAllocation(allocator, lighting_memory, at, sizeof(l));

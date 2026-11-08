@@ -118,7 +118,11 @@ TerrainVertex vs_terrain(uint vertex: SV_VulkanVertexID, uint instance: SV_Vulka
     // (In the fragment shader, any image of the frame set makes lavapipe,
     // Mesa 25.2.8 with LLVM 20, crash compiling this shader; models and the
     // sky look it up per pixel.)
-    const float2 uv = o.position.xy / max(o.position.w, 1e-6) * 0.5 + 0.5;
+    // A vertex behind the eye has no place on the screen: it is near (a
+    // triangle passing under the eye), where the haze is slight, and takes
+    // the middle column's. Off the screen, the edge columns serve.
+    const float2 uv =
+        o.position.w > 1e-6 ? o.position.xy / o.position.w * 0.5 + 0.5 : float2(0.5, 0.5);
     o.air = aerial_perspective_uv(uv, length(rel) * 0.001);
     // Texel centres lie inside the tile: its edges are the texture's edges,
     // row 0 at the south as in the grid.

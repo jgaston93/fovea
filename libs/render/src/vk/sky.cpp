@@ -208,7 +208,11 @@ SkyGpu::Image SkyGpu::make_volume(std::uint32_t width, std::uint32_t height,
 }
 
 void SkyGpu::set_visibility(double visibility_m) {
-    if (visibility_m == visibility_m_) {
+    // Not a visibility: kept as it was. Changes under 1% are let go too: a
+    // host easing the visibility a little every frame would otherwise remake
+    // the tables (most of a millisecond) every frame.
+    if (!std::isfinite(visibility_m) || visibility_m <= 0.0 ||
+        std::abs(visibility_m - visibility_m_) < 0.01 * visibility_m_) {
         return;
     }
     visibility_m_ = visibility_m;
@@ -228,6 +232,15 @@ SkyGpu::SkyGpu(const GpuContext& gpu, std::uint32_t views, const Atmosphere& atm
         multi_scattering_ = make_image(kMultiScatteringSize, kMultiScatteringSize, 1, false);
         // A layer a view, viewed as an array even for one.
         sky_view_ = make_image(kSkyViewWidth, kSkyViewHeight, views_, true);
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(gpu_.physical, &props);
+        if (kAerialDepth * views_ > props.limits.maxImageDimension3D) {
+            fail("sky: " + std::to_string(views_) + " views' aerial-perspective volumes (" +
+                 std::to_string(kAerialDepth) +
+                 " slices each) are deeper than this GPU's 3D "
+                 "images (" +
+                 std::to_string(props.limits.maxImageDimension3D) + ")");
+        }
         aerial_ = make_volume(kAerialWidth, kAerialHeight, kAerialDepth * views_);
         // Written on the GPU, in the frame's commands, when it changes
         // (record()): a frame still in flight reads the old values.

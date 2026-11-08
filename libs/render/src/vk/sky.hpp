@@ -67,6 +67,7 @@ public:
     VkBuffer atmosphere_buffer() const { return atmosphere_.buffer; }
     static VkDeviceSize atmosphere_size();
     const Atmosphere& atmosphere() const { return atmosphere_params_; }
+    std::uint32_t views() const { return views_; }
     // Whether record() has run: the tables exist (in GENERAL).
     bool started() const { return started_; }
 
