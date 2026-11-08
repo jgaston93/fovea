@@ -103,7 +103,7 @@ float4 fs_model(ModelVertex i, bool front: SV_IsFrontFace) : SV_Target {
     // Through the air to the eye (step 3).
     const float4 air = aerial_perspective(i.position.xy, length(i.rel) * 0.001);
     // In the shadows of whatever is between it and the light (step 5).
-    const float2 shade = shadowed(shadow_lit(shadow_maps, shadow_sampler, i.rel, n));
+    const float2 shade = shadowed(shadow_lit(shadow_maps, shadow_sampler, i.rel, n, ddx(i.rel), ddy(i.rel)));
     const float3 lit = colour.rgb * irradiance_on(n, s, shade) * kInvPi;
     return float4((lit * air.a + air.rgb) * s.exposure, coverage);
 }

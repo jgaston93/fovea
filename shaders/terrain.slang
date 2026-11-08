@@ -180,7 +180,8 @@ float4 fs_terrain(TerrainVertex i) : SV_Target {
     // In the shadows of models, and of terrain when the light is low (step
     // 5, D-032: the photographs hold the rest).
     const float2 shade = shadowed(
-        shadow_lit(terrain_shadow_maps, terrain_shadow_sampler, i.rel, normalize(i.normal)));
+        shadow_lit(terrain_shadow_maps, terrain_shadow_sampler, i.rel, normalize(i.normal),
+                   ddx(i.rel), ddy(i.rel)));
     const float3 e = s.sun_irradiance * lerp(level, slope, 0.25) * shade.x +
                      s.moon_irradiance * lerp(moon_level, moon_slope, 0.25) * shade.y +
                      s.sky_irradiance;

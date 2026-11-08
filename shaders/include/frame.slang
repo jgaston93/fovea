@@ -75,7 +75,12 @@ static const float3 kAirglow = float3(0.55, 0.65, 0.6) * (2e-5 / kPi);
 // sampler, and compared here: in the terrain's fragment shader, lavapipe
 // (Mesa 25.2.8, LLVM 20) crashes compiling Load, SampleLevel or SampleCmp
 // of an image, though not Sample.
-float shadow_lit(Texture2DArray<float> maps, SamplerState nearest, float3 rel, float3 n) {
+// `rel_dx` and `rel_dy` are rel's screen derivatives (ddx, ddy, taken by
+// the caller where control flow is uniform): the filter widens to the
+// pixel's footprint in the map, so a shadow thinner than the ground a
+// distant pixel covers averages out rather than flickering as it moves.
+float shadow_lit(Texture2DArray<float> maps, SamplerState nearest, float3 rel, float3 n,
+                 float3 rel_dx, float3 rel_dy) {
     if (lighting.shadow_light == 0) {
         return 1.0;
     }
@@ -98,7 +103,13 @@ float shadow_lit(Texture2DArray<float> maps, SamplerState nearest, float3 rel, f
             // among them (outer rows and columns by its fraction). A shadow
             // thinner than a few texels then fades as it moves, rather than
             // popping texel by texel.
-            const float2 f = (m.xy * 0.5 + 0.5) * 2048.0 - 0.5;
+            // The pixel's footprint in the map, in texels: the filter's taps
+            // spread to cover it (a texel apart at the least, eight at most).
+            const float2 fx = abs(mul(lighting.cascade[c], float4(rel_dx, 0.0)).xy);
+            const float2 fy = abs(mul(lighting.cascade[c], float4(rel_dy, 0.0)).xy);
+            const float2 footprint = (fx + fy) * 0.5 * 2048.0;
+            const float2 spread = clamp(footprint / 3.0, 1.0, 8.0);
+            const float2 f = (m.xy * 0.5 + 0.5) * 2048.0 / spread - 0.5;
             const float2 corner = floor(f) - 1.0;
             const float2 w = f - floor(f);
             const float4 wx = float4(1.0 - w.x, 1.0, 1.0, w.x);
@@ -106,7 +117,7 @@ float shadow_lit(Texture2DArray<float> maps, SamplerState nearest, float3 rel, f
             float lit = 0.0;
             for (int y = 0; y < 4; ++y) {
                 for (int x = 0; x < 4; ++x) {
-                    const float2 at = (corner + float2(x, y) + 0.5) / 2048.0;
+                    const float2 at = (corner + float2(x, y) + 0.5) * spread / 2048.0;
                     const float caster = maps.Sample(nearest, float3(at, layer));
                     lit += (m.z <= caster ? 1.0 : 0.0) * wx[x] * wy[y];
                 }
