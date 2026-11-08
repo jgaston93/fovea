@@ -990,8 +990,10 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
     }
     up.flush();
 
-    t->draws_ = t->make_buffer(VkDeviceSize{slots} * t->outputs_ * capacity * sizeof(TileDraw),
-                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+    // Per slot and output: the view's records, then each shadow cascade's.
+    t->draws_ =
+        t->make_buffer(VkDeviceSize{slots} * t->outputs_ * kRegions * capacity * sizeof(TileDraw),
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
     t->stack_.resize(capacity);
     t->selected_.resize(capacity);
     t->wants_.resize(capacity);
@@ -1408,7 +1410,7 @@ std::uint32_t TerrainGpu::prepare(std::uint32_t slot, std::uint32_t output, cons
     drawn_[o] = drawn;
     // The selected tiles' records, relative to the eye, for the draws.
     const std::uint32_t capacity = cache_->capacity();
-    const std::uint32_t base = (slot * outputs_ + o) * capacity;
+    const std::uint32_t base = (slot * outputs_ + o) * kRegions * capacity;
     auto* records = static_cast<TileDraw*>(draws_.mapped) + base;
     for (std::uint32_t i = 0; i < drawn; ++i) {
         const std::uint32_t t = selected_[i];
@@ -1442,10 +1444,40 @@ void TerrainGpu::draw_shadow(VkCommandBuffer cmd, std::uint32_t slot, std::uint3
                              std::uint32_t cascade, const SceneView& view, const Mat4& to_map,
                              bool terrain_casts) {
     const std::uint32_t o = std::min(output, outputs_ - 1);
-    const std::uint32_t drawn = drawn_[o];
-    if (terrain_casts && drawn > 0) {
-        // The view's selected tiles: they cover what it sees, though not
-        // hills outside it toward the light.
+    std::uint32_t drawn = 0;
+    const std::uint32_t capacity = cache_->capacity();
+    const std::uint32_t base =
+        ((slot * outputs_ + o) * kRegions + 1 + std::min(cascade, kShadowCascades - 1)) * capacity;
+    if (terrain_casts) {
+        // The view's selected tiles (they cover what it sees, though not
+        // hills outside it toward the light) that reach this cascade's box,
+        // in its own region of records: each cascade draws only its own.
+        const DMat4 m(to_map);
+        const double sx = glm::length(DVec3(m[0][0], m[1][0], m[2][0]));
+        const double sy = glm::length(DVec3(m[0][1], m[1][1], m[2][1]));
+        const double sz = glm::length(DVec3(m[0][2], m[1][2], m[2][2]));
+        auto* records = static_cast<TileDraw*>(draws_.mapped) + base;
+        for (std::uint32_t i = 0; i < drawn_[o]; ++i) {
+            const std::uint32_t t = selected_[i];
+            const TileInfo& info = cache_->info(t);
+            const glm::dvec4 c = m * glm::dvec4(info.lod.centre_ecef - view.eye_ecef, 1.0);
+            const double r = info.lod.radius_m;
+            // Toward the light (z under 0) still casts: clamped onto the box.
+            if (std::abs(c.x) > 1.0 + r * sx || std::abs(c.y) > 1.0 + r * sy ||
+                c.z > 1.0 + r * sz) {
+                continue;
+            }
+            const DVec3 off = info.origin_ecef - view.eye_ecef;
+            records[drawn++] = {
+                {static_cast<float>(off.x), static_cast<float>(off.y), static_cast<float>(off.z)},
+                t,
+                info.skirt_m,
+                {}};
+        }
+        (void)vmaFlushAllocation(gpu_.allocator, draws_.memory, base * sizeof(TileDraw),
+                                 drawn * sizeof(TileDraw));
+    }
+    if (drawn > 0) {
         TerrainPush push;
         push.ecef_to_clip = to_map;
         push.samples = samples_;
@@ -1455,8 +1487,7 @@ void TerrainGpu::draw_shadow(VkCommandBuffer cmd, std::uint32_t slot, std::uint3
         vkCmdBindIndexBuffer(cmd, indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(push), &push);
-        vkCmdDrawIndexed(cmd, index_count_, drawn, 0, 0,
-                         (slot * outputs_ + o) * cache_->capacity());
+        vkCmdDrawIndexed(cmd, index_count_, drawn, 0, 0, base);
     }
     if (models_) {
         models_->record_shadow(cmd, slot, o, cascade, view, to_map, stats_.placements_dropped);
@@ -1466,7 +1497,7 @@ void TerrainGpu::draw_shadow(VkCommandBuffer cmd, std::uint32_t slot, std::uint3
 void TerrainGpu::draw_tiles(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t o,
                             const SceneView& view, std::uint32_t drawn,
                             std::uint32_t lighting_offset) {
-    const std::uint32_t base = (slot * outputs_ + o) * cache_->capacity();
+    const std::uint32_t base = (slot * outputs_ + o) * kRegions * cache_->capacity();
     TerrainPush push;
     push.ecef_to_clip = view.ecef_to_clip;
     push.samples = samples_;

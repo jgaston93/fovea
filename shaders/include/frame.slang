@@ -68,7 +68,7 @@ static const float3 kAirglow = float3(0.55, 0.65, 0.6) * (2e-5 / kPi);
 
 // How much of the shadow light reaches a point relative to the eye (ECEF,
 // metres) with normal n: the first cascade whose map holds it, its depth
-// compared with the nearest caster's over 3 x 3 texels. The point is moved
+// compared with the nearest caster's over 3 x 3 texels, bilinearly. The point is moved
 // a texel along its normal first, and toward the light, so a surface
 // doesn't shadow itself. Taking the maps as arguments lets the terrain pass its own copy
 // (see terrain.slang). The depths are read with Sample and a nearest
@@ -92,15 +92,23 @@ float shadow_lit(Texture2DArray<float> maps, SamplerState nearest, float3 rel, f
         const float3 p = rel + n * texel_m + l * texel_m * (1.0 + 1.5 * grazing);
         const float4 m = mul(lighting.cascade[c], float4(p, 1.0));
         if (all(abs(m.xy) < 0.98) && m.z >= 0.0 && m.z <= 1.0) {
-            const float2 uv = m.xy * 0.5 + 0.5;
             const float layer = float(lighting.view * 4 + c);
-            const float texel = 1.0 / 2048.0;
+            // A 3 x 3 filter of bilinear comparisons: the 4 x 4 texels around
+            // the point, each compared, weighted by where the point falls
+            // among them (outer rows and columns by its fraction). A shadow
+            // thinner than a few texels then fades as it moves, rather than
+            // popping texel by texel.
+            const float2 f = (m.xy * 0.5 + 0.5) * 2048.0 - 0.5;
+            const float2 corner = floor(f) - 1.0;
+            const float2 w = f - floor(f);
+            const float4 wx = float4(1.0 - w.x, 1.0, 1.0, w.x);
+            const float4 wy = float4(1.0 - w.y, 1.0, 1.0, w.y);
             float lit = 0.0;
-            for (int y = -1; y <= 1; ++y) {
-                for (int x = -1; x <= 1; ++x) {
-                    const float caster =
-                        maps.Sample(nearest, float3(uv + float2(x, y) * texel, layer));
-                    lit += m.z <= caster ? 1.0 : 0.0;
+            for (int y = 0; y < 4; ++y) {
+                for (int x = 0; x < 4; ++x) {
+                    const float2 at = (corner + float2(x, y) + 0.5) / 2048.0;
+                    const float caster = maps.Sample(nearest, float3(at, layer));
+                    lit += (m.z <= caster ? 1.0 : 0.0) * wx[x] * wy[y];
                 }
             }
             return lit / 9.0;

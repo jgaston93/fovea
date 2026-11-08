@@ -172,6 +172,9 @@ private:
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     VkPipeline shadow_pipeline_ = VK_NULL_HANDLE;
     std::vector<std::uint32_t> drawn_;  // per output: tiles prepare() picked
+    // Per slot and output, regions of draws_: the view's, then a shadow
+    // cascade's each (step 5).
+    static constexpr std::uint32_t kRegions = 1 + kShadowCascades;
 };
 
 }  // namespace fovea
