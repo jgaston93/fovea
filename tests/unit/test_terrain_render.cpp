@@ -920,6 +920,8 @@ TEST(TerrainRender, HillsMatchTheGoldenImage) {
     ASSERT_TRUE(golden.has_value()) << "missing " << file << " (FOVEA_UPDATE_GOLDEN=1 makes it)";
     const ImageDifference d = compare_images(image, *golden, 4);
     ASSERT_TRUE(d.same_size);
+    std::printf("golden terrain_hills    mean %.3f  max %3d  over 4: %.4f%%\n", d.mean_abs,
+                int{d.max_abs}, d.fraction_over * 100.0);
     if (d.fraction_over > 0.01) {
         // What this GPU drew, to look at beside the golden.
         const fs::path actual = fs::temp_directory_path() / "terrain_hills.actual.png";
@@ -1003,6 +1005,8 @@ TEST(TerrainRender, ModelsOnHillsMatchTheGoldenImage) {
     ASSERT_TRUE(golden.has_value()) << "missing " << file << " (FOVEA_UPDATE_GOLDEN=1 makes it)";
     const ImageDifference d = compare_images(image, *golden, 4);
     ASSERT_TRUE(d.same_size);
+    std::printf("golden models_on_hills  mean %.3f  max %3d  over 4: %.4f%%\n", d.mean_abs,
+                int{d.max_abs}, d.fraction_over * 100.0);
     if (d.fraction_over > 0.01) {
         const fs::path actual = fs::temp_directory_path() / "models_on_hills.actual.png";
         EXPECT_TRUE(write_png(actual, image));
