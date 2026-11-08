@@ -92,6 +92,9 @@ struct DisplayConfig {
     PresenterKind presenter = PresenterKind::multi_swapchain;
     double target_hz = 60.0;
     double near_m = 0.1;
+    // Samples per pixel of each view's scene (milestone 5, D-027): 1, 2, 4
+    // or 8; the renderer refuses a count the GPU can't do.
+    std::uint32_t msaa = 4;
     std::vector<ChannelConfig> channels;
     ReferenceScene reference_scene;
     std::optional<HostConfig> host;

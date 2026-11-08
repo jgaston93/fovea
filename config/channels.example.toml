@@ -11,6 +11,7 @@
 presenter = "multi_swapchain"   # or "spanned", "offscreen"
 target_hz = 60
 near_m = 0.1                    # reverse-Z, infinite far plane
+msaa = 4                        # samples per pixel: 1, 2, 4 or 8 (D-027), as the GPU can
 
 # The milestone 1 reference scene (all optional).
 [reference_scene]

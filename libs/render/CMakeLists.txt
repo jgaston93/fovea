@@ -4,6 +4,7 @@
 add_library(fovea_render STATIC
     src/display_clock.cpp
     src/frame_loop.cpp
+    src/resolve.cpp
     src/scene_view.cpp
     src/terrain_cache.cpp
     src/terrain_lod.cpp
@@ -45,5 +46,8 @@ fovea_add_shader(fovea_render "${terrain_shader}" fs_terrain fragment kFsTerrain
 set(model_shader "${PROJECT_SOURCE_DIR}/shaders/model.slang")
 fovea_add_shader(fovea_render "${model_shader}" vs_model vertex kVsModel ${terrain_capabilities})
 fovea_add_shader(fovea_render "${model_shader}" fs_model fragment kFsModel ${terrain_capabilities})
+# The weighted resolve of multisampled scenes (milestone 5 step 1).
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/resolve.slang" fs_resolve fragment
+                 kFsResolve)
 # Just the generated shader headers: what clang-tidy needs from a build.
 add_custom_target(fovea_shaders DEPENDS ${FOVEA_SHADER_HEADERS})

@@ -303,6 +303,12 @@ bool load_terrain(fovea::Renderer& renderer, const fovea::DisplayConfig& config)
 // (the offscreen presenter, or --headless with any config). Draws the given
 // number of frames, prints the colour read back from the middle of each
 // channel, and with --dump writes each channel's last frame as <name>.png.
+fovea::RendererOptions renderer_options(const fovea::DisplayConfig& config) {
+    fovea::RendererOptions r;
+    r.msaa = config.msaa;
+    return r;
+}
+
 int run_headless(const Options& options, const fovea::DisplayConfig& config) {
     if (config.host) {
         std::printf(
@@ -327,7 +333,7 @@ int run_headless(const Options& options, const fovea::DisplayConfig& config) {
         outputs.push_back({config.channels[i].render_width, config.channels[i].render_height});
         clears.push_back(colour_of(i));
     }
-    const auto renderer = fovea::Renderer::offscreen(outputs);
+    const auto renderer = fovea::Renderer::offscreen(outputs, renderer_options(config));
     print_gpu(*renderer);
     if (!options.clear && !load_terrain(*renderer, config)) {
         return 1;
@@ -424,7 +430,7 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
             outputs.push_back({&windows[i], ch.present_mode, ch.render_width, ch.render_height});
             clears.push_back(colour_of(i));
         }
-        renderer = fovea::Renderer::for_windows(platform, outputs);
+        renderer = fovea::Renderer::for_windows(platform, outputs, renderer_options(config));
         print_gpu(*renderer);
         if (!options.clear && !load_terrain(*renderer, config)) {
             return 1;

@@ -40,6 +40,7 @@ TEST(Golden, ReferenceSceneMatchesTheGoldenImages) {
     }
     const std::vector<SceneView> views = reference_scene_views(config);
     RendererOptions options;
+    options.msaa = config.msaa;  // 4, the default
     if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
         options.validation = Validation::required;
     }

@@ -82,11 +82,24 @@ TEST(Config, OptionalFieldsTakeDefaults) {
     EXPECT_EQ(r.config->presenter, PresenterKind::multi_swapchain);
     EXPECT_EQ(r.config->target_hz, 60.0);
     EXPECT_EQ(r.config->near_m, 0.1);
+    EXPECT_EQ(r.config->msaa, 4U);
     const ChannelConfig& ch = r.config->channels.at(0);
     EXPECT_EQ(ch.present_mode, PresentMode::fifo);
     EXPECT_EQ(ch.entity, 0U);
     EXPECT_EQ(ch.eye_offset_m, DVec3(0.0));
     EXPECT_EQ(ch.view_rotation.yaw_deg, 0.0);
+}
+
+TEST(Config, MsaaIsOneTwoFourOrEight) {
+    for (const int n : {1, 2, 4, 8}) {
+        const auto r = parse("[display]\nmsaa = " + std::to_string(n) + "\n" + kMinimal);
+        ASSERT_TRUE(r.ok()) << n << ": " << r.errors.at(0).to_string();
+        EXPECT_EQ(r.config->msaa, static_cast<std::uint32_t>(n));
+    }
+    for (const char* bad : {"0", "3", "16", "4.0", "\"4\""}) {
+        const auto r = parse(std::string("[display]\nmsaa = ") + bad + "\n" + kMinimal);
+        EXPECT_FALSE(r.ok()) << bad;
+    }
 }
 
 TEST(Config, IntegersAreAcceptedForNumbers) {
@@ -98,13 +111,15 @@ TEST(Config, IntegersAreAcceptedForNumbers) {
 }
 
 TEST(Config, AllFieldsAreRead) {
-    const auto r = parse("[display]\npresenter = \"spanned\"\ntarget_hz = 59.94\nnear_m = 0.25\n" +
-                         minimal_with("monitor = 1", "monitor = 2\npresent_mode = \"mailbox\"") +
-                         "view_rotation = { yaw = 45, pitch = -5, roll = 1 }\n");
+    const auto r =
+        parse("[display]\npresenter = \"spanned\"\ntarget_hz = 59.94\nnear_m = 0.25\nmsaa = 8\n" +
+              minimal_with("monitor = 1", "monitor = 2\npresent_mode = \"mailbox\"") +
+              "view_rotation = { yaw = 45, pitch = -5, roll = 1 }\n");
     ASSERT_TRUE(r.ok()) << r.errors.at(0).to_string();
     EXPECT_EQ(r.config->presenter, PresenterKind::spanned);
     EXPECT_EQ(r.config->target_hz, 59.94);
     EXPECT_EQ(r.config->near_m, 0.25);
+    EXPECT_EQ(r.config->msaa, 8U);
     const ChannelConfig& ch = r.config->channels[0];
     EXPECT_EQ(ch.monitor, 2);
     EXPECT_EQ(ch.present_mode, PresentMode::mailbox);

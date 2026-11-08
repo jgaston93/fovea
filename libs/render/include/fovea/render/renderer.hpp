@@ -30,6 +30,10 @@ enum class Validation : std::uint8_t {
 
 struct RendererOptions {
     Validation validation = Validation::if_available;
+    // Samples per pixel of the scene pass (milestone 5, D-027): 1, 2, 4 or
+    // 8, as the GPU can (every Vulkan GPU can do 4); a count it can't do
+    // fails, naming those it can.
+    std::uint32_t msaa = 4;
 };
 
 struct GpuInfo {

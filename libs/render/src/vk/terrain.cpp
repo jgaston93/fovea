@@ -1128,7 +1128,7 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
     raster.lineWidth = 1.0F;
     VkPipelineMultisampleStateCreateInfo multisample{};
     multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    multisample.rasterizationSamples = gpu.samples;
     VkPipelineDepthStencilStateCreateInfo depth_state{};
     depth_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depth_state.depthTestEnable = VK_TRUE;
