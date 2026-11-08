@@ -46,7 +46,7 @@ As before, each step is its own pull request. Steps 1 and 2 run in WSL and CI (l
 | Needed by | Input |
 |---|---|
 | Plan | ~~D-027 and D-028~~ accepted |
-| Step 3 | Time at the desk: comparing edges with and without |
+| Step 3 | ~~Time at the desk: comparing edges with and without~~ done |
 
 ## Step 3 results (2026-11-07)
 
@@ -62,5 +62,5 @@ On the desk (RTX 5070 Ti; 2560 x 1440 and two 1080 x 1920 views), each route 120
 - Every run held 60 Hz with no validation messages; its one or two missed frames all fell in its first 0.07 s (the start-up miss, #41).
 - 4 samples costs about 0.2 ms an output and 365 MiB over 1 (48 bytes a rendered pixel predicts 358 MiB); 8 another 0.35 to 0.45 ms and 362 MiB. All within the frame many times over.
 - In screenshots, 4 samples smooths the buildings' roof lines and corners, stair-stepped at 1. The runways' edges and markings are imagery, not geometry: multisampling leaves them as they were (texture filtering already smooths them).
-- The default stays 4: <!-- the owner's look -->
+- The default stays 4: watching the airport route at 1 and then 4 samples, the owner found 4 much better. 8 is left to look at later (#62).
 
