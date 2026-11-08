@@ -42,7 +42,9 @@ struct ViewLighting {
     std::array<float, 3> sun_local{0.0F, 0.0F, -1.0F};  // the eye's level frame (x north, z down)
     std::uint32_t view = 0;                             // the view's entries in the sky's arrays
     float eye_radius_km = 0.0F;  // the atmosphere's bottom radius plus the eye's height
-    std::array<float, 3> unused{};
+    float inv_width = 1.0F;      // 1 / the view's render size, pixels
+    float inv_height = 1.0F;
+    std::uint32_t views = 1;  // how many views share the sky's arrays
 };
 static_assert(sizeof(ViewLighting) == 64, "must match ViewLighting in frame.slang");
 

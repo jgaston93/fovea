@@ -45,8 +45,11 @@ struct SkyPush {
     float adapt = 1.0F;
     float key = 0.0F;
     float floor_illuminance = 0.0F;
+    Mat4 clip_to_local{1.0F};
+    std::array<float, 3> sun_local{};
+    float unused = 0.0F;
 };
-static_assert(sizeof(SkyPush) == 32, "must match SkyPush in sky.slang");
+static_assert(sizeof(SkyPush) == 112, "must match SkyPush in sky.slang");
 
 // The exposure takes a level surface's light to pi: a white one shows as
 // 1 before tone mapping. Below a ten-thousandth of the sun's illuminance
@@ -176,18 +179,74 @@ void SkyGpu::destroy(Buffer& b) const {
     b = {};
 }
 
+SkyGpu::Image SkyGpu::make_volume(std::uint32_t width, std::uint32_t height,
+                                  std::uint32_t depth) const {
+    VkImageCreateInfo ici{};
+    ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.imageType = VK_IMAGE_TYPE_3D;
+    ici.format = kTableFormat;
+    ici.extent = {width, height, depth};
+    ici.mipLevels = 1;
+    ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage =
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    VmaAllocationCreateInfo aci{};
+    aci.usage = VMA_MEMORY_USAGE_AUTO;
+    Image img;
+    check(vmaCreateImage(gpu_.allocator, &ici, &aci, &img.image, &img.memory, nullptr),
+          "vmaCreateImage (aerial)");
+    VkImageViewCreateInfo vci{};
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image = img.image;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_3D;
+    vci.format = kTableFormat;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    check(vkCreateImageView(gpu_.device, &vci, nullptr, &img.view), "vkCreateImageView (aerial)");
+    return img;
+}
+
+void SkyGpu::set_visibility(double visibility_m) {
+    // Not a visibility: kept as it was. Changes under 1% are let go too: a
+    // host easing the visibility a little every frame would otherwise remake
+    // the tables (most of a millisecond) every frame.
+    if (!std::isfinite(visibility_m) || visibility_m <= 0.0 ||
+        std::abs(visibility_m - visibility_m_) < 0.01 * visibility_m_) {
+        return;
+    }
+    visibility_m_ = visibility_m;
+    atmosphere_params_ = with_visibility(base_atmosphere_, visibility_m);
+    atmosphere_dirty_ = true;
+    tables_dirty_ = true;
+}
+
 SkyGpu::SkyGpu(const GpuContext& gpu, std::uint32_t views, const Atmosphere& atmosphere,
-               std::span<const VkShaderModule, 5> modules)
-    : gpu_(gpu), views_(std::max(views, 1U)), atmosphere_params_(atmosphere) {
+               std::span<const VkShaderModule, 6> modules)
+    : gpu_(gpu),
+      views_(std::max(views, 1U)),
+      atmosphere_params_(atmosphere),
+      base_atmosphere_(atmosphere) {
     try {
         transmittance_ = make_image(kTransmittanceWidth, kTransmittanceHeight, 1, false);
         multi_scattering_ = make_image(kMultiScatteringSize, kMultiScatteringSize, 1, false);
         // A layer a view, viewed as an array even for one.
         sky_view_ = make_image(kSkyViewWidth, kSkyViewHeight, views_, true);
-        atmosphere_ = make_buffer(sizeof(AtmosphereGpu), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true);
-        const AtmosphereGpu a = to_gpu(atmosphere_params_);
-        std::memcpy(atmosphere_.mapped, &a, sizeof(a));
-        (void)vmaFlushAllocation(gpu_.allocator, atmosphere_.memory, 0, VK_WHOLE_SIZE);
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(gpu_.physical, &props);
+        if (kAerialDepth * views_ > props.limits.maxImageDimension3D) {
+            fail("sky: " + std::to_string(views_) + " views' aerial-perspective volumes (" +
+                 std::to_string(kAerialDepth) +
+                 " slices each) are deeper than this GPU's 3D "
+                 "images (" +
+                 std::to_string(props.limits.maxImageDimension3D) + ")");
+        }
+        aerial_ = make_volume(kAerialWidth, kAerialHeight, kAerialDepth * views_);
+        // Written on the GPU, in the frame's commands, when it changes
+        // (record()): a frame still in flight reads the old values.
+        atmosphere_ = make_buffer(
+            sizeof(AtmosphereGpu),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false);
         view_sky_size_ = sizeof(ViewSky) * views_;
         view_sky_ = make_buffer(
             view_sky_size_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -206,12 +265,13 @@ SkyGpu::SkyGpu(const GpuContext& gpu, std::uint32_t views, const Atmosphere& atm
         check(vkCreateSampler(gpu_.device, &sci, nullptr, &sampler_), "vkCreateSampler (sky)");
 
         // The bindings of shaders/sky.slang's set 0.
-        const std::array<VkDescriptorType, 8> types = {
+        const std::array<VkDescriptorType, 9> types = {
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
-        std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE};
+        std::array<VkDescriptorSetLayoutBinding, 9> bindings{};
         for (std::uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
             bindings[b].descriptorType = types[b];
@@ -226,7 +286,7 @@ SkyGpu::SkyGpu(const GpuContext& gpu, std::uint32_t views, const Atmosphere& atm
               "vkCreateDescriptorSetLayout (sky)");
         const std::array<VkDescriptorPoolSize, 4> sizes = {
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4},
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2},
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
         VkDescriptorPoolCreateInfo pci{};
@@ -252,7 +312,9 @@ SkyGpu::SkyGpu(const GpuContext& gpu, std::uint32_t views, const Atmosphere& atm
             VkDescriptorImageInfo{VK_NULL_HANDLE, multi_scattering_.view, VK_IMAGE_LAYOUT_GENERAL},
             VkDescriptorImageInfo{sampler_, multi_scattering_.view, VK_IMAGE_LAYOUT_GENERAL},
             VkDescriptorImageInfo{VK_NULL_HANDLE, sky_view_.view, VK_IMAGE_LAYOUT_GENERAL}};
-        std::array<VkWriteDescriptorSet, 8> writes{};
+        const VkDescriptorImageInfo aerial_info{VK_NULL_HANDLE, aerial_.view,
+                                                VK_IMAGE_LAYOUT_GENERAL};
+        std::array<VkWriteDescriptorSet, 9> writes{};
         for (std::uint32_t b = 0; b < writes.size(); ++b) {
             writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[b].dstSet = set_;
@@ -266,6 +328,7 @@ SkyGpu::SkyGpu(const GpuContext& gpu, std::uint32_t views, const Atmosphere& atm
         }
         writes[6].pBufferInfo = &view_sky_info;
         writes[7].pBufferInfo = &state_info;
+        writes[8].pImageInfo = &aerial_info;
         vkUpdateDescriptorSets(gpu_.device, static_cast<std::uint32_t>(writes.size()),
                                writes.data(), 0, nullptr);
 
@@ -315,6 +378,7 @@ void SkyGpu::release() {
     destroy(transmittance_);
     destroy(multi_scattering_);
     destroy(sky_view_);
+    destroy(aerial_);
     destroy(atmosphere_);
     destroy(view_sky_);
     destroy(exposure_state_);
@@ -348,9 +412,9 @@ void SkyGpu::record(VkCommandBuffer cmd, std::span<const SkyViewInput> views, fl
     const VkPipelineStageFlags2 compute = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     if (!started_) {
         // Every table lives in GENERAL: written by compute, sampled after.
-        std::array<VkImageMemoryBarrier2, 3> ibs{};
-        const std::array<VkImage, 3> images = {transmittance_.image, multi_scattering_.image,
-                                               sky_view_.image};
+        std::array<VkImageMemoryBarrier2, 4> ibs{};
+        const std::array<VkImage, 4> images = {transmittance_.image, multi_scattering_.image,
+                                               sky_view_.image, aerial_.image};
         for (std::size_t i = 0; i < ibs.size(); ++i) {
             ibs[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
             ibs[i].srcStageMask = VK_PIPELINE_STAGE_2_NONE;
@@ -374,6 +438,18 @@ void SkyGpu::record(VkCommandBuffer cmd, std::span<const SkyViewInput> views, fl
                         compute, kComputeRw);
         started_ = true;
     }
+    if (atmosphere_dirty_) {
+        // After every earlier frame's reads of the old values.
+        const VkPipelineStageFlags2 readers = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                              VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | compute;
+        compute_barrier(cmd, readers, VK_ACCESS_2_UNIFORM_READ_BIT,
+                        VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        const AtmosphereGpu a = to_gpu(atmosphere_params_);
+        vkCmdUpdateBuffer(cmd, atmosphere_.buffer, 0, sizeof(a), &a);
+        compute_barrier(cmd, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                        readers, VK_ACCESS_2_UNIFORM_READ_BIT);
+        atmosphere_dirty_ = false;
+    }
     // After the previous frame's scene read the sky-view tables and light,
     // and its compute passes wrote them.
     compute_barrier(
@@ -396,6 +472,8 @@ void SkyGpu::record(VkCommandBuffer cmd, std::span<const SkyViewInput> views, fl
                                              std::max(in.eye_height_km, 0.0));
         push.mu_s = static_cast<float>(in.sun_mu);
         push.sun_up = static_cast<float>(in.sun_up);
+        push.clip_to_local = in.clip_to_local;
+        push.sun_local = {in.sun_local.x, in.sun_local.y, in.sun_local.z};
         vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
     };
     if (push.views == 0) {
@@ -415,6 +493,11 @@ void SkyGpu::record(VkCommandBuffer cmd, std::span<const SkyViewInput> views, fl
     for (std::uint32_t v = 0; v < push.views; ++v) {
         set_view(v);
         vkCmdDispatch(cmd, (kSkyViewWidth + 7) / 8, (kSkyViewHeight + 7) / 8, 1);
+    }
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines_[5]);
+    for (std::uint32_t v = 0; v < push.views; ++v) {
+        set_view(v);
+        vkCmdDispatch(cmd, kAerialWidth / 8, kAerialHeight / 8, 1);
     }
     compute_barrier(cmd, compute, kComputeRw, compute, kComputeRw);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines_[3]);
@@ -437,8 +520,9 @@ SkyReadback SkyGpu::read_back(std::uint32_t view) {
     const VkDeviceSize t_bytes = VkDeviceSize{kTransmittanceWidth} * kTransmittanceHeight * 8;
     const VkDeviceSize m_bytes = VkDeviceSize{kMultiScatteringSize} * kMultiScatteringSize * 8;
     const VkDeviceSize s_bytes = VkDeviceSize{kSkyViewWidth} * kSkyViewHeight * 8;
-    Buffer out = make_buffer(t_bytes + m_bytes + s_bytes + sizeof(ViewSky),
-                             VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
+    const VkDeviceSize a_bytes = VkDeviceSize{kAerialWidth} * kAerialHeight * kAerialDepth * 8;
+    const VkDeviceSize sky_at = t_bytes + m_bytes + s_bytes + a_bytes;
+    Buffer out = make_buffer(sky_at + sizeof(ViewSky), VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandPoolCreateInfo pci{};
     pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -469,8 +553,13 @@ SkyReadback SkyGpu::read_back(std::uint32_t view) {
     copy(multi_scattering_.image, kMultiScatteringSize, kMultiScatteringSize, 0, t_bytes);
     copy(sky_view_.image, kSkyViewWidth, kSkyViewHeight, std::min(view, views_ - 1),
          t_bytes + m_bytes);
-    const VkBufferCopy bc{sizeof(ViewSky) * std::min(view, views_ - 1), t_bytes + m_bytes + s_bytes,
-                          sizeof(ViewSky)};
+    VkBufferImageCopy ac{};
+    ac.bufferOffset = t_bytes + m_bytes + s_bytes;
+    ac.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    ac.imageOffset = {0, 0, static_cast<std::int32_t>(kAerialDepth * std::min(view, views_ - 1))};
+    ac.imageExtent = {kAerialWidth, kAerialHeight, kAerialDepth};
+    vkCmdCopyImageToBuffer(cmd, aerial_.image, VK_IMAGE_LAYOUT_GENERAL, out.buffer, 1, &ac);
+    const VkBufferCopy bc{sizeof(ViewSky) * std::min(view, views_ - 1), sky_at, sizeof(ViewSky)};
     vkCmdCopyBuffer(cmd, view_sky_.buffer, out.buffer, 1, &bc);
     compute_barrier(cmd, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                     VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
@@ -499,9 +588,9 @@ SkyReadback SkyGpu::read_back(std::uint32_t view) {
     r.transmittance = unpack(0, t_bytes);
     r.multi_scattering = unpack(t_bytes, m_bytes);
     r.sky_view = unpack(t_bytes + m_bytes, s_bytes);
+    r.aerial = unpack(t_bytes + m_bytes + s_bytes, a_bytes);
     ViewSky s;
-    std::memcpy(&s, static_cast<const std::uint8_t*>(out.mapped) + t_bytes + m_bytes + s_bytes,
-                sizeof(s));
+    std::memcpy(&s, static_cast<const std::uint8_t*>(out.mapped) + sky_at, sizeof(s));
     r.sun_irradiance = s.sun_irradiance;
     r.sky_irradiance = s.sky_irradiance;
     r.exposure = s.exposure;

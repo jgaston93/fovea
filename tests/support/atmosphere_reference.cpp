@@ -256,6 +256,12 @@ Rgb AtmosphereReference::sky_radiance(double r, double mu_s, double zenith, doub
         }
         through = through * step_t;
     }
+    if (ground >= 0.0) {
+        const std::array<double, 3> g = {dir[0] * ground, r + dir[1] * ground, dir[2] * ground};
+        const double mu_g = (g[0] * sun[0] + g[1] * sun[1]) / a_.bottom_radius_km;
+        light = light + through * sun_transmittance(a_.bottom_radius_km, mu_g) *
+                            Rgb{a_.ground_albedo} * (std::max(mu_g, 0.0) / kPi);
+    }
     return light * Rgb{a_.sun_illuminance};
 }
 

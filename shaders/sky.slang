@@ -14,6 +14,7 @@
 [[vk::binding(4, 0)]] Sampler2D<float4> multi_scattering;
 [[vk::binding(5, 0)]] [[vk::image_format("rgba16f")]] RWTexture2DArray<float4> sky_view_out;
 [[vk::binding(6, 0)]] RWStructuredBuffer<ViewSky> view_sky_out;
+[[vk::binding(8, 0)]] [[vk::image_format("rgba16f")]] RWTexture3D<float4> aerial_out;
 // [0]: the exposure carried between frames, in stops (its log2: a settled
 // exposure then stays exactly the same), [1]: 1 once it has one.
 [[vk::binding(7, 0)]] RWStructuredBuffer<float> exposure_state;
@@ -28,6 +29,11 @@ struct SkyPush {
     float adapt;  // how far exposure moves to its target this frame, 0 to 1
     float key;    // exposure times a level surface's illuminance
     float floor_illuminance;  // exposure stops rising below this (night)
+    // For the aerial-perspective volume: the view's clip space to its level
+    // frame (x north, y east, z down), and the sun in that frame.
+    float4x4 clip_to_local;
+    float3 sun_local;
+    float unused;
 };
 [[vk::push_constant]] ConstantBuffer<SkyPush> push;
 
@@ -53,7 +59,7 @@ void cs_transmittance(uint3 id: SV_DispatchThreadID) {
     const float r = r_mu.x;
     const float mu = r_mu.y;
     const float path = max(distance_to_sphere(r, mu, atmosphere.top_radius), 0.0);
-    const int steps = 40;
+    const int steps = 160;
     const float dt = path / steps;
     float3 depth = float3(0.0);
     for (int i = 0; i < steps; ++i) {
@@ -133,8 +139,8 @@ void cs_multi_scattering(uint3 id: SV_DispatchThreadID) {
     }
 }
 
-// The sky seen from the eye in every direction (excluding the sun's disc
-// and the ground), for this frame's sun.
+// The sky seen from the eye in every direction, for this frame's sun:
+// the sun's disc left out, the ground below the horizon lit by the sun.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void cs_sky_view(uint3 id: SV_DispatchThreadID) {
@@ -154,7 +160,7 @@ void cs_sky_view(uint3 id: SV_DispatchThreadID) {
     const float c = dot(dir, sun);
     const float pr = rayleigh_phase(c);
     const float pm = mie_phase(atmosphere.mie_g, c);
-    const int steps = 96;
+    const int steps = 32;
     float3 through = float3(1.0);
     float3 light = float3(0.0);
     float t_prev = 0.0;
@@ -176,6 +182,15 @@ void cs_sky_view(uint3 id: SV_DispatchThreadID) {
         const float3 safe = max(m.extinction, 1e-9);
         light += through * (s - s * step_t) / safe;
         through *= step_t;
+    }
+    if (ground >= 0.0) {
+        // The ground where no terrain is drawn over it (beyond a database's
+        // edge): its albedo, lit by the sun through the air, seen through
+        // the air between.
+        const float3 g = float3(0.0, r, 0.0) + dir * ground;
+        const float mu_g = dot(normalize(g), sun);
+        light += through * sun_transmittance(atmosphere.bottom_radius, mu_g) * saturate(mu_g) *
+                 atmosphere.ground_albedo / kPi;
     }
     sky_view_out[uint3(id.xy, push.view)] = float4(light * atmosphere.sun_illuminance, 1.0);
 }
@@ -217,14 +232,17 @@ void cs_irradiance(uint3 id: SV_DispatchThreadID) {
     }
 }
 
-// The exposure all views share (D-031), from the first view's light on
-// level ground: moved toward its target by `adapt`, in stops.
+// The exposure all views share (D-031), from the first view's light: the
+// sun's on a surface facing it, and the sky's. Not the light on level
+// ground: that falls toward nothing as the sun sets, while the air toward
+// the sun stays bright, and an exposure following it washed dusk out.
+// Moved toward its target by `adapt`, in stops.
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void cs_exposure(uint3 id: SV_DispatchThreadID) {
     const ViewSky s = view_sky_out[0];
-    const float level = luminance(s.sun_irradiance * max(push.mu_s, 0.0) + s.sky_irradiance);
-    const float target = push.key / max(level, push.floor_illuminance);
+    const float light = luminance(s.sun_irradiance + s.sky_irradiance);
+    const float target = push.key / max(light, push.floor_illuminance);
     float stops = log2(target);
     if (exposure_state[1] != 0.0) {
         // Not lerp(): a + (b - a) t leaves a settled exposure exactly as it was.
@@ -235,5 +253,61 @@ void cs_exposure(uint3 id: SV_DispatchThreadID) {
     const float exposure = exp2(stops);
     for (uint v = 0; v < push.views; ++v) {
         view_sky_out[v].exposure = exposure;
+    }
+}
+
+// The view's aerial-perspective volume (step 3, D-030): along each froxel
+// column's ray, the light scattered toward the eye and the transmittance
+// from the eye to each slice's far edge, as cs_sky_view integrates the sky.
+// The atmosphere's frame is y up; the level frame's is z down.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void cs_aerial(uint3 id: SV_DispatchThreadID) {
+    if (any(float2(id.xy) >= kAerialSize.xy)) {
+        return;
+    }
+    const float2 ndc = (float2(id.xy) + 0.5) / kAerialSize.xy * 2.0 - 1.0;
+    const float4 p = mul(push.clip_to_local, float4(ndc, 1.0, 1.0));
+    const float3 ray = normalize(p.xyz / p.w);
+    const float3 dir = float3(ray.x, -ray.z, ray.y);
+    const float3 sun = float3(push.sun_local.x, -push.sun_local.z, push.sun_local.y);
+    const float r = push.eye_radius;
+    const float mu = dir.y;
+    // The air ends at the ground, or at the top of the atmosphere.
+    const float ground = distance_to_ground(r, mu, atmosphere.bottom_radius);
+    const float top = max(distance_to_sphere(r, mu, atmosphere.top_radius), 0.0);
+    const float end = ground >= 0.0 ? ground : top;
+    const float c = dot(dir, sun);
+    const float pr = rayleigh_phase(c);
+    const float pm = mie_phase(atmosphere.mie_g, c);
+    float3 through = float3(1.0);
+    float3 light = float3(0.0);
+    float t_prev = 0.0;
+    const uint depth = uint(kAerialSize.z);
+    for (uint k = 0; k < depth; ++k) {
+        // Two steps a slice, none past the end of the air.
+        const float t_far = min(aerial_distance(float(k + 1)), end);
+        for (uint h = 0; h < 2; ++h) {
+            const float t_next = lerp(t_prev, t_far, 0.5 * float(h + 1)) ;
+            const float dt = t_next - t_prev;
+            if (dt > 0.0) {
+                const float t = t_prev + 0.5 * dt;
+                const float3 q = float3(0.0, r, 0.0) + dir * t;
+                const float ri = length(q);
+                const float mu_s = dot(q, sun) / ri;
+                const Medium m = medium_at(atmosphere, ri - atmosphere.bottom_radius);
+                const float3 step_t = exp(-m.extinction * dt);
+                const float3 sun_t = sun_transmittance(ri, mu_s);
+                const float3 ms =
+                    multi_scattering.SampleLevel(multi_scattering_uv(atmosphere, ri, mu_s), 0.0).rgb;
+                const float3 s = (m.rayleigh * pr + m.mie * pm) * sun_t + m.scattering * ms;
+                const float3 safe = max(m.extinction, 1e-9);
+                light += through * (s - s * step_t) / safe;
+                through *= step_t;
+            }
+            t_prev = t_next;
+        }
+        aerial_out[uint3(id.xy, push.view * depth + k)] =
+            float4(light * atmosphere.sun_illuminance, dot(through, float3(1.0 / 3.0)));
     }
 }

@@ -25,7 +25,7 @@ public:
 
     // The sky's radiance seen from radius r along (zenith, azimuth from the
     // sun), the sun at zenith cosine mu_s: the sun's illuminance included,
-    // the sun's disc and the ground's own light not.
+    // the sun's disc not; below the horizon, the ground lit by the sun.
     Rgb sky_radiance(double r, double mu_s, double zenith, double azimuth) const;
 
     // Multiple scattering per unit of sun illuminance, from its table.

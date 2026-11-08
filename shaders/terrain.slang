@@ -83,6 +83,7 @@ struct TerrainVertex {
     float4 position : SV_Position;
     float2 uv;
     float3 normal;
+    float4 air;  // the air between it and the eye (aerial_perspective)
     nointerpolation uint tile;
 };
 
@@ -110,7 +111,19 @@ TerrainVertex vs_terrain(uint vertex: SV_VulkanVertexID, uint instance: SV_Vulka
     }
 
     TerrainVertex o;
-    o.position = mul(push.ecef_to_clip, float4(d.offset + s.position, 1.0));
+    const float3 rel = d.offset + s.position;
+    o.position = mul(push.ecef_to_clip, float4(rel, 1.0));
+    // Through the air to the eye (step 3), at each vertex: terrain's
+    // triangles are a few pixels across, where the haze barely changes.
+    // (In the fragment shader, any image of the frame set makes lavapipe,
+    // Mesa 25.2.8 with LLVM 20, crash compiling this shader; models and the
+    // sky look it up per pixel.)
+    // A vertex behind the eye has no place on the screen: it is near (a
+    // triangle passing under the eye), where the haze is slight, and takes
+    // the middle column's. Off the screen, the edge columns serve.
+    const float2 uv =
+        o.position.w > 1e-6 ? o.position.xy / o.position.w * 0.5 + 0.5 : float2(0.5, 0.5);
+    o.air = aerial_perspective_uv(uv, length(rel) * 0.001);
     // Texel centres lie inside the tile: its edges are the texture's edges,
     // row 0 at the south as in the grid.
     o.uv = float2(float(cc), float(rc)) / float(n - 1);
@@ -132,5 +145,5 @@ float4 fs_terrain(TerrainVertex i) : SV_Target {
     const float level = saturate(-lighting.sun_local.z);
     const float slope = saturate(dot(normalize(i.normal), lighting.sun));
     const float3 e = s.sun_irradiance * lerp(level, slope, 0.25) + s.sky_irradiance;
-    return float4(albedo * e * kInvPi * s.exposure, 1.0);
+    return float4((albedo * e * kInvPi * i.air.a + i.air.rgb) * s.exposure, 1.0);
 }

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <stdexcept>
@@ -208,6 +209,34 @@ TEST(ReferenceScene, RollTiltsTheHorizon) {
 }
 
 // The bright grid rows in one column, as row positions (centre of each run).
+// The bright runs down column x from from_row: each run's first and last
+// row. Bright is a third of the way from the ground (the column's darkest)
+// to its brightest line: far lines are thin and antialiased, fainter in one
+// column than the next.
+std::vector<std::pair<double, double>> line_runs(const Image& img, std::uint32_t x,
+                                                 std::uint32_t from_row) {
+    std::vector<std::pair<double, double>> runs;
+    int brightest = 0;
+    int darkest = 1 << 30;
+    for (std::uint32_t y = from_row; y < kH; ++y) {
+        brightest = std::max(brightest, img.brightness(x, y));
+        darkest = std::min(darkest, img.brightness(x, y));
+    }
+    const int threshold = darkest + (brightest - darkest) / 3;
+    for (std::uint32_t y = from_row; y < kH;) {
+        if (img.brightness(x, y) < threshold) {
+            ++y;
+            continue;
+        }
+        const std::uint32_t start = y;
+        while (y < kH && img.brightness(x, y) >= threshold) {
+            ++y;
+        }
+        runs.emplace_back(start, y - 1);
+    }
+    return runs;
+}
+
 std::vector<double> line_rows(const Image& img, std::uint32_t x, std::uint32_t from_row) {
     std::vector<double> rows;
     int threshold = 0;
@@ -267,26 +296,36 @@ TEST(ReferenceScene, LinesContinueAcrossTheSharedEdge) {
     if (images.empty()) {
         GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
     }
-    const auto left = line_rows(images[0], kW - 1, kH / 2 + 2);
-    const auto centre = line_rows(images[1], 0, kH / 2 + 2);
+    // Where the lines are resolved: nearer the horizon they are thinner than
+    // a pixel, antialiased, and one edge column sees a line the next just
+    // misses (how faint depends on the exposure, milestone 6).
+    const auto left = line_runs(images[0], kW - 1, kH / 2 + 50);
+    const auto centre = line_runs(images[1], 0, kH / 2 + 50);
     ASSERT_GE(left.size(), 5U);
     ASSERT_GE(centre.size(), 5U);
     // Match by position both ways, not by count: where two lines cross right
-    // at the edge, one column sees two runs and the next sees them merged.
+    // at the edge, one column sees two runs and the next sees them merged
+    // into one, whose middle lies between the two. So each run's middle is
+    // matched to the nearest of the other side's runs, anywhere along it.
     // The two edge columns are one pixel apart in angle, so allow a little
     // for the lines' slope.
-    const auto nearest = [](const std::vector<double>& rows, double r) {
+    const auto nearest = [](const std::vector<std::pair<double, double>>& runs, double r) {
         double best = 1e9;
-        for (double v : rows) {
-            best = std::min(best, std::abs(v - r));
+        for (const auto& [first, last] : runs) {
+            best = std::min(best, r < first ? first - r : (r > last ? r - last : 0.0));
         }
         return best;
     };
-    for (double r : left) {
-        EXPECT_LE(nearest(centre, r), kEdgeTolerancePx) << "left-edge line at row " << r;
+    const auto middle = [](const std::pair<double, double>& run) {
+        return (run.first + run.second) / 2.0;
+    };
+    for (const auto& run : left) {
+        EXPECT_LE(nearest(centre, middle(run)), kEdgeTolerancePx)
+            << "left-edge line at row " << middle(run);
     }
-    for (double r : centre) {
-        EXPECT_LE(nearest(left, r), kEdgeTolerancePx) << "centre-edge line at row " << r;
+    for (const auto& run : centre) {
+        EXPECT_LE(nearest(left, middle(run)), kEdgeTolerancePx)
+            << "centre-edge line at row " << middle(run);
     }
     EXPECT_EQ(horizon_row(images[0], kW - 1), horizon_row(images[1], 0));
 }
@@ -311,7 +350,15 @@ TEST(ReferenceScene, EyeOffsetMovesTheEye) {
     const auto raised_px = r->read_back_rgba(0);
     const auto high_px = r->read_back_rgba(1);
     const auto moved_px = r->read_back_rgba(2);
-    EXPECT_EQ(raised_px, high_px);
+    // The same to a level: the two eyes, reached differently, can differ in
+    // their last bits, and the sky's haze (milestone 6 step 3) is computed
+    // from each view's own eye.
+    int worst = 0;
+    for (std::size_t i = 0; i < raised_px.size(); ++i) {
+        worst = std::max(worst, std::abs(int{raised_px[i]} - int{high_px[i]}));
+    }
+    std::printf("raised against high: at most %d levels apart\n", worst);
+    EXPECT_LE(worst, 1);
     EXPECT_NE(moved_px, high_px);
     EXPECT_EQ(r->validation_messages(), 0U);
 }

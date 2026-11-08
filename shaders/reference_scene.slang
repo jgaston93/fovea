@@ -42,6 +42,10 @@ struct ScenePush {
     // stays small however far the eye is. Not a position: anything that
     // doesn't repeat with the grid needs its own camera-relative input.
     float2 eye_offset_m;
+    // 0 once terrain is loaded: below the horizon is then the sky-view
+    // table's hazy ground wherever no terrain is drawn over it, with no
+    // grid and no horizon line (milestone 6 step 3).
+    uint grid;
 };
 [[vk::push_constant]] ConstantBuffer<ScenePush> scene;
 
@@ -99,11 +103,16 @@ float4 fs_scene(Fullscreen i) : SV_Target {
 
     const ViewSky s = view_sky[lighting.view];
     float3 colour;
-    if (ray.z > 0.0) {
+    if (ray.z > 0.0 && scene.grid == 0) {
+        colour = sky_radiance(ray) * s.exposure;
+    } else if (ray.z > 0.0) {
         // Below the horizon: the ground plane, eye_height_m below the eye,
         // lit as level ground.
         const float3 e = s.sun_irradiance * saturate(-lighting.sun_local.z) + s.sky_irradiance;
-        colour = lerp(kGround, kGridLine, grid_lines(g, g_width)) * e * kInvPi * s.exposure;
+        const float3 lit = lerp(kGround, kGridLine, grid_lines(g, g_width)) * e * kInvPi;
+        // Through the air to the eye (step 3): t is the distance, metres.
+        const float4 air = aerial_perspective(i.position.xy, t * 0.001);
+        colour = (lit * air.a + air.rgb) * s.exposure;
     } else {
         colour = sky_radiance(ray) * s.exposure;
         const float r = atmosphere.sun_angular_radius;
@@ -114,8 +123,10 @@ float4 fs_scene(Fullscreen i) : SV_Target {
         colour += disc * min(s.sun_irradiance * s.exposure / (kPi * r * r), float3(60000.0));
     }
     // The horizon line: where the ray is level, as wide as a grid line.
-    const float level = abs(ray.z) / max(ray_z_width, 1e-6);
-    colour = lerp(colour, kHorizonLine, 1.0 - saturate(level));
+    if (scene.grid != 0) {
+        const float level = abs(ray.z) / max(ray_z_width, 1e-6);
+        colour = lerp(colour, kHorizonLine, 1.0 - saturate(level));
+    }
     return float4(colour, 1.0);
 }
 

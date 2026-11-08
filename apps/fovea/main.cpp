@@ -352,6 +352,7 @@ int run_headless(const Options& options, const fovea::DisplayConfig& config) {
     }
     const auto views = fovea::reference_scene_views(config);
     const fovea::EnvironmentState environment = environment_state(config.environment, fovea::now());
+    renderer->set_visibility(environment.visibility_m);
     for (std::uint32_t f = 0; f < options.frames; ++f) {
         renderer->set_sky(fovea::sky_bodies(fovea::julian_date_at(environment, fovea::now())));
         if (options.clear) {

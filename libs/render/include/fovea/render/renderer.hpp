@@ -261,6 +261,11 @@ public:
     // time. Until then, those of EnvironmentState's default date and time.
     void set_sky(const SkyBodies& sky);
 
+    // The visibility, metres (milestone 6 step 3, D-030): the haze the
+    // frames drawn from now on look through. Until set, EnvironmentState's
+    // default. A change remakes the atmosphere's tables on the next frame.
+    void set_visibility(double visibility_m);
+
     // The sky's tables and an output's light, as the last frame left them
     // (milestone 6 step 2). For tests: waits for the GPU, and allocates.
     SkyReadback read_back_sky(std::uint32_t output);

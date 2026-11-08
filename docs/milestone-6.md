@@ -139,6 +139,25 @@ The environment adds three packets: Celestial Sphere Control, Atmosphere Control
   - At 100 km visibility, a terrain golden still shows the far hills.
   - Where terrain levels of detail meet in the distance, the seam softens (looked at on the desk).
 
+### Step 3 results (2026-11-08)
+
+- **Koschmieder's relation holds.** Along a level ray from sea level, the air's transmittance falls to 2% at 20.3 km with visibility set to 20 km, and at 42.2 km with it set to 40 km, on lavapipe and NVIDIA alike. That is read from the aerial-perspective volume (32 x 32 froxels a view, 64 slices spaced as their index squared, out to 300 km): 8-bit images can't resolve a 2% contrast.
+- **What is drawn fades.** From 300 m up, ground about 5 km away stands 87 levels apart from the sky above the horizon at 200 km visibility, and 6 (9 on NVIDIA) at 500 m.
+- **Visibility sets the aerosols.** Koschmieder's extinction, 3.912 / V in green light at sea level, less Rayleigh's, gives the Mie density (`with_visibility`). A change rewrites the atmosphere's uniform buffer in the frame's own commands (a frame still in flight reads the old values) and remakes the tables. The transmittance table now takes 160 steps: hazy air made the old 40 off by 6.5% on grazing rays, against the CPU integral. The sky-view table goes back to 32 steps: step 2 had raised it to 96 while chasing what turned out to be the ground test, and 32 meets the 3% the plan asks for. The CPU check of the tables now uses the default 50 km visibility: transmittance within 0.39%, the sky within 1.3%.
+- **Visibility changes under 1% are let go**, so a host easing it a little every frame doesn't remake the tables (most of a millisecond) every frame. A visibility that isn't a positive number is ignored. The volumes, 64 slices a view, are stacked in one 3D image: a GPU at Vulkan's minimum 3D size (256) takes 4 views, and more is refused at start-up with the reason.
+- **Terrain's haze is looked up per vertex.** In the terrain's fragment shader, any image of the frame set makes lavapipe (Mesa 25.2.8, LLVM 20) crash compiling it, though its limits are a million images a stage. Terrain triangles are a few pixels across, so the vertex shader looks the haze up and interpolates it. Models and the reference ground look it up per pixel, inside the multisampled pass.
+- **The default 50 km is a hazy day.** The sky is paler than step 2's, which had Hillaire's aerosols, about 220 km. A deployment sets `visibility_m`.
+- **A test made tolerant.** A view raised 8 m by its offset and one placed 10 m up now differ by up to a level on NVIDIA: the two eyes, reached by different arithmetic, differ in their last bits, and the haze is computed from each view's eye. `ReferenceScene.EyeOffsetMovesTheEye` allows that level.
+- **On the desk.**
+  - The volumes and the per-pixel lookups cost 0.02 to 0.06 ms an output over the routes' first minute (output 0: 1.52 ms on the airport route, 1.94 on KHUA, against 1.49 and 1.88 at step 2).
+  - Every run held 60 Hz, with no validation messages.
+  - The ridge east of KHUA turns blue-grey with distance, and the far terrain melts into the sky, the same across all three displays.
+  - **The owner's look** at the KHUA route at noon, at dusk (7:45 pm, the sun low in the west) and in 10 km haze found two faults, both fixed here.
+    - Dusk glared, everything bleached. Exposure had followed the light on level ground (step 2), which falls toward nothing as the sun sets while the air toward the sun stays bright. It now follows the light on a surface facing the sun, plus the sky's (D-031's illuminance at the eye): noon barely changes, and dusk is warm and golden, the horizon orange toward the sun.
+    - A thin white band at the horizon, in every run, was the reference scene's horizon line, drawn at eye level above the terrain's dipped horizon. With terrain loaded, the grid and the line are no longer drawn. Below the horizon, where no terrain covers it, the sky-view table now holds the ground, lit by the sun through the air (the CPU check has the same term).
+    - The owner found the result better. The owner hasn't noticed seams between terrain's levels of detail in the distance, without looking for them closely; a closer look is left for the hardware check (step 9). A test that grid lines continue across the seam between two displays now looks where the lines are resolved: nearer the horizon they are thinner than a pixel, and the new exposure left one edge column seeing a line the other just missed.
+- **Goldens.** All five were regenerated and looked at: the sky hazier, the reference ground and the hills' far edge fading. NVIDIA differs from them on at most 0.34% of pixels by more than 4.
+
 ## Step 4: Night
 
 - **The night sky.** The sky through twilight into night, the moon with its phase (and moonlight, through the same atmosphere), and stars from the Yale Bright Star Catalogue (public domain; about 9,000 stars to magnitude 6.5, drawn as points after the resolve, their brightness by magnitude).

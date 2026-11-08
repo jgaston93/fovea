@@ -1,3 +1,5 @@
+#pragma once
+
 // The atmosphere (milestone 6, D-030; Hillaire, "A Scalable and Production
 // Ready Sky and Atmosphere Rendering Technique", 2020): its medium, phase
 // functions and the tables' parameterizations. Distances in km. Mirrored on
@@ -100,6 +102,25 @@ float texel_to_unit(float u, float size) {
 static const float2 kTransmittanceSize = float2(256.0, 64.0);
 static const float2 kMultiScatteringSize = float2(32.0, 32.0);
 static const float2 kSkyViewSize = float2(192.0, 108.0);
+
+// The aerial-perspective volume (milestone 6 step 3): each view's frustum in
+// froxels, 32 x 32 across the screen and 64 deep, the slices spaced as the
+// square of their index out to kAerialDistance km (fine near the eye, where
+// fog thickens fastest). Each holds the light scattered toward the eye
+// between it and the eye (rgb) and the mean transmittance (a).
+static const float3 kAerialSize = float3(32.0, 32.0, 64.0);
+static const float kAerialDistance = 300.0;
+
+// A distance (km) to its slice coordinate, 0 at the eye, 64 at the far end.
+float aerial_slice(float d) {
+    return sqrt(saturate(d / kAerialDistance)) * kAerialSize.z;
+}
+
+// A slice's far edge (km).
+float aerial_distance(float slice) {
+    const float w = slice / kAerialSize.z;
+    return w * w * kAerialDistance;
+}
 
 // The transmittance table: (radius, zenith cosine) to uv, Bruneton's
 // mapping (rays that don't hit the ground).

@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <span>
 
+#include "fovea/core/math.hpp"
 #include "fovea/render/atmosphere.hpp"
 #include "gpu_context.hpp"
 
@@ -31,6 +32,8 @@ struct SkyViewInput {
     double eye_height_km = 0.0;  // above the ellipsoid
     double sun_mu = 0.0;         // the sun's zenith cosine at the eye
     double sun_up = 1.0;         // how much of its disc is above the horizon
+    Mat4 clip_to_local{1.0F};    // the view's clip space to its level frame (x north, z down)
+    Vec3 sun_local{0.0F, 0.0F, -1.0F};
 };
 
 class SkyGpu {
@@ -38,7 +41,7 @@ public:
     // The tables for `views` views. The shader modules are the five compute
     // entry points, in the order of shaders/sky.slang.
     SkyGpu(const GpuContext& gpu, std::uint32_t views, const Atmosphere& atmosphere,
-           std::span<const VkShaderModule, 5> modules);
+           std::span<const VkShaderModule, 6> modules);
     ~SkyGpu();
     SkyGpu(const SkyGpu&) = delete;
     SkyGpu& operator=(const SkyGpu&) = delete;
@@ -50,15 +53,21 @@ public:
     // allocation.
     void record(VkCommandBuffer cmd, std::span<const SkyViewInput> views, float adapt);
 
-    // For the frame set (binding 1, 2 and 3 of frame.slang and the scene's
+    // The visibility the air is set for (D-030): a change remakes the
+    // tables on the next record().
+    void set_visibility(double visibility_m);
+
+    // For the frame set (binding 1 to 4 of frame.slang and the scene's
     // shaders).
     VkBuffer view_sky() const { return view_sky_.buffer; }
     VkDeviceSize view_sky_size() const { return view_sky_size_; }
     VkImageView sky_view_tables() const { return sky_view_.view; }
+    VkImageView aerial_volumes() const { return aerial_.view; }
     VkSampler sampler() const { return sampler_; }
     VkBuffer atmosphere_buffer() const { return atmosphere_.buffer; }
     static VkDeviceSize atmosphere_size();
     const Atmosphere& atmosphere() const { return atmosphere_params_; }
+    std::uint32_t views() const { return views_; }
     // Whether record() has run: the tables exist (in GENERAL).
     bool started() const { return started_; }
 
@@ -78,6 +87,7 @@ private:
         VmaAllocation memory = nullptr;
         void* mapped = nullptr;
     };
+    Image make_volume(std::uint32_t width, std::uint32_t height, std::uint32_t depth) const;
     Image make_image(std::uint32_t width, std::uint32_t height, std::uint32_t layers,
                      bool array) const;
     void release();
@@ -91,6 +101,7 @@ private:
     Image transmittance_;
     Image multi_scattering_;
     Image sky_view_;
+    Image aerial_;  // 3D: kAerialDepth slices a view, stacked
     Buffer atmosphere_;
     Buffer view_sky_;
     Buffer exposure_state_;
@@ -100,9 +111,12 @@ private:
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
     VkDescriptorSet set_ = VK_NULL_HANDLE;
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
-    std::array<VkPipeline, 5> pipelines_{};
-    bool started_ = false;      // the images are in GENERAL and the state cleared
-    bool tables_dirty_ = true;  // the atmosphere changed: remake its tables
+    std::array<VkPipeline, 6> pipelines_{};
+    Atmosphere base_atmosphere_;  // before the visibility's aerosols
+    double visibility_m_ = 0.0;
+    bool atmosphere_dirty_ = true;  // the uniform buffer is to be written
+    bool started_ = false;          // the images are in GENERAL and the state cleared
+    bool tables_dirty_ = true;      // the atmosphere changed: remake its tables
 };
 
 }  // namespace fovea
