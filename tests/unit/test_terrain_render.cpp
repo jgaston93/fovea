@@ -624,6 +624,34 @@ double mix_of(const std::vector<std::uint8_t>& px, std::uint32_t w, int x, int y
     return along / length;
 }
 
+// The image of a database seen from `v`, settled with its one model, drawn
+// with `msaa` samples a pixel; empty with no Vulkan (the caller skips).
+std::vector<std::uint8_t> draw_settled(const fs::path& dir, const SceneView& v, std::uint32_t size,
+                                       std::uint32_t msaa) {
+    RendererOptions options;
+    options.msaa = msaa;
+    if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
+        options.validation = Validation::required;
+    }
+    auto r = make_renderer(size, size, options);
+    if (!r) {
+        return {};
+    }
+    (void)r->load_terrain(open_db(dir));
+    settle_models(*r, {v}, 1);
+    EXPECT_EQ(r->terrain_stats().placements_drawn, 1U);
+    EXPECT_EQ(r->validation_messages(), 0U);
+    return r->read_back_rgba(0);
+}
+
+// A pixel's colour, as doubles.
+std::array<double, 3> colour_at(const std::vector<std::uint8_t>& px, std::uint32_t w, int x,
+                                int y) {
+    const std::size_t i = (static_cast<std::size_t>(y) * w + static_cast<std::size_t>(x)) * 4;
+    return {static_cast<double>(px[i]), static_cast<double>(px[i + 1]),
+            static_cast<double>(px[i + 2])};
+}
+
 // Multisampling (milestone 5 step 1, D-027): seen from straight above, a red
 // slab turned 10 degrees leaves pixels along its long sides between its red
 // and the grey ground, the more red the more of the pixel it covers; one
@@ -657,26 +685,11 @@ TEST(TerrainRender, MultisamplingBlendsAnEdgeByHowMuchOfThePixelItCovers) {
                                        Side{at(-20.0, 4.0), at(20.0, 4.0), false}};
     const int mid = static_cast<int>(kSize / 2);
     for (const std::uint32_t msaa : {1U, 4U}) {
-        RendererOptions options;
-        options.msaa = msaa;
-        if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
-            options.validation = Validation::required;
-        }
-        auto r = make_renderer(kSize, kSize, options);
-        if (!r) {
+        const auto px = draw_settled(dir, v, kSize, msaa);
+        if (px.empty()) {
             GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
         }
-        (void)r->load_terrain(open_db(dir));
-        settle_models(*r, {v}, 1);
-        ASSERT_EQ(r->terrain_stats().placements_drawn, 1U);
-        EXPECT_EQ(r->validation_messages(), 0U);
-        const auto px = r->read_back_rgba(0);
-        const auto colour = [&](int x, int y) {
-            const std::size_t i =
-                (static_cast<std::size_t>(y) * kSize + static_cast<std::size_t>(x)) * 4;
-            return std::array<double, 3>{static_cast<double>(px[i]), static_cast<double>(px[i + 1]),
-                                         static_cast<double>(px[i + 2])};
-        };
+        const auto colour = [&](int x, int y) { return colour_at(px, kSize, x, y); };
         const auto grey = colour(4, mid);
         const auto red = colour(mid, mid);
         // Each pixel across the sides along 60 rows: how much of it the
@@ -734,8 +747,9 @@ TEST(TerrainRender, MultisamplingBlendsAnEdgeByHowMuchOfThePixelItCovers) {
 }
 
 // Alpha to coverage (milestone 5 step 2): a box's top textured with alpha
-// rising evenly across it, its material masked at 0.5, is cut down its
-// middle. At 4 samples the cut's pixels are partly covered, between the
+// rising evenly across it, its material masked at 0.3, is cut where alpha
+// is 0.3, off its middle (where plain alpha to coverage, or a cutoff of 0.5,
+// would put it). At 4 samples the cut's pixels are partly covered, between the
 // red top and the grey ground; at 1 they are one or the other; either way
 // the cut is where the cutoff puts it, within a pixel.
 TEST(TerrainRender, AlphaToCoverageSmoothsAMaskedEdgeWhereTheCutoffPutsIt) {
@@ -746,7 +760,7 @@ TEST(TerrainRender, AlphaToCoverageSmoothsAMaskedEdgeWhereTheCutoffPutsIt) {
     test::GlbSpec g = test::glb_box(20.0F, 2.0F, 20.0F);
     g.base_colour = {1.0F, 0.0F, 0.0F, 1.0F};
     g.extras = R"({"fovea_material": 1})";
-    g.material = R"("alphaMode":"MASK","alphaCutoff":0.5,)";
+    g.material = R"("alphaMode":"MASK","alphaCutoff":0.3,)";
     RgbaImage ramp{64, 4, std::vector<std::uint8_t>(64 * 4 * 4, 255)};
     for (std::uint32_t y = 0; y < ramp.height; ++y) {
         for (std::uint32_t x = 0; x < ramp.width; ++x) {
@@ -759,39 +773,28 @@ TEST(TerrainRender, AlphaToCoverageSmoothsAMaskedEdgeWhereTheCutoffPutsIt) {
     const fs::path dir = write_db("cut", s);
     constexpr std::uint32_t kSize = 256;
     const SceneView v = view_at({lat0, lon0, 120.0}, 200.0, -90.0);
-    // The cut: the top's middle (its texture's u = 0.5) as a line in the
-    // image, along the box's depth.
+    // The cut, as a line in the image along the box's depth: where alpha,
+    // i / 63 at texel i's centre (u = (i + 0.5) / 64), is 0.3. The texture's
+    // u runs along the model's +x, its left: east at -x.
+    const double u = (0.3 * 63.0 + 0.5) / 64.0;
+    const double across = -(u - 0.5) * 40.0;
     const DVec3 base = geodetic_to_ecef({lat0, lon0, 120.0});
     const DMat3 ned = ned_to_ecef(lat0, lon0);
     const double heading = glm::radians(10.0);
     const auto at = [&](double along) {
-        const DVec3 n(along * std::cos(heading), along * std::sin(heading), -2.0);
+        const DVec3 n(along * std::cos(heading) - across * std::sin(heading),
+                      along * std::sin(heading) + across * std::cos(heading), -2.0);
         return project(v, ecef_to_geodetic(base + ned * n), kSize, kSize);
     };
     const glm::dvec2 a = at(-15.0);
     const glm::dvec2 b = at(15.0);
     const int mid = static_cast<int>(kSize / 2);
     for (const std::uint32_t msaa : {1U, 4U}) {
-        RendererOptions options;
-        options.msaa = msaa;
-        if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
-            options.validation = Validation::required;
-        }
-        auto r = make_renderer(kSize, kSize, options);
-        if (!r) {
+        const auto px = draw_settled(dir, v, kSize, msaa);
+        if (px.empty()) {
             GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
         }
-        (void)r->load_terrain(open_db(dir));
-        settle_models(*r, {v}, 1);
-        ASSERT_EQ(r->terrain_stats().placements_drawn, 1U);
-        EXPECT_EQ(r->validation_messages(), 0U);
-        const auto px = r->read_back_rgba(0);
-        const auto colour = [&](int x, int y) {
-            const std::size_t i =
-                (static_cast<std::size_t>(y) * kSize + static_cast<std::size_t>(x)) * 4;
-            return std::array<double, 3>{static_cast<double>(px[i]), static_cast<double>(px[i + 1]),
-                                         static_cast<double>(px[i + 2])};
-        };
+        const auto colour = [&](int x, int y) { return colour_at(px, kSize, x, y); };
         const auto grey = colour(4, mid);
         int between = 0;
         double worst = 0.0;
@@ -800,9 +803,10 @@ TEST(TerrainRender, AlphaToCoverageSmoothsAMaskedEdgeWhereTheCutoffPutsIt) {
             const double cut = a.x + t * (b.x - a.x);
             const int c = static_cast<int>(std::floor(cut));
             // Red on one side, grey on the other.
-            const auto red =
-                colour(c - 6, y)[0] > colour(c + 6, y)[0] ? colour(c - 6, y) : colour(c + 6, y);
-            const bool red_left = colour(c - 6, y)[0] > colour(c + 6, y)[0];
+            const auto left = colour(c - 6, y);
+            const auto right = colour(c + 6, y);
+            const bool red_left = left[0] > right[0];
+            const auto red = red_left ? left : right;
             ASSERT_GT(red[0], grey[0] + 50.0) << "no red top at row " << y;
             // Where the redness crosses a half, between pixel centres.
             double crossing = -1.0;
@@ -827,8 +831,39 @@ TEST(TerrainRender, AlphaToCoverageSmoothsAMaskedEdgeWhereTheCutoffPutsIt) {
         if (msaa == 1) {
             EXPECT_EQ(between, 0) << "a cut-out's edge between the two with one sample";
         } else {
+            // About a pixel wide: a row's edge in one or two pixels.
             EXPECT_GE(between, 20) << "a cut-out's edge as hard as with one sample";
+            EXPECT_LE(between, 60) << "a cut-out's edge wider than a pixel or two";
         }
+    }
+}
+
+// glTF's rule, multisampled too: a masked material whose alpha, the same
+// everywhere, is its cutoff is opaque, not half covered.
+TEST(TerrainRender, AMaskAtItsCutoffIsOpaqueAtEverySampleCount) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    s.placements = {{"flat", lat0, lon0, 120.0, 0.0F}};
+    test::GlbSpec g = test::glb_box(20.0F, 2.0F, 20.0F);
+    g.base_colour = {1.0F, 0.0F, 0.0F, 0.5F};
+    g.extras = R"({"fovea_material": 1})";
+    g.material = R"("alphaMode":"MASK","alphaCutoff":0.5,)";
+    s.models = {{"flat", test::make_glb(g)}};
+    const fs::path dir = write_db("at-cutoff", s);
+    constexpr std::uint32_t kSize = 64;
+    const SceneView v = view_at({lat0, lon0, 120.0}, 200.0, -90.0);
+    std::array<std::array<double, 3>, 2> middles{};
+    for (const std::uint32_t msaa : {1U, 4U}) {
+        const auto px = draw_settled(dir, v, kSize, msaa);
+        if (px.empty()) {
+            GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+        }
+        middles[msaa == 1 ? 0 : 1] = colour_at(px, kSize, kSize / 2, kSize / 2);
+    }
+    EXPECT_GT(middles[0][0], 120.0) << "not drawn with one sample";
+    for (std::size_t c = 0; c < 3; ++c) {
+        EXPECT_NEAR(middles[1][c], middles[0][c], 2.0) << "channel " << c;
     }
 }
 
