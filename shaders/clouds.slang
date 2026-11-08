@@ -78,9 +78,9 @@ float shape_density(float coverage, float3 cells, float lod, bool erode, float w
         // shape's values bunch: over all of them, most cloud stayed thin,
         // and the erosion took it).
         // The coverage over the threshold, widened by `widen`: the erosion
-        // takes back about a tenth of a layer's (1.1); a volume's, lit
-        // through its thin edges, shows a little more than its share
-        // (0.95), each measured.
+        // takes back about a fifth of a layer's (1.25), and a little less
+        // of a volume's, lit through its thin edges (1.1); each measured, on
+        // lavapipe and NVIDIA, which differ by about 0.03.
         const float above = min(coverage * widen, 1.0);
         const float threshold = shape_quantile(1.0 - above);
         const float core = shape_quantile(1.0 - above * 0.67);
@@ -168,7 +168,7 @@ CloudOut fs_clouds(CloudPixel i) {
         discard;
     }
     const float lod = shape_lod(footprint);
-    const float density = shape_density(l.w, cells, lod, true, 1.1);
+    const float density = shape_density(l.w, cells, lod, true, 1.25);
     // Its depth mottled by the detail's finer octave, so a base isn't one
     // flat grey.
     const float mottle =
@@ -193,11 +193,11 @@ CloudOut fs_clouds(CloudPixel i) {
     const float3 across = to_light - up * dot(to_light, up);
     const float across_len = length(across);
     const float3 toward = across_len > 1e-3 ? across / across_len * 300.0 : float3(0.0);
-    const float ahead = shape_density(l.w, cloud_cells(rel + toward, i.layer), lod + 1.0, false, 1.1);
+    const float ahead = shape_density(l.w, cloud_cells(rel + toward, i.layer), lod + 1.0, false, 1.25);
     // Shaded by the cloud around a part (its density four mips coarser, a
     // kilometre or so, mottled), not by the part alone: an edge is thin,
     // and lit by its own depth every edge shone as a rim.
-    const float body = shape_density(l.w, cells, lod + 4.0, false, 1.1);
+    const float body = shape_density(l.w, cells, lod + 4.0, false, 1.25);
     const float tau_body = cloud_depth(l) * max(body, density) * lerp(0.5, 1.5, mottle);
     const float tau_light = lerp(cloud_depth(l) * max(ahead, body), tau_body, light_up);
     float3 colour;  // its radiance, before alpha
@@ -244,7 +244,7 @@ float height_shape(float y, float top) {
 float cloud_top(float4 l, float3 rel, float3 up, float y, uint layer, float lod) {
     const float3 base = rel - up * (y * (l.y - l.x));
     const float3 cells = cloud_cells(base, layer);
-    const float core = shape_density(l.w, cells, lod + 2.0, false, 0.95);
+    const float core = shape_density(l.w, cells, lod + 2.0, false, 1.1);
     const float broad = cloud_shape.SampleLevel(cells / (kShapeCells * 4.0), lod).g;
     return lerp(0.3, 1.0, saturate(core * 1.3)) * lerp(0.55, 1.0, saturate(broad * 1.5 - 0.25));
 }
@@ -320,7 +320,7 @@ CloudOut fs_clouds_volume(CloudPixel i) {
         if (y > top) {
             continue;
         }
-        const float density = shape_density(l.w, cloud_cells(rel, i.layer), lod, true, 0.95) *
+        const float density = shape_density(l.w, cloud_cells(rel, i.layer), lod, true, 1.1) *
                               height_shape(y, top);
         if (density <= 1e-3) {
             continue;
@@ -337,7 +337,7 @@ CloudOut fs_clouds_volume(CloudPixel i) {
             const float3 q = rel + to_light * along;
             float3 q_up;
             const float qy = (point_height(q, q_up) - l.x) / thickness;
-            toward += shape_density(l.w, cloud_cells(q, i.layer), lod + 1.0, false, 0.95) *
+            toward += shape_density(l.w, cloud_cells(q, i.layer), lod + 1.0, false, 1.1) *
                       height_shape(qy, top) * step;
         }
         const float od = toward * kCloudExtinction;
