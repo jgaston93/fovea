@@ -25,7 +25,7 @@ struct Material {
 struct ModelPush {
     float4x4 ecef_to_clip;  // directions relative to the eye to clip space
     float3 sun;             // towards the sun, ECEF axes
-    uint unused;
+    uint samples;           // the scene pass's per pixel
 };
 [[vk::push_constant]] ConstantBuffer<ModelPush> push;
 
@@ -72,12 +72,21 @@ float4 fs_model(ModelVertex i, bool front: SV_IsFrontFace) : SV_Target {
         colour *= images[NonUniformResourceIndex(m.image)].Sample(
             samplers[NonUniformResourceIndex(m.sampler)], i.uv);
     }
-    if (m.alpha_mode == 1 && colour.a < m.alpha_cutoff) {
-        discard;
+    // Opaque (and blend, drawn opaque for now): all the pixel's samples.
+    float coverage = 1.0;
+    if (m.alpha_mode == 1) {
+        if (push.samples > 1) {
+            // Alpha to coverage (milestone 5 step 2, D-027): alpha sharpened
+            // about the material's cutoff, so the cut-out falls where its
+            // author put it, its edge about a pixel wide.
+            coverage = saturate((colour.a - m.alpha_cutoff) / max(fwidth(colour.a), 1e-4) + 0.5);
+        } else if (colour.a < m.alpha_cutoff) {
+            discard;
+        }
     }
     // Both sides are drawn: a back face's normal is turned round.
     const float3 n = normalize(i.normal) * (front ? 1.0 : -1.0);
     // The terrain's sun, and light from the sky everywhere.
     const float sun = saturate(dot(n, push.sun));
-    return float4(colour.rgb * (0.35 + 0.65 * sun), 1.0);
+    return float4(colour.rgb * (0.35 + 0.65 * sun), coverage);
 }

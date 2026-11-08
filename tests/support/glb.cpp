@@ -70,7 +70,7 @@ std::vector<std::uint8_t> make_glb(const GlbSpec& s) {
         prim += "," + shape + ",\"material\":1}";
     }
     std::string material =
-        "{\"name\":\"paint\",\"pbrMetallicRoughness\":{\"baseColorFactor\":[" +
+        "{\"name\":\"paint\"," + s.material + "\"pbrMetallicRoughness\":{\"baseColorFactor\":[" +
         std::to_string(s.base_colour[0]) + "," + std::to_string(s.base_colour[1]) + "," +
         std::to_string(s.base_colour[2]) + "," + std::to_string(s.base_colour[3]) + "]";
     std::string images;
