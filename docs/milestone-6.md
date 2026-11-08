@@ -186,6 +186,31 @@ The environment adds three packets: Celestial Sphere Control, Atmosphere Control
   - A hill at a low sun shades the ground behind it.
   - The desk's GPU time is measured with and without (step 9).
 
+### Step 5 results (2026-11-08)
+
+- **The maps.** Four cascades a view, 2048 square, 32-bit depth, out to 6 km; their splits three-quarters logarithmic. Each slice is bounded by a sphere, so its texel doesn't change as the view turns, seen from the light along an orthographic box reaching 3 km beyond it toward the light for casters outside the view. The box's centre is snapped to whole texels in the world: a fixed point moves across its map only by whole texels as the eye moves (unit-tested, with every slice's corners and its casters inside its map). The light is the sun while any of it is up, else the moon.
+- **Casters.** Models always (cut-outs through a masked fragment shader). The terrain only with the light under 30 degrees; higher, its imagery holds its shadows (D-032). The terrain casts the tiles the view picked, so hills outside the view don't cast into it (a later step can widen that).
+- **Placement and length.** A post 20 m tall, seen from above, casts its shadow tip 34.83 m away where the geometry puts it at 35.21 m (the sun 30 degrees up), and 11.91 m against 12.15 m (60 degrees). That is within two texels and a pixel (0.64 m).
+- **No acne.** The sunlit ground beside the shadow is even to 3 levels at 30 degrees. That needed a receiver offset toward the light, scaled by how much it grazes the surface. Along the light's own ray, that offset doesn't move a shadow's edge. A slope-scaled depth bias in the maps was the first try: it pushed the post's sides (which a low sun grazes) back, and shortened its shadow by 3 m.
+- **Terrain casting.** A hill 60 m high, the sun 10 degrees up, shades the ground 130 m behind it to 41 against 70 before it.
+- **lavapipe again.** In the terrain's fragment shader, lavapipe (Mesa 25.2.8, LLVM 20) crashes compiling a Load, a SampleLevel or a SampleCmp of an image, though not a Sample, and any image of the frame set (step 3). So the maps are also bound in the terrain's own set, read with Sample and a nearest sampler, and compared in the shader (3 x 3). The models use the same lookup, so shadows look alike on both.
+- **On the desk.**
+  - Shadows cost 0.25 to 0.6 ms an output over the routes' first minute. Output 0 is 1.95 ms on the airport route (1.52 at step 3) and 2.57 on KHUA (1.99 at step 4).
+  - GPU memory rose 225 MiB (12 maps of 16 MiB). CPU work rose 0.3 ms a frame (the fitting, and culling models for each cascade).
+  - Every run held 60 Hz, with no validation messages.
+  - Mid-morning, the tower casts its shadow north-west across the apron.
+  - **The owner's look** (the airport route at 8 am, the sun 25 degrees up, and at 10 am) found the shadows good, with two faults, both fixed here.
+    - At a low sun the terrain casts, and each cascade drew all the view's tiles: 5.5 ms on output 0, and 868 frames of 3,900 missed. Each cascade now draws only the tiles that reach its box, in its own region of records: 3.8 ms on output 0 (2.7 and 3.0 on the others, about 9.5 of the frame's 16.7 in all), and 60 Hz held. Terrain casting is still the heaviest thing on the screen; coarser casters would cut it, if step 9 finds the budget short.
+    - Far off, the tower's thin shadow flickered as the view moved, until it was near enough to be wide. A distant pixel covers tens of metres of ground looking along it, and one lookup a pixel sampled a shadow a few metres wide. The lookup is now bilinear, and its taps spread over the pixel's footprint in the map (from the screen derivatives of the point, up to eight texels apart). The owner found it better, for 0.08 ms an output.
+- **Goldens.** `models_on_hills` was regenerated and looked at: the boxes cast their shadows away from the sun. NVIDIA matches it as before.
+- **From the review.**
+  - The maps are made with the terrain, not without it (225 MiB that nothing else reads).
+  - Every view's maps are made readable once, before the first frame binds them. A view's layers were otherwise still undefined while another view drew (validation reports it with three views; a test now draws three).
+  - Without a light casting (night with no moon, or a moon all but new), no maps are drawn.
+  - Casters beyond a box toward the light are clamped onto it (depth clamp), not clipped.
+  - The receiver's offset toward the light is capped at four texels, so shadows don't start detached from their casters.
+  - Models dropped from a cascade for want of room are counted.
+
 ## Step 6: Weather layers and fog
 
 - **The layers.** Global cloud layers (D-034): base, thickness, coverage and type. Ground fog. Precipitation layers as reduced visibility within them.

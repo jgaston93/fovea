@@ -102,6 +102,46 @@ float4 fs_model(ModelVertex i, bool front: SV_IsFrontFace) : SV_Target {
     const ViewSky s = view_sky[lighting.view];
     // Through the air to the eye (step 3).
     const float4 air = aerial_perspective(i.position.xy, length(i.rel) * 0.001);
-    const float3 lit = colour.rgb * irradiance_on(n, s) * kInvPi;
+    // In the shadows of whatever is between it and the light (step 5).
+    const float2 shade = shadowed(shadow_lit(shadow_maps, shadow_sampler, i.rel, n, ddx(i.rel), ddy(i.rel)));
+    const float3 lit = colour.rgb * irradiance_on(n, s, shade) * kInvPi;
     return float4((lit * air.a + air.rgb) * s.exposure, coverage);
+}
+
+// The shadow maps (step 5, D-032): depth only, from the light, push's
+// matrix taking points relative to the eye to the cascade's map.
+struct ShadowVertex {
+    float4 position : SV_Position;
+    float2 uv;
+    nointerpolation uint material;
+};
+
+[shader("vertex")]
+ShadowVertex vs_model_shadow(VertexIn v, uint instance: SV_VulkanInstanceID) {
+    const ModelDraw d = draws[instance];
+    const float4 p = float4(v.position, 1.0);
+    const float3 rel = float3(dot(d.row0, p), dot(d.row1, p), dot(d.row2, p));
+    ShadowVertex o;
+    o.position = mul(push.ecef_to_clip, float4(rel, 1.0));
+    o.uv = v.uv;
+    o.material = d.material;
+    return o;
+}
+
+// Masked materials cast only what they don't cut away.
+[shader("fragment")]
+void fs_model_shadow(ShadowVertex i) {
+    const Material m = materials[i.material];
+    if (m.alpha_mode != 1) {
+        return;
+    }
+    float alpha = m.base_colour.a;
+    if (m.image != 0xFFFFFFFFu) {
+        alpha *= images[NonUniformResourceIndex(m.image)]
+                     .Sample(samplers[NonUniformResourceIndex(m.sampler)], i.uv)
+                     .a;
+    }
+    if (alpha < m.alpha_cutoff) {
+        discard;
+    }
 }

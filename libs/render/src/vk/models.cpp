@@ -1,5 +1,7 @@
 #include "models.hpp"
 
+#include "shadows.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -129,8 +131,8 @@ void ModelGpu::destroy(Image& i) const {
 
 ModelGpu::ModelGpu(const GpuContext& gpu, std::filesystem::path database_dir,
                    std::span<const Placement> placements, std::uint32_t slots,
-                   std::uint32_t outputs, VkShaderModule vertex, VkShaderModule fragment,
-                   VkFormat colour, VkFormat depth)
+                   std::uint32_t outputs, const ModelShaders& shaders, VkFormat colour,
+                   VkFormat depth)
     : gpu_(gpu), dir_(std::move(database_dir)), outputs_(std::max(outputs, 1U)) {
     if (placements.size() > kMaxPlacements) {
         fail("models: " + std::to_string(placements.size()) + " placements, more than " +
@@ -173,7 +175,7 @@ ModelGpu::ModelGpu(const GpuContext& gpu, std::filesystem::path database_dir,
         materials_ = make_buffer(
             VkDeviceSize{kMaxModelMaterials} * sizeof(GpuMaterial),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false);
-        const VkDeviceSize per = VkDeviceSize{slots} * outputs_ * kMaxModelDraws;
+        const VkDeviceSize per = VkDeviceSize{slots} * outputs_ * kRegions * kMaxModelDraws;
         draws_ = make_buffer(per * sizeof(ModelDraw), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
         commands_ = make_buffer(per * sizeof(VkDrawIndexedIndirectCommand),
                                 VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, true);
@@ -278,11 +280,11 @@ ModelGpu::ModelGpu(const GpuContext& gpu, std::filesystem::path database_dir,
         std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
         stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-        stages[0].module = vertex;
+        stages[0].module = shaders.vertex;
         stages[0].pName = "main";
         stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        stages[1].module = fragment;
+        stages[1].module = shaders.fragment;
         stages[1].pName = "main";
         const VkVertexInputBindingDescription binding{0, sizeof(ModelVertex),
                                                       VK_VERTEX_INPUT_RATE_VERTEX};
@@ -363,6 +365,16 @@ ModelGpu::ModelGpu(const GpuContext& gpu, std::filesystem::path database_dir,
         ci.layout = layout_;
         check(vkCreateGraphicsPipelines(gpu.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipeline_),
               "vkCreateGraphicsPipelines (models)");
+        // The shadow maps' (step 5): the same vertices, depth only.
+        // Without the normals: casting doesn't need them.
+        const std::array<VkVertexInputAttributeDescription, 2> shadow_attributes = {attributes[0],
+                                                                                    attributes[2]};
+        VkPipelineVertexInputStateCreateInfo shadow_input = vertex_input;
+        shadow_input.vertexAttributeDescriptionCount =
+            static_cast<std::uint32_t>(shadow_attributes.size());
+        shadow_input.pVertexAttributeDescriptions = shadow_attributes.data();
+        shadow_pipeline_ = make_shadow_pipeline(gpu.device, layout_, shaders.shadow_vertex,
+                                                shaders.shadow_fragment, &shadow_input);
     } catch (...) {
         release();
         throw;
@@ -378,6 +390,7 @@ void ModelGpu::release() {
         return;
     }
     vkDestroyPipeline(gpu_.device, pipeline_, nullptr);
+    vkDestroyPipeline(gpu_.device, shadow_pipeline_, nullptr);
     vkDestroyPipelineLayout(gpu_.device, layout_, nullptr);
     vkDestroyDescriptorPool(gpu_.device, pool_, nullptr);
     vkDestroyDescriptorSetLayout(gpu_.device, set_layout_, nullptr);
@@ -610,7 +623,7 @@ std::uint32_t ModelGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uin
         return 0;
     }
     const std::uint32_t o = std::min(output, outputs_ - 1);
-    const std::uint32_t base = (slot * outputs_ + o) * kMaxModelDraws;
+    const std::uint32_t base = (slot * outputs_ + o) * kRegions * kMaxModelDraws;
     auto* records = static_cast<ModelDraw*>(draws_.mapped) + base;
     auto* commands = static_cast<VkDrawIndexedIndirectCommand*>(commands_.mapped) + base;
     std::uint32_t n = 0;
@@ -666,6 +679,76 @@ std::uint32_t ModelGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uin
     vkCmdDrawIndexedIndirect(cmd, commands_.buffer, base * sizeof(VkDrawIndexedIndirectCommand), n,
                              sizeof(VkDrawIndexedIndirectCommand));
     return placements;
+}
+
+void ModelGpu::record_shadow(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
+                             std::uint32_t cascade, const SceneView& view, const Mat4& to_map,
+                             std::uint32_t& dropped) {
+    if (loaded_ == 0) {
+        return;
+    }
+    const std::uint32_t o = std::min(output, outputs_ - 1);
+    const std::uint32_t base =
+        ((slot * outputs_ + o) * kRegions + 1 + std::min(cascade, kShadowCascades - 1)) *
+        kMaxModelDraws;
+    auto* records = static_cast<ModelDraw*>(draws_.mapped) + base;
+    auto* commands = static_cast<VkDrawIndexedIndirectCommand*>(commands_.mapped) + base;
+    // The map's box: x and y -1 to 1, z 0 to 1; a sphere's reach in each.
+    const DMat4 m(to_map);
+    const double sx = glm::length(DVec3(m[0][0], m[1][0], m[2][0]));
+    const double sy = glm::length(DVec3(m[0][1], m[1][1], m[2][1]));
+    const double sz = glm::length(DVec3(m[0][2], m[1][2], m[2][2]));
+    std::uint32_t n = 0;
+    for (const Placed& p : placed_) {
+        const Entry& e = models_[p.model];
+        if (!e.ready) {
+            continue;
+        }
+        const DVec3 offset = p.origin_ecef - view.eye_ecef;
+        const glm::dvec4 c = m * glm::dvec4(offset + p.rotation * e.centre, 1.0);
+        const double r = e.radius_m;
+        // Toward the light (z under 0) casters still count: clamped onto
+        // the box.
+        if (std::abs(c.x) > 1.0 + r * sx || std::abs(c.y) > 1.0 + r * sy || c.z > 1.0 + r * sz) {
+            continue;
+        }
+        if (n + e.primitives.size() > kMaxModelDraws) {
+            ++dropped;
+            continue;
+        }
+        ModelDraw d;
+        for (int row = 0; row < 3; ++row) {
+            d.rows[static_cast<std::size_t>(row)] = {
+                static_cast<float>(p.rotation[0][row]), static_cast<float>(p.rotation[1][row]),
+                static_cast<float>(p.rotation[2][row]), static_cast<float>(offset[row])};
+        }
+        for (const Primitive& prim : e.primitives) {
+            d.material = prim.material;
+            records[n] = d;
+            commands[n] = {prim.index_count, 1, prim.first_index, e.vertex_offset, base + n};
+            ++n;
+        }
+    }
+    if (n == 0) {
+        return;
+    }
+    (void)vmaFlushAllocation(gpu_.allocator, draws_.memory, base * sizeof(ModelDraw),
+                             n * sizeof(ModelDraw));
+    (void)vmaFlushAllocation(gpu_.allocator, commands_.memory,
+                             base * sizeof(VkDrawIndexedIndirectCommand),
+                             n * sizeof(VkDrawIndexedIndirectCommand));
+    ModelPush push;
+    push.ecef_to_clip = to_map;
+    push.samples = 1;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_pipeline_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set_, 0, nullptr);
+    const VkDeviceSize zero = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vertices_.buffer, &zero);
+    vkCmdBindIndexBuffer(cmd, indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(push), &push);
+    vkCmdDrawIndexedIndirect(cmd, commands_.buffer, base * sizeof(VkDrawIndexedIndirectCommand), n,
+                             sizeof(VkDrawIndexedIndirectCommand));
 }
 
 }  // namespace fovea

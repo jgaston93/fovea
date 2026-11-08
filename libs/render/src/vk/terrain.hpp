@@ -41,6 +41,14 @@ inline constexpr std::uint32_t kMaxUploadsInAFrame = kMaxUploadsPerFrame + kMaxM
 
 class Pager;
 
+// The terrain's and the models' shader modules (load's).
+struct TerrainShaders {
+    VkShaderModule vertex = VK_NULL_HANDLE;
+    VkShaderModule fragment = VK_NULL_HANDLE;
+    VkShaderModule shadow_vertex = VK_NULL_HANDLE;  // step 5
+    ModelShaders models;
+};
+
 class TerrainGpu {
 public:
     // Opens the paging: loads and uploads the roots (waiting, init time),
@@ -50,10 +58,8 @@ public:
     static std::unique_ptr<TerrainGpu> load(const GpuContext& gpu,
                                             std::unique_ptr<TerrainDatabase> db,
                                             const TerrainOptions& options, std::uint32_t slots,
-                                            std::uint32_t outputs, VkShaderModule vertex,
-                                            VkShaderModule fragment, VkShaderModule model_vertex,
-                                            VkShaderModule model_fragment, VkFormat colour,
-                                            VkFormat depth, TerrainLoad& report);
+                                            std::uint32_t outputs, const TerrainShaders& shaders,
+                                            VkFormat colour, VkFormat depth, TerrainLoad& report);
     ~TerrainGpu();  // stops the paging thread; the GPU must be idle
     TerrainGpu(const TerrainGpu&) = delete;
     TerrainGpu& operator=(const TerrainGpu&) = delete;
@@ -69,12 +75,23 @@ public:
     }
     void submitted(std::uint64_t timeline_value);
 
-    // Picks and draws one view's tiles, inside a rendering pass with the
-    // colour and depth formats given to load, and asks for the tiles it
-    // wants, lit by the view's ViewLighting at lighting_offset in the frame
-    // set. No allocation. Returns the number of tiles drawn.
-    std::uint32_t record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
-                         const SceneView& view, VkExtent2D extent, std::uint32_t lighting_offset);
+    // Picks one view's tiles, writes their records and asks for the tiles
+    // it wants: before the view's shadow maps and its scene. No allocation.
+    // Returns the number of tiles to draw.
+    std::uint32_t prepare(std::uint32_t slot, std::uint32_t output, const SceneView& view,
+                          VkExtent2D extent);
+    // Draws them, and the models, inside a rendering pass with the colour
+    // and depth formats given to load, lit by the view's ViewLighting at
+    // lighting_offset in the frame set. No allocation.
+    void draw(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output, const SceneView& view,
+              std::uint32_t lighting_offset);
+    // Draws the casters into one of the view's shadow maps (step 5), inside
+    // its depth-only pass: `to_map` takes points relative to the eye to the
+    // map. The terrain casts only if `terrain_casts` (the light is low);
+    // the models always. No allocation.
+    void draw_shadow(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
+                     std::uint32_t cascade, const SceneView& view, const Mat4& to_map,
+                     bool terrain_casts);
 
     // This frame's numbers so far (reset by begin_frame).
     const TerrainStats& stats() const { return stats_; }
@@ -153,6 +170,11 @@ private:
     VkDescriptorSet set_ = VK_NULL_HANDLE;
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
+    VkPipeline shadow_pipeline_ = VK_NULL_HANDLE;
+    std::vector<std::uint32_t> drawn_;  // per output: tiles prepare() picked
+    // Per slot and output, regions of draws_: the view's, then a shadow
+    // cascade's each (step 5).
+    static constexpr std::uint32_t kRegions = 1 + kShadowCascades;
 };
 
 }  // namespace fovea
