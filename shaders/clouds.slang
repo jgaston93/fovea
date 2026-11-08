@@ -87,8 +87,12 @@ float shape_density(float coverage, float3 cells, float lod, bool erode, float w
         d = saturate((base - threshold) / max(core - threshold, 1e-3));
     }
     if (erode) {
-        const float e = cloud_detail.SampleLevel(cells / kDetailCells, max(lod - 2.0, 0.0)).r;
-        d = saturate((d - e * 0.3) / (1.0 - e * 0.3));
+        // Two octaves of Worley, the finer one weaker: broken, wispy edges.
+        const float4 e = cloud_detail.SampleLevel(cells / kDetailCells, max(lod - 2.0, 0.0));
+        const float4 f =
+            cloud_detail.SampleLevel(cells / (kDetailCells * 0.25), max(lod - 4.0, 0.0));
+        const float erosion = 0.3 * e.r + 0.2 * f.g;
+        d = saturate((d - erosion) / (1.0 - erosion));
     }
     // About the mean density of a layer of this coverage.
     return lerp(d, coverage * 0.35, saturate((lod - 2.0) / 3.0));
@@ -190,18 +194,24 @@ CloudOut fs_clouds(CloudPixel i) {
     const float across_len = length(across);
     const float3 toward = across_len > 1e-3 ? across / across_len * 300.0 : float3(0.0);
     const float ahead = shape_density(l.w, cloud_cells(rel + toward, i.layer), lod + 1.0, false, 1.1);
-    const float tau_light = lerp(cloud_depth(l) * max(ahead, density), tau, light_up);
+    // Shaded by the cloud around a part (its density four mips coarser, a
+    // kilometre or so, mottled), not by the part alone: an edge is thin,
+    // and lit by its own depth every edge shone as a rim.
+    const float body = shape_density(l.w, cells, lod + 4.0, false, 1.1) * lerp(0.6, 1.4, mottle);
+    const float tau_body = cloud_depth(l) * max(body, density);
+    const float tau_light = lerp(cloud_depth(l) * max(ahead, body), tau_body, light_up);
     float3 colour;  // its radiance, before alpha
     if (below) {
         // What the cloud lets down, scattered: of the light, through its
         // depth toward it (half goes down); of the sky, through its own.
         // Thicker parts are darker, edges facing the light brightest.
-        colour = (light * 0.5 * cloud_diffuse(tau_light) + s.sky_irradiance * cloud_diffuse(tau)) *
+        colour = (light * 0.5 * cloud_diffuse(tau_light) +
+                  s.sky_irradiance * cloud_diffuse(tau_body)) *
                  kInvPi;
     } else {
         // What it reflects up: more where it is thick, its sides facing the
         // light lit more than those away from it.
-        const float reflect = 1.0 - cloud_diffuse(tau);
+        const float reflect = 1.0 - cloud_diffuse(tau_body);
         const float facing = lerp(0.7, 1.15, saturate(0.5 + (density - ahead) * 2.0));
         colour = (light * light_up * facing + s.sky_irradiance) * reflect * kInvPi;
     }
