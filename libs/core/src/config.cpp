@@ -175,14 +175,7 @@ private:
 };
 
 void parse_display(Parser& p, const toml::table& t, DisplayConfig& out) {
-    p.check_keys(t, {"presenter", "target_hz", "near_m", "msaa", "clouds"}, "display");
-    if (const auto* n = t.get("clouds")) {
-        if (auto v = p.choice<CloudModel>(
-                *n, "display.clouds",
-                {{"layer", CloudModel::layer}, {"volumetric", CloudModel::volumetric}})) {
-            out.clouds = *v;
-        }
-    }
+    p.check_keys(t, {"presenter", "target_hz", "near_m", "msaa"}, "display");
     if (const auto* n = t.get("presenter")) {
         if (auto v = p.choice<PresenterKind>(*n, "display.presenter",
                                              {{"multi_swapchain", PresenterKind::multi_swapchain},
@@ -351,9 +344,9 @@ void parse_weather_layer(Parser& p, const toml::table& t, const std::string& pat
     p.check_keys(t, {"kind", "base_m", "thickness_m", "coverage", "visibility_m"}, path);
     const auto* kind = t.get("kind");
     const auto* name = kind != nullptr ? kind->as_string() : nullptr;
+    const std::string kinds = R"(must be "cloud", "fog", "rain" or "snow")";
     if (name == nullptr) {
-        p.error(kind != nullptr ? kind->source() : t.source(),
-                "'" + path + ".kind' must be \"cloud\", \"fog\", \"rain\" or \"snow\"");
+        p.error(kind != nullptr ? kind->source() : t.source(), "'" + path + ".kind' " + kinds);
     } else if (name->get() == "cloud") {
         out.kind = WeatherKind::cloud;
     } else if (name->get() == "fog") {
@@ -363,16 +356,24 @@ void parse_weather_layer(Parser& p, const toml::table& t, const std::string& pat
     } else if (name->get() == "snow") {
         out.kind = WeatherKind::snow;
     } else {
-        p.error(kind->source(), "'" + path +
-                                    ".kind' must be \"cloud\", \"fog\", \"rain\" or "
-                                    "\"snow\" (got \"" +
-                                    name->get() + "\")");
+        p.error(kind->source(),
+                "'" + path + ".kind' " + kinds + R"( (got ")" + name->get() + R"("))");
     }
     // Fog's own visibility is short; rain's and snow's longer.
-    out.visibility_m = out.kind == WeatherKind::fog    ? 200.0
-                       : out.kind == WeatherKind::rain ? 5000.0
-                       : out.kind == WeatherKind::snow ? 1500.0
-                                                       : 1000.0;
+    switch (out.kind) {
+        case WeatherKind::fog:
+            out.visibility_m = 200.0;
+            break;
+        case WeatherKind::rain:
+            out.visibility_m = 5000.0;
+            break;
+        case WeatherKind::snow:
+            out.visibility_m = 1500.0;
+            break;
+        case WeatherKind::cloud:
+            out.visibility_m = 1000.0;
+            break;
+    }
     if (const auto* n = t.get("base_m")) {
         if (auto v = p.number(*n, path + ".base_m")) {
             check_range(p, *n, path + ".base_m", *v, -500.0, 20000.0, false);

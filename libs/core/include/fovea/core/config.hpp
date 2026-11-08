@@ -111,7 +111,6 @@ struct DisplayConfig {
     // Samples per pixel of each view's scene (milestone 5, D-027): 1, 2, 4
     // or 8; the renderer refuses a count the GPU can't do.
     std::uint32_t msaa = 4;
-    CloudModel clouds = CloudModel::layer;  // milestone 6 step 6
     std::vector<ChannelConfig> channels;
     ReferenceScene reference_scene;
     EnvironmentConfig environment;

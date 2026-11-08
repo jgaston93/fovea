@@ -38,8 +38,6 @@ struct RendererOptions {
     // The frame clock's rate ([display] target_hz): exposure adapts by a
     // frame period each frame drawn (D-031).
     double frame_rate_hz = 60.0;
-    // How cloud layers are drawn ([display] clouds, milestone 6 step 6).
-    CloudModel clouds = CloudModel::layer;
 };
 
 struct GpuInfo {
@@ -269,7 +267,8 @@ public:
     void set_visibility(double visibility_m);
 
     // The weather layers (milestone 6 step 6, D-034), heights above the
-    // ellipsoid: those the frames drawn from now on show. Until set, none.
+    // ellipsoid: those the frames drawn from now on show (fog, rain and
+    // snow; cloud layers aren't drawn yet, #73). Until set, none.
     // No allocation; at most kMaxWeatherLayers are kept.
     void set_weather(std::span<const WeatherLayer> layers);
 

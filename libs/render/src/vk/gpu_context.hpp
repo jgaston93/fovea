@@ -37,11 +37,6 @@ struct GpuContext {
     // set (the frame set has them too).
     VkImageView shadow_maps = VK_NULL_HANDLE;
     VkSampler shadow_sampler = VK_NULL_HANDLE;
-    // The clouds' shape, its sampler and its quantiles (step 6), for the
-    // terrain's own set.
-    VkImageView cloud_shape = VK_NULL_HANDLE;
-    VkSampler cloud_sampler = VK_NULL_HANDLE;
-    VkBuffer cloud_table = VK_NULL_HANDLE;
 };
 
 // What each view's shaders light with: mirrored as ViewLighting in
@@ -68,13 +63,11 @@ struct ViewLighting {
     // The weather (step 6, D-034; see frame.slang).
     float eye_height_m = 0.0F;
     std::uint32_t layer_count = 0;
-    std::uint32_t cloud_count = 0;
+    float unused2 = 0.0F;
     std::array<float, 3> up{0.0F, 0.0F, 1.0F};
-    float weather_light = 1.0F;
-    std::array<float, 3> noise_origin{};
-    float clear_sky = 1.0F;
+    float unused3 = 0.0F;
     std::array<std::array<float, 4>, kMaxWeatherLayers> layer{};
 };
-static_assert(sizeof(ViewLighting) == 496, "must match ViewLighting in frame.slang");
+static_assert(sizeof(ViewLighting) == 480, "must match ViewLighting in frame.slang");
 
 }  // namespace fovea

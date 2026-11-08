@@ -104,12 +104,11 @@ float4 fs_model(ModelVertex i, bool front: SV_IsFrontFace) : SV_Target {
     const float4 air = aerial_perspective(i.position.xy, length(i.rel) * 0.001);
     // In the shadows of whatever is between it and the light (step 5).
     const float2 shade = shadowed(shadow_lit(shadow_maps, shadow_sampler, i.rel, n, ddx(i.rel), ddy(i.rel)));
-    // Under the clouds, through the air and then the fog, rain and snow
-    // (step 6, D-034).
-    const float3 lit = colour.rgb * irradiance_on(n, s, shade, under_clouds(i.rel, s, frame_cloud_shape, frame_cloud_sampler, frame_cloud_table)) * kInvPi;
+    const float3 lit = colour.rgb * irradiance_on(n, s, shade) * kInvPi;
+    // Through the air, then the fog, rain and snow (step 6, D-034).
     const float dist = length(i.rel);
     const float mu = dot(i.rel, lighting.up) / max(dist, 1e-3);
-    const float3 seen = through_bands(lit * air.a + air_light(air, s), mu, dist, s, 1.0);
+    const float3 seen = through_bands(lit * air.a + air.rgb, mu, dist, s, 1.0);
     return float4(seen * s.exposure, coverage);
 }
 

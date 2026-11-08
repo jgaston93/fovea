@@ -46,10 +46,6 @@ struct TerrainPush {
 // shader with any image of the frame set.
 [[vk::binding(5, 0)]] Texture2DArray<float> terrain_shadow_maps;
 [[vk::binding(6, 0)]] SamplerState terrain_shadow_sampler;
-// The clouds' shape, sampler and quantiles (step 6), for their shade.
-[[vk::binding(7, 0)]] Texture3D<float4> terrain_cloud_shape;
-[[vk::binding(8, 0)]] SamplerState terrain_cloud_sampler;
-[[vk::binding(9, 0)]] StructuredBuffer<uint> terrain_cloud_table;
 
 static const uint kControls = 9;
 
@@ -186,15 +182,11 @@ float4 fs_terrain(TerrainVertex i) : SV_Target {
     const float2 shade = shadowed(
         shadow_lit(terrain_shadow_maps, terrain_shadow_sampler, i.rel, normalize(i.normal),
                    ddx(i.rel), ddy(i.rel)));
-    // Under the clouds, through the air and then the fog, rain and snow
-    // (step 6, D-034).
-    const float4 clouds = under_clouds(i.rel, s, terrain_cloud_shape, terrain_cloud_sampler,
-                                       terrain_cloud_table);
-    const float3 e = (s.sun_irradiance * lerp(level, slope, 0.25) * shade.x +
-                      s.moon_irradiance * lerp(moon_level, moon_slope, 0.25) * shade.y) *
-                         clouds.x +
-                     clouds.yzw;
-    const float3 lit = albedo * e * kInvPi * i.air.a + air_light(i.air, s);
+    const float3 e = s.sun_irradiance * lerp(level, slope, 0.25) * shade.x +
+                     s.moon_irradiance * lerp(moon_level, moon_slope, 0.25) * shade.y +
+                     s.sky_irradiance;
+    // Through the air, then the fog, rain and snow (step 6, D-034).
+    const float3 lit = albedo * e * kInvPi * i.air.a + i.air.rgb;
     const float dist = length(i.rel);
     const float mu = dot(i.rel, lighting.up) / max(dist, 1e-3);
     return float4(through_bands(lit, mu, dist, s, 1.0) * s.exposure, 1.0);

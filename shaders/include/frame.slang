@@ -30,21 +30,14 @@ struct ViewLighting {
     float4 cascade_texel;
     uint shadow_light;  // 0 none, 1 the sun, 2 the moon
     // The weather (step 6, D-034; weather.slang): the eye's height above
-    // the ellipsoid, metres; how many layers, and of them clouds; the up at
-    // the eye (ECEF); the fraction of the light on level ground the clouds
-    // above the eye leave (on average), for the air and the fog; the eye in
-    // the cloud noise's cells, and the share of the sky the clouds above
-    // leave clear (weather.slang's air_light);
-    // the cloud noise's cells; and the layers, lowest first: base and top
-    // (metres), extinction per metre, and a cloud's coverage (0 to 1) or -1
-    // for fog, rain and snow.
+    // the ellipsoid, metres; how many layers; the up at the eye (ECEF); and
+    // the layers, lowest first: base and top (metres) and extinction per
+    // metre. Fog, rain and snow only: cloud layers aren't drawn yet (#73).
     float eye_height_m;
     uint layer_count;
-    uint cloud_count;
+    float unused2;
     float3 up;
-    float weather_light;
-    float3 noise_origin;
-    float clear_sky;  // the share of the sky the clouds above the eye leave clear
+    float unused3;
     float4 layer[6];
 };
 
@@ -79,11 +72,6 @@ static const float3 kAirglow = float3(0.55, 0.65, 0.6) * (2e-5 / kPi);
 [[vk::binding(6, FRAME_SET)]] Texture2DArray<float> shadow_maps;
 // Nearest-texel, the comparison made in shadow_lit.
 [[vk::binding(7, FRAME_SET)]] SamplerState shadow_sampler;
-// The clouds' shape, its sampler and its quantiles (step 6;
-// weather.slang's under_clouds).
-[[vk::binding(8, FRAME_SET)]] Texture3D<float4> frame_cloud_shape;
-[[vk::binding(9, FRAME_SET)]] SamplerState frame_cloud_sampler;
-[[vk::binding(10, FRAME_SET)]] StructuredBuffer<uint> frame_cloud_table;
 
 // How much of the shadow light reaches a point relative to the eye (ECEF,
 // metres) with normal n: the first cascade whose map holds it, its depth
@@ -187,12 +175,9 @@ float4 aerial_perspective_uv(float2 uv, float distance_km) {
 // (its irradiance counts only the disc above the horizon), and the sky's,
 // as on level ground, which a model's walls also take for now. The moon's
 // too (step 4).
-// With the clouds above (step 6): `clouds` is under_clouds' for the point.
-float3 irradiance_on(float3 n, ViewSky s, float2 lit, float4 clouds) {
-    return (s.sun_irradiance * saturate(dot(n, lighting.sun)) * lit.x +
-            s.moon_irradiance * saturate(dot(n, lighting.moon)) * lit.y) *
-               clouds.x +
-           clouds.yzw;
+float3 irradiance_on(float3 n, ViewSky s, float2 lit) {
+    return s.sun_irradiance * saturate(dot(n, lighting.sun)) * lit.x +
+           s.moon_irradiance * saturate(dot(n, lighting.moon)) * lit.y + s.sky_irradiance;
 }
 
 #include "weather.slang"
