@@ -1020,7 +1020,7 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
     }
     check(vkCreateSampler(gpu.device, &sci, nullptr, &t->sampler_), "vkCreateSampler");
 
-    std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 10> bindings{};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -1033,11 +1033,16 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
     // frame set.
     bindings[5] = {5, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[6] = {6, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    // The clouds' shape, sampler and quantiles (step 6), for their shade:
+    // here for the same reason.
+    bindings[7] = {7, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[8] = {8, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[9] = {9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     // The image arrays update after bind (filled as tiles arrive, while
     // frames using the set are in flight) and are partly bound.
     constexpr VkDescriptorBindingFlags kArray =
         VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
-    const std::array<VkDescriptorBindingFlags, 7> flags = {0, 0, 0, kArray, kArray, 0, 0};
+    const std::array<VkDescriptorBindingFlags, 10> flags = {0, 0, 0, kArray, kArray, 0, 0, 0, 0, 0};
     VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info{};
     flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
     flags_info.bindingCount = static_cast<std::uint32_t>(flags.size());
@@ -1051,9 +1056,9 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
     check(vkCreateDescriptorSetLayout(gpu.device, &lci, nullptr, &t->set_layout_),
           "vkCreateDescriptorSetLayout");
     const std::array<VkDescriptorPoolSize, 3> sizes = {
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 2},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, capacity * 2 + 1}};
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 3},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, capacity * 2 + 2}};
     VkDescriptorPoolCreateInfo pci{};
     pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pci.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
@@ -1075,8 +1080,13 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
                                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     const VkDescriptorImageInfo compare_info{gpu.shadow_sampler, VK_NULL_HANDLE,
                                              VK_IMAGE_LAYOUT_UNDEFINED};
-    std::array<VkWriteDescriptorSet, 5> writes{};
-    const std::array<std::uint32_t, 5> write_bindings = {0, 1, 2, 5, 6};
+    const VkDescriptorImageInfo cloud_shape_info{VK_NULL_HANDLE, gpu.cloud_shape,
+                                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo cloud_sampler_info{gpu.cloud_sampler, VK_NULL_HANDLE,
+                                                   VK_IMAGE_LAYOUT_UNDEFINED};
+    const VkDescriptorBufferInfo cloud_table_info{gpu.cloud_table, 0, VK_WHOLE_SIZE};
+    std::array<VkWriteDescriptorSet, 8> writes{};
+    const std::array<std::uint32_t, 8> write_bindings = {0, 1, 2, 5, 6, 7, 8, 9};
     for (std::uint32_t w = 0; w < writes.size(); ++w) {
         writes[w].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[w].dstSet = t->set_;
@@ -1089,6 +1099,9 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
     writes[2].pImageInfo = &sampler_info;
     writes[3].pImageInfo = &shadow_info;
     writes[4].pImageInfo = &compare_info;
+    writes[5].pImageInfo = &cloud_shape_info;
+    writes[6].pImageInfo = &cloud_sampler_info;
+    writes[7].pBufferInfo = &cloud_table_info;
     vkUpdateDescriptorSets(gpu.device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0,
                            nullptr);
     for (const auto& [slot, i] : root_slots) {

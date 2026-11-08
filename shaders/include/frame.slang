@@ -79,6 +79,11 @@ static const float3 kAirglow = float3(0.55, 0.65, 0.6) * (2e-5 / kPi);
 [[vk::binding(6, FRAME_SET)]] Texture2DArray<float> shadow_maps;
 // Nearest-texel, the comparison made in shadow_lit.
 [[vk::binding(7, FRAME_SET)]] SamplerState shadow_sampler;
+// The clouds' shape, its sampler and its quantiles (step 6;
+// weather.slang's under_clouds).
+[[vk::binding(8, FRAME_SET)]] Texture3D<float4> frame_cloud_shape;
+[[vk::binding(9, FRAME_SET)]] SamplerState frame_cloud_sampler;
+[[vk::binding(10, FRAME_SET)]] StructuredBuffer<uint> frame_cloud_table;
 
 // How much of the shadow light reaches a point relative to the eye (ECEF,
 // metres) with normal n: the first cascade whose map holds it, its depth

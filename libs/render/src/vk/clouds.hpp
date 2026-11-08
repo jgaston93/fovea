@@ -38,6 +38,12 @@ public:
     CloudsGpu(const CloudsGpu&) = delete;
     CloudsGpu& operator=(const CloudsGpu&) = delete;
 
+    // The shape volume (every mip), its sampler (linear, repeating) and
+    // its quantile table, for the shade the clouds cast (weather.slang).
+    VkImageView shape() const { return shape_.sampled; }
+    VkSampler sampler() const { return sampler_; }
+    VkBuffer table() const { return table_; }
+
     // Before any view's clouds, every frame: the first makes the noise
     // (compute, then mips), the rest do nothing.
     void prepare(VkCommandBuffer cmd);
