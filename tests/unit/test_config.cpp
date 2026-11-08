@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include "fovea/core/config.hpp"
+#include "fovea/core/scene.hpp"
 
 namespace fovea {
 namespace {
@@ -99,6 +100,36 @@ TEST(Config, MsaaIsOneTwoFourOrEight) {
     for (const char* bad : {"0", "3", "16", "4.0", "\"4\""}) {
         const auto r = parse(std::string("[display]\nmsaa = ") + bad + "\n" + kMinimal);
         EXPECT_FALSE(r.ok()) << bad;
+    }
+}
+
+TEST(Config, EnvironmentSetsTheDateTimeAndVisibility) {
+    const auto d = parse(kMinimal);
+    ASSERT_TRUE(d.ok());
+    EXPECT_EQ(d.config->environment.year, 2026);  // the default date, as EnvironmentState's
+    EXPECT_EQ(d.config->environment.month, 3U);
+    EXPECT_EQ(d.config->environment.day, 20U);
+    EXPECT_EQ(d.config->environment.utc_seconds, 15.5 * 3600.0);
+    EXPECT_TRUE(d.config->environment.time_runs);
+    EXPECT_EQ(fovea::julian_date(2026, 3, 20, 15.5 * 3600.0), EnvironmentState{}.julian_date);
+
+    const auto r = parse(
+        "[environment]\ndate = 2027-12-31\ntime = 23:59:30.5\ntime_runs = false\n"
+        "visibility_m = 8000\n" +
+        kMinimal);
+    ASSERT_TRUE(r.ok()) << r.errors.at(0).to_string();
+    EXPECT_EQ(r.config->environment.year, 2027);
+    EXPECT_EQ(r.config->environment.month, 12U);
+    EXPECT_EQ(r.config->environment.day, 31U);
+    EXPECT_EQ(r.config->environment.utc_seconds, 23 * 3600.0 + 59 * 60.0 + 30.5);
+    EXPECT_FALSE(r.config->environment.time_runs);
+    EXPECT_EQ(r.config->environment.visibility_m, 8000.0);
+
+    for (const char* bad :
+         {"date = \"2026-03-20\"", "time = \"12:00\"", "time_runs = 1", "visibility_m = 0",
+          "date = 2026-03-20T12:00:00Z", "season = 2", "date = 1949-12-31", "date = 2051-01-01"}) {
+        const auto e = parse("[environment]\n" + std::string(bad) + "\n" + kMinimal);
+        EXPECT_FALSE(e.ok()) << bad;
     }
 }
 

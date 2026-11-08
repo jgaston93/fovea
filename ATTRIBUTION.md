@@ -11,6 +11,7 @@ wherever a database built from it is shown or shared.
 | NAIP aerial imagery | U.S. Department of Agriculture, Farm Production and Conservation Business Center (National Agriculture Imagery Program) | U.S. Government work, public domain | "Imagery: USDA National Agriculture Imagery Program" |
 | GEOID18 | NOAA National Geodetic Survey | U.S. Government work, public domain | "GEOID18: NOAA National Geodetic Survey" |
 | Airport and runway data (`data/airports/`) | Federal Aviation Administration (as published by AirNav) | U.S. Government work, public domain | "Runways: Federal Aviation Administration" |
+| Sun and moon positions the tests check against (`tests/unit/test_celestial.cpp`) | NASA Jet Propulsion Laboratory, Horizons system | U.S. Government work | "Ephemerides: JPL Horizons" |
 
 Hosting, not ownership: NAIP files are fetched from the Microsoft Planetary
 Computer, GEOID18 from the PROJ project's data server (cdn.proj.org).

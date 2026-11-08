@@ -305,6 +305,17 @@ fovea::RendererOptions renderer_options(const fovea::DisplayConfig& config) {
     return r;
 }
 
+// The date, time and visibility as config sets them (milestone 6, D-029),
+// the clock started at `at` when time runs.
+fovea::EnvironmentState environment_state(const fovea::EnvironmentConfig& e, fovea::LocalTime at) {
+    fovea::EnvironmentState s;
+    s.julian_date = fovea::julian_date(e.year, e.month, e.day, e.utc_seconds);
+    s.set_at = at;
+    s.time_runs = e.time_runs;
+    s.visibility_m = e.visibility_m;
+    return s;
+}
+
 // Headless: every channel rendered offscreen, with no windows or display
 // (the offscreen presenter, or --headless with any config). Draws the given
 // number of frames, prints the colour read back from the middle of each
@@ -339,7 +350,9 @@ int run_headless(const Options& options, const fovea::DisplayConfig& config) {
         return 1;
     }
     const auto views = fovea::reference_scene_views(config);
+    const fovea::EnvironmentState environment = environment_state(config.environment, fovea::now());
     for (std::uint32_t f = 0; f < options.frames; ++f) {
+        renderer->set_sky(fovea::sky_bodies(fovea::julian_date_at(environment, fovea::now())));
         if (options.clear) {
             renderer->draw_clear_frame(clears);
         } else {
@@ -462,6 +475,10 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
     // The scene on the render thread (step 7): a fixed-rate loop drawing the
     // latest scene state, while this (main) thread handles window events.
     auto scene_state = std::make_unique<fovea::SceneState>();
+    // Config's environment until a host sets it: the host adapter edits the
+    // same working copy.
+    scene_state->edit().environment = environment_state(config.environment, fovea::now());
+    scene_state->publish();
     // Declared before the logger, so the logger stops (flushing) before the
     // file closes, whichever way this function exits.
     std::unique_ptr<std::FILE, int (*)(std::FILE*)> stats_file(nullptr, &std::fclose);

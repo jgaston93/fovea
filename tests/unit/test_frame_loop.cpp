@@ -359,7 +359,7 @@ TEST(FrameLoop, RunsOnItsOwnThreadAndSeesNewScenes) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     for (int i = 0; loop.frames_completed() < 5 && std::chrono::steady_clock::now() < deadline;
          ++i) {
-        scene->edit().environment.time_of_day_h = i % 24;
+        scene->edit().environment.visibility_m = i % 24;
         scene->publish();
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }

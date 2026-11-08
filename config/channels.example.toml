@@ -13,6 +13,14 @@ target_hz = 60
 near_m = 0.1                    # reverse-Z, infinite far plane
 msaa = 4                        # samples per pixel: 1, 2, 4 or 8 (D-027), as the GPU can
 
+# The date, time and weather (milestone 6, D-029; all optional), until a
+# host sets them. The sun and moon follow the date and time.
+[environment]
+date = 2026-03-20               # UTC
+time = 15:30:00                 # UTC; 10:30 at Huntsville in March (CDT)
+time_runs = true                # false: the time stays as set
+visibility_m = 50000            # drawn from milestone 6 step 3
+
 # The milestone 1 reference scene (all optional).
 [reference_scene]
 eye_height_m = 2.0              # the eye above the ground grid

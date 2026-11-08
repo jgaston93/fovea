@@ -625,9 +625,10 @@ double mix_of(const std::vector<std::uint8_t>& px, std::uint32_t w, int x, int y
 }
 
 // The image of a database seen from `v`, settled with its one model, drawn
-// with `msaa` samples a pixel; empty with no Vulkan (the caller skips).
+// with `msaa` samples a pixel, lit by `sky` if given; empty with no Vulkan
+// (the caller skips).
 std::vector<std::uint8_t> draw_settled(const fs::path& dir, const SceneView& v, std::uint32_t size,
-                                       std::uint32_t msaa) {
+                                       std::uint32_t msaa, const SkyBodies* sky = nullptr) {
     RendererOptions options;
     options.msaa = msaa;
     if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
@@ -636,6 +637,9 @@ std::vector<std::uint8_t> draw_settled(const fs::path& dir, const SceneView& v, 
     auto r = make_renderer(size, size, options);
     if (!r) {
         return {};
+    }
+    if (sky != nullptr) {
+        r->set_sky(*sky);
     }
     (void)r->load_terrain(open_db(dir));
     settle_models(*r, {v}, 1);
@@ -650,6 +654,64 @@ std::array<double, 3> colour_at(const std::vector<std::uint8_t>& px, std::uint32
     const std::size_t i = (static_cast<std::size_t>(y) * w + static_cast<std::size_t>(x)) * 4;
     return {static_cast<double>(px[i]), static_cast<double>(px[i + 1]),
             static_cast<double>(px[i + 2])};
+}
+
+// The sun follows the date and time (milestone 6 step 1, D-029): a white
+// box's top at KHSV, seen from above, is brightest with the sun high, dimmer
+// with it low, and at the ambient floor alike at two times of night.
+TEST(TerrainRender, TheSunLightsByTheDateAndTime) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    s.placements = {{"box", lat0, lon0, 120.0, 0.0F}};
+    s.models = {{"box", box_glb(10.0F, 4.0F, 10.0F, {1.0F, 1.0F, 1.0F, 1.0F}, "")}};
+    const fs::path dir = write_db("sun", s);
+    constexpr std::uint32_t kSize = 64;
+    const SceneView v = view_at({lat0, lon0, 120.0}, 100.0, -90.0);
+    // Local noon is about 18:00 UTC in June (sun 78 degrees up), 13:00 UTC
+    // is 8 am (about 25 up); 06:00 and 08:00 UTC are night.
+    const auto top = [&](unsigned hour) -> double {
+        const SkyBodies sky = sky_bodies(julian_date(2026, 6, 21, hour * 3600.0));
+        const auto px = draw_settled(dir, v, kSize, 1, &sky);
+        return px.empty() ? -1.0 : colour_at(px, kSize, kSize / 2, kSize / 2)[0];
+    };
+    const double noon = top(18);
+    if (noon < 0.0) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const double morning = top(13);
+    const double night = top(6);
+    std::printf("box top: noon %.0f, morning %.0f, night %.0f\n", noon, morning, night);
+    EXPECT_GT(noon, morning + 5.0);  // squeezed by the tone curve near white
+    EXPECT_GT(morning, night + 10.0);
+    EXPECT_EQ(top(8), night);  // the sun below the horizon lights nothing
+}
+
+// A sun under the horizon lights nothing (milestone 6 step 1): at 1 am at
+// KHSV in June it is 25 degrees down in the north, and a white box's north
+// wall, which faces it, is as dark as its top, at the ambient floor.
+TEST(TerrainRender, ASunUnderTheHorizonLightsNoWallFacingIt) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    s.placements = {{"box", lat0, lon0, 120.0, 0.0F}};
+    s.models = {{"box", box_glb(10.0F, 8.0F, 10.0F, {1.0F, 1.0F, 1.0F, 1.0F}, "")}};
+    const fs::path dir = write_db("night", s);
+    constexpr std::uint32_t kSize = 128;
+    const double north = 40.0 / 111000.0;  // degrees of latitude, 40 m
+    // From 40 m north, looking south and down at the wall and the top.
+    const SceneView v = view_at({lat0 + north, lon0, 120.0}, 20.0, -25.0, 180.0);
+    const SkyBodies sky = sky_bodies(julian_date(2026, 6, 21, 6 * 3600.0));
+    const auto px = draw_settled(dir, v, kSize, 1, &sky);
+    if (px.empty()) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const glm::dvec2 wall = project(v, {lat0 + 10.0 / 111000.0, lon0, 124.0}, kSize, kSize);
+    const glm::dvec2 top = project(v, {lat0, lon0, 128.0}, kSize, kSize);
+    const double w = colour_at(px, kSize, static_cast<int>(wall.x), static_cast<int>(wall.y))[0];
+    const double t = colour_at(px, kSize, static_cast<int>(top.x), static_cast<int>(top.y))[0];
+    std::printf("night: wall %.0f, top %.0f\n", w, t);
+    EXPECT_NEAR(w, t, 1.0);
 }
 
 // Multisampling (milestone 5 step 1, D-027): seen from straight above, a red

@@ -71,9 +71,10 @@ public:
 
     // Picks and draws one view's tiles, inside a rendering pass with the
     // colour and depth formats given to load, and asks for the tiles it
-    // wants. No allocation. Returns the number of tiles drawn.
+    // wants, lit by the view's ViewLighting at lighting_offset in the frame
+    // set. No allocation. Returns the number of tiles drawn.
     std::uint32_t record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
-                         const SceneView& view, VkExtent2D extent);
+                         const SceneView& view, VkExtent2D extent, std::uint32_t lighting_offset);
 
     // This frame's numbers so far (reset by begin_frame).
     const TerrainStats& stats() const { return stats_; }
@@ -103,7 +104,7 @@ private:
                           double pixels_per_tangent);
     // The selected tiles' records and their one draw.
     void draw_tiles(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t o, const SceneView& view,
-                    std::uint32_t drawn, const std::array<float, 3>& sun_f);
+                    std::uint32_t drawn, std::uint32_t lighting_offset);
 
     GpuContext gpu_;
     std::unique_ptr<TerrainDatabase> db_;

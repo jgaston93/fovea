@@ -75,14 +75,15 @@ const FrameRecord& FrameLoop::step() {
 
     // The latest published scene, taken once for the whole frame.
     const SceneSnapshot& scene = scene_.latest();
+    // Moving things are drawn for when the frame will be seen: with
+    // present-wait pacing, the next vsync (DisplayClock), not the frame's
+    // own jittery start; otherwise the start. The sun and moon too.
+    const LocalTime shown =
+        renderer_.paced_by_display() ? display_clock_.frame_started(started) : started;
     if (options_.rig != nullptr) {
-        // Moving things are drawn for when the frame will be seen: with
-        // present-wait pacing, the next vsync (DisplayClock), not the
-        // frame's own jittery start; otherwise the start.
-        const LocalTime shown =
-            renderer_.paced_by_display() ? display_clock_.frame_started(started) : started;
         summary_.views_below_ground += ride_entities(*options_.rig, scene, rigged_, shown);
     }
+    renderer_.set_sky(sky_bodies(julian_date_at(scene.environment, shown)));
 
     // The overlay shows the stats up to the previous frame.
     const OverlayContent* overlay = nullptr;
