@@ -54,7 +54,7 @@ On the desk (RTX 5070 Ti; 2560 x 1440 and two 1080 x 1920 views; `config/khsv.to
 
 - Every run held 60 Hz with no validation messages; its missed frames all fell in its first 0.07 s (the start-up miss, #41).
 - 4 samples over 1 costs about 0.2 ms an output in the mean (0.1 ms in the worst frame) and 365 MiB (48 bytes a rendered pixel predicts 358 MiB); 8 over 4 another 0.35 to 0.45 ms in the mean, up to 0.8 ms in the worst frame (KHUA), and 362 MiB. All within the frame many times over.
-- In screenshots, 4 samples smooths the buildings' roof lines and corners, stair-stepped at 1. The runways' edges and markings are imagery, not geometry: multisampling leaves them as they were, and they are texture filtering's to smooth (full mip chains and anisotropic filtering); no crawl in them was noticed, but they weren't looked at on their own.
+- In screenshots, 4 samples smooths the buildings' roof lines and corners, stair-stepped at 1. The runways' edges and markings are imagery, not geometry: multisampling leaves them as they were, and they are texture filtering's to smooth (full mip chains and anisotropic filtering), and weren't judged on their own here.
 - The default stays 4: watching the airport route at 1 and then 4 samples, the owner found 4 much better overall (the look wasn't broken down by feature). 8 is left to look at later (#62).
 
 ## Inputs needed from you
