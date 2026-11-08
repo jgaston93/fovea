@@ -44,7 +44,6 @@
 #include "shaders/kCsSkyView.hpp"
 #include "shaders/kCsTransmittance.hpp"
 #include "shaders/kFsClouds.hpp"
-#include "shaders/kFsCloudsSkybox.hpp"
 #include "shaders/kFsCloudsVolume.hpp"
 #include "shaders/kFsModel.hpp"
 #include "shaders/kFsModelShadow.hpp"
@@ -1225,14 +1224,13 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     }
     vkDestroyShaderModule(device.device, vs_stars, nullptr);
     vkDestroyShaderModule(device.device, fs_stars, nullptr);
-    const CloudShaders cloud_shaders{make_module(kVsClouds),        make_module(kFsClouds),
-                                     make_module(kFsCloudsVolume),  make_module(kFsCloudsSkybox),
-                                     make_module(kCsCloudShape),    make_module(kCsCloudDetail),
-                                     make_module(kCsCloudQuantiles)};
+    const CloudShaders cloud_shaders{make_module(kVsClouds),       make_module(kFsClouds),
+                                     make_module(kFsCloudsVolume), make_module(kCsCloudShape),
+                                     make_module(kCsCloudDetail),  make_module(kCsCloudQuantiles)};
     const auto release_clouds = [&] {
         for (VkShaderModule m :
-             {cloud_shaders.vertex, cloud_shaders.layer, cloud_shaders.volume, cloud_shaders.skybox,
-              cloud_shaders.shape, cloud_shaders.detail, cloud_shaders.quantiles}) {
+             {cloud_shaders.vertex, cloud_shaders.layer, cloud_shaders.volume, cloud_shaders.shape,
+              cloud_shaders.detail, cloud_shaders.quantiles}) {
             vkDestroyShaderModule(device.device, m, nullptr);
         }
     };
