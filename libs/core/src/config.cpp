@@ -343,6 +343,12 @@ void parse_environment(Parser& p, const toml::table& t, EnvironmentConfig& out) 
     if (const auto* n = t.get("date")) {
         if (const auto* d = n->as_date()) {
             const toml::date v = d->get();
+            if (v.year < 1950 || v.year > 2050) {
+                p.error(n->source(),
+                        "'environment.date' must be from 1950 to 2050, the years the "
+                        "sun and moon are computed for (got " +
+                            std::to_string(v.year) + ")");
+            }
             out.year = v.year;
             out.month = v.month;
             out.day = v.day;

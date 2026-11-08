@@ -38,7 +38,17 @@ struct SkyBodies {
     double moon_lit = 0.0;     // the fraction of the moon's disc lit, 0 to 1
 };
 
-// Where the sun and moon are at a UTC Julian date.
+// Where the sun and moon are at a UTC Julian date. Good from 1950 to
+// 2050 (the Almanac's sun, and a fixed Delta T).
 SkyBodies sky_bodies(double julian_date_utc) noexcept;
+
+// How much of a body's disc, of the given radius, is above the level
+// horizon of a place whose vertical is `up` (unit vectors): 0 below, 1
+// above, in proportion to its centre's height across the disc between.
+// It lights only the part above: a sun under the horizon lights nothing,
+// whichever way a wall faces it.
+double disc_above_horizon(const DVec3& towards, const DVec3& up, double radius_deg) noexcept;
+
+inline constexpr double kSunRadiusDeg = 0.267;
 
 }  // namespace fovea

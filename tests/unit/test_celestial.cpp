@@ -103,4 +103,17 @@ TEST(Celestial, TheMoonIsWhereHorizonsPutsItSeenFromTheGround) {
                 worst_geocentric, worst_lit);
 }
 
+// Only the part of the sun above the horizon lights (milestone 6 step 1):
+// none of it a degree below, all of it a degree above, half on the line.
+TEST(Celestial, TheSunLightsOnlyWhatOfItIsAboveTheHorizon) {
+    const DVec3 up(0.0, 0.0, 1.0);
+    const auto at = [](double el_deg) {
+        return DVec3(std::cos(el_deg * kDegree), 0.0, std::sin(el_deg * kDegree));
+    };
+    EXPECT_EQ(fovea::disc_above_horizon(at(-1.0), up, fovea::kSunRadiusDeg), 0.0);
+    EXPECT_EQ(fovea::disc_above_horizon(at(-30.0), up, fovea::kSunRadiusDeg), 0.0);
+    EXPECT_NEAR(fovea::disc_above_horizon(at(0.0), up, fovea::kSunRadiusDeg), 0.5, 1e-12);
+    EXPECT_EQ(fovea::disc_above_horizon(at(1.0), up, fovea::kSunRadiusDeg), 1.0);
+}
+
 }  // namespace

@@ -34,7 +34,7 @@ struct ViewLighting {
     float3 sun;      // towards the sun, ECEF axes
     float moon_lit;  // the fraction of the moon's disc lit
     float3 moon;     // towards the moon from the eye, ECEF axes
-    float unused;
+    float sun_up;    // how much of the sun's disc is above the eye's horizon
 };
 [[vk::binding(0, 1)]] ConstantBuffer<ViewLighting> lighting;
 
@@ -103,6 +103,6 @@ float4 fs_model(ModelVertex i, bool front: SV_IsFrontFace) : SV_Target {
     // Both sides are drawn: a back face's normal is turned round.
     const float3 n = normalize(i.normal) * (front ? 1.0 : -1.0);
     // The terrain's sun, and light from the sky everywhere.
-    const float sun = saturate(dot(n, lighting.sun));
+    const float sun = saturate(dot(n, lighting.sun)) * lighting.sun_up;
     return float4(colour.rgb * (0.35 + 0.65 * sun), coverage);
 }

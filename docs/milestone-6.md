@@ -99,6 +99,7 @@ The environment adds three packets: Celestial Sphere Control, Atmosphere Control
   - The moon is within 0.003° seen from the ground, against 1.0° without the parallax.
   - The moon's lit fraction is within 0.8%. Horizons' is seen from KHSV and ours from the Earth's centre: the parallax shifts the phase angle by up to a degree.
 - **The lighting follows the time.** A white box's top at KHSV on the June solstice reads 231 at local noon, 217 at 8 am, and 186 at night, the same at two times of night.
+- **Only the sun above the horizon lights.** At 1 am, with the sun 25° under the horizon in the north, the box's north wall is as dark as its top (186; 229 without the horizon's cut-off).
 - **The buffer.** Each view's lighting is a uniform block in a per-frame buffer (set 1 of the terrain and model pipelines, at the view's dynamic offset), so the push constants drop to 68 bytes.
 - **Goldens.** `terrain_hills` and `models_on_hills` were regenerated: the sun moved from the fixed 45°/135° to the default date and time's (2026-03-20, 15:30 UTC), visible only on the boxes' faces and the hills' slopes. The reference scene's goldens are unchanged.
 

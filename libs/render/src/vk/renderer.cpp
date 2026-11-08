@@ -30,6 +30,7 @@
 #include <imgui.h>
 #include <imgui_impl_vulkan.h>
 
+#include "fovea/core/geodesy.hpp"
 #include "fovea/render/renderer.hpp"
 #include "overlay_ui.hpp"
 #include "shaders/kFsModel.hpp"
@@ -1310,6 +1311,9 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
         l.moon[0] = static_cast<float>(moon.x);
         l.moon[1] = static_cast<float>(moon.y);
         l.moon[2] = static_cast<float>(moon.z);
+        const Geodetic eye = ecef_to_geodetic(view.eye_ecef);
+        const DVec3 up = ned_to_ecef(eye.lat_deg, eye.lon_deg) * DVec3(0.0, 0.0, -1.0);
+        l.sun_up = static_cast<float>(disc_above_horizon(sky.sun, up, kSunRadiusDeg));
         std::memcpy(static_cast<std::uint8_t*>(lighting_mapped) + at, &l, sizeof(l));
         (void)vmaFlushAllocation(allocator, lighting_memory, at, sizeof(l));
         (void)terrain->record(cmd, static_cast<std::uint32_t>(slot), static_cast<std::uint32_t>(i),

@@ -687,6 +687,33 @@ TEST(TerrainRender, TheSunLightsByTheDateAndTime) {
     EXPECT_EQ(top(8), night);  // the sun below the horizon lights nothing
 }
 
+// A sun under the horizon lights nothing (milestone 6 step 1): at 1 am at
+// KHSV in June it is 25 degrees down in the north, and a white box's north
+// wall, which faces it, is as dark as its top, at the ambient floor.
+TEST(TerrainRender, ASunUnderTheHorizonLightsNoWallFacingIt) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    s.placements = {{"box", lat0, lon0, 120.0, 0.0F}};
+    s.models = {{"box", box_glb(10.0F, 8.0F, 10.0F, {1.0F, 1.0F, 1.0F, 1.0F}, "")}};
+    const fs::path dir = write_db("night", s);
+    constexpr std::uint32_t kSize = 128;
+    const double north = 40.0 / 111000.0;  // degrees of latitude, 40 m
+    // From 40 m north, looking south and down at the wall and the top.
+    const SceneView v = view_at({lat0 + north, lon0, 120.0}, 20.0, -25.0, 180.0);
+    const SkyBodies sky = sky_bodies(julian_date(2026, 6, 21, 6 * 3600.0));
+    const auto px = draw_settled(dir, v, kSize, 1, &sky);
+    if (px.empty()) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const glm::dvec2 wall = project(v, {lat0 + 10.0 / 111000.0, lon0, 124.0}, kSize, kSize);
+    const glm::dvec2 top = project(v, {lat0, lon0, 128.0}, kSize, kSize);
+    const double w = colour_at(px, kSize, static_cast<int>(wall.x), static_cast<int>(wall.y))[0];
+    const double t = colour_at(px, kSize, static_cast<int>(top.x), static_cast<int>(top.y))[0];
+    std::printf("night: wall %.0f, top %.0f\n", w, t);
+    EXPECT_NEAR(w, t, 1.0);
+}
+
 // Multisampling (milestone 5 step 1, D-027): seen from straight above, a red
 // slab turned 10 degrees leaves pixels along its long sides between its red
 // and the grey ground, the more red the more of the pixel it covers; one

@@ -71,6 +71,8 @@ struct EntityState {
 struct EnvironmentState {
     double julian_date = fovea::julian_date(2026, 3, 20, 15.5 * 3600.0);
     LocalTime set_at;
+    // Frozen unless a writer starts it (config's default does), so state
+    // made in code, tests' included, draws the same every time.
     bool time_runs = false;
     double visibility_m = 50000.0;  // drawn from step 3
 };

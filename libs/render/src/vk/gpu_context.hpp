@@ -38,7 +38,7 @@ struct ViewLighting {
     std::array<float, 3> sun{0.0F, 0.0F, 1.0F};   // towards the sun, ECEF axes
     float moon_lit = 0.0F;                        // the fraction of the moon's disc lit
     std::array<float, 3> moon{0.0F, 0.0F, 1.0F};  // towards the moon from the eye, ECEF axes
-    float unused = 0.0F;
+    float sun_up = 1.0F;  // how much of the sun's disc is above the eye's horizon
 };
 static_assert(sizeof(ViewLighting) == 32, "must match ViewLighting in the shaders");
 

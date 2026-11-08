@@ -38,7 +38,7 @@ struct ViewLighting {
     float3 sun;      // towards the sun, ECEF axes
     float moon_lit;  // the fraction of the moon's disc lit
     float3 moon;     // towards the moon from the eye, ECEF axes
-    float unused;
+    float sun_up;    // how much of the sun's disc is above the eye's horizon
 };
 [[vk::binding(0, 1)]] ConstantBuffer<ViewLighting> lighting;
 
@@ -132,6 +132,6 @@ float4 fs_terrain(TerrainVertex i) : SV_Target {
         imagery[NonUniformResourceIndex(i.tile)].Sample(imagery_sampler, i.uv).rgb;
     // The photographs carry their own shading; the sun only adds a little
     // relief, so lighting stays close to what was photographed.
-    const float sun = saturate(dot(normalize(i.normal), lighting.sun));
+    const float sun = saturate(dot(normalize(i.normal), lighting.sun)) * lighting.sun_up;
     return float4(albedo * (0.75 + 0.25 * sun), 1.0);
 }

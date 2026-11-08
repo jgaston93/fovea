@@ -106,7 +106,7 @@ TEST(Config, MsaaIsOneTwoFourOrEight) {
 TEST(Config, EnvironmentSetsTheDateTimeAndVisibility) {
     const auto d = parse(kMinimal);
     ASSERT_TRUE(d.ok());
-    EXPECT_EQ(d.config->environment.year, 2026);  // the default, as EnvironmentState's
+    EXPECT_EQ(d.config->environment.year, 2026);  // the default date, as EnvironmentState's
     EXPECT_EQ(d.config->environment.month, 3U);
     EXPECT_EQ(d.config->environment.day, 20U);
     EXPECT_EQ(d.config->environment.utc_seconds, 15.5 * 3600.0);
@@ -125,8 +125,9 @@ TEST(Config, EnvironmentSetsTheDateTimeAndVisibility) {
     EXPECT_FALSE(r.config->environment.time_runs);
     EXPECT_EQ(r.config->environment.visibility_m, 8000.0);
 
-    for (const char* bad : {"date = \"2026-03-20\"", "time = \"12:00\"", "time_runs = 1",
-                            "visibility_m = 0", "date = 2026-03-20T12:00:00Z", "season = 2"}) {
+    for (const char* bad :
+         {"date = \"2026-03-20\"", "time = \"12:00\"", "time_runs = 1", "visibility_m = 0",
+          "date = 2026-03-20T12:00:00Z", "season = 2", "date = 1949-12-31", "date = 2051-01-01"}) {
         const auto e = parse("[environment]\n" + std::string(bad) + "\n" + kMinimal);
         EXPECT_FALSE(e.ok()) << bad;
     }

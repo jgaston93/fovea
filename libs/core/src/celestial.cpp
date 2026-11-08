@@ -210,4 +210,9 @@ SkyBodies sky_bodies(double julian_date_utc) noexcept {
     return out;
 }
 
+double disc_above_horizon(const DVec3& towards, const DVec3& up, double radius_deg) noexcept {
+    const double elevation_deg = std::asin(std::clamp(glm::dot(towards, up), -1.0, 1.0)) / kDegree;
+    return std::clamp((elevation_deg + radius_deg) / (2.0 * radius_deg), 0.0, 1.0);
+}
+
 }  // namespace fovea
