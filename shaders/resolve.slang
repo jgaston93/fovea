@@ -5,7 +5,7 @@
 // vs_fullscreen (reference_scene.slang) into the single-sampled HDR target
 // the tone mapping reads, and its depth.
 
-struct ResolvePush {
+struct ResolvePush {  // mirrored in renderer.cpp
     uint samples;
 };
 [[vk::push_constant]] ConstantBuffer<ResolvePush> push;
@@ -26,7 +26,9 @@ Resolved fs_resolve(float4 position: SV_Position) {
     float nearest = 0.0;
     for (uint i = 0; i < push.samples; ++i) {
         nearest = max(nearest, depth.Load(p, int(i)));
-        const float3 c = scene.Load(p, int(i)).rgb;
+        // Finite: a 16-bit float past 65504 is stored as infinity, which
+        // would weigh 0 and make 0 x infinity a NaN.
+        const float3 c = min(scene.Load(p, int(i)).rgb, float3(65504.0));
         const float w = 1.0 / (1.0 + max(0.0, dot(c, float3(0.2126, 0.7152, 0.0722))));
         sum += c * w;
         weights += w;

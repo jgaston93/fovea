@@ -299,16 +299,16 @@ bool load_terrain(fovea::Renderer& renderer, const fovea::DisplayConfig& config)
     return true;
 }
 
-// Headless: every channel rendered offscreen, with no windows or display
-// (the offscreen presenter, or --headless with any config). Draws the given
-// number of frames, prints the colour read back from the middle of each
-// channel, and with --dump writes each channel's last frame as <name>.png.
 fovea::RendererOptions renderer_options(const fovea::DisplayConfig& config) {
     fovea::RendererOptions r;
     r.msaa = config.msaa;
     return r;
 }
 
+// Headless: every channel rendered offscreen, with no windows or display
+// (the offscreen presenter, or --headless with any config). Draws the given
+// number of frames, prints the colour read back from the middle of each
+// channel, and with --dump writes each channel's last frame as <name>.png.
 int run_headless(const Options& options, const fovea::DisplayConfig& config) {
     if (config.host) {
         std::printf(

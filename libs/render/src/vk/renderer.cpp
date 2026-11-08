@@ -299,6 +299,12 @@ VKAPI_ATTR VkBool32 VKAPI_CALL on_validation(VkDebugUtilsMessageSeverityFlagBits
     return VK_FALSE;
 }
 
+// shaders/resolve.slang's push constants.
+struct ResolvePush {
+    std::uint32_t samples = 0;
+};
+static_assert(sizeof(ResolvePush) == 4);
+
 // The linear HDR image a view renders into before tone mapping.
 struct HdrTarget {
     VkExtent2D extent{};
@@ -451,7 +457,8 @@ struct Renderer::Impl {
     VkShaderModule make_module(std::span<const std::uint32_t> spirv) const;
     VkPipeline make_pipeline(VkPipelineLayout layout, VkShaderModule fragment, VkFormat format,
                              VkFormat depth = VK_FORMAT_UNDEFINED,
-                             VkSampleCountFlagBits sample_count = VK_SAMPLE_COUNT_1_BIT) const;
+                             VkSampleCountFlagBits sample_count = VK_SAMPLE_COUNT_1_BIT,
+                             bool write_depth = false) const;
     void choose_samples(std::uint32_t msaa);
     VkPipeline tonemap_pipeline(VkFormat format);
     VkImageView make_view(VkImage image, VkFormat format,
@@ -816,7 +823,8 @@ VkShaderModule Renderer::Impl::make_module(std::span<const std::uint32_t> spirv)
 
 VkPipeline Renderer::Impl::make_pipeline(VkPipelineLayout layout, VkShaderModule fragment,
                                          VkFormat format, VkFormat depth,
-                                         VkSampleCountFlagBits sample_count) const {
+                                         VkSampleCountFlagBits sample_count,
+                                         bool write_depth) const {
     std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -862,14 +870,16 @@ VkPipeline Renderer::Impl::make_pipeline(VkPipelineLayout layout, VkShaderModule
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachmentFormats = &format;
     rendering.depthAttachmentFormat = depth;
-    // With a depth attachment, a fullscreen pass writes every pixel's depth
-    // (the sky the far plane, 0 in reverse-Z, as the clear does; the resolve
-    // the samples' nearest), with no test.
+    // With a depth attachment, a fullscreen pass neither tests nor writes it
+    // (the sky leaves the clear), unless it writes every pixel's (the
+    // resolve: the samples' nearest).
     VkPipelineDepthStencilStateCreateInfo depth_state{};
     depth_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depth_state.depthTestEnable = VK_TRUE;
-    depth_state.depthWriteEnable = VK_TRUE;
-    depth_state.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+    if (write_depth) {
+        depth_state.depthTestEnable = VK_TRUE;
+        depth_state.depthWriteEnable = VK_TRUE;
+        depth_state.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+    }
 
     VkGraphicsPipelineCreateInfo ci{};
     ci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -1008,7 +1018,7 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     scene_pipeline = make_pipeline(scene_layout, fs_scene, kHdrFormat, kDepthFormat, samples);
     if (samples != VK_SAMPLE_COUNT_1_BIT) {
         fs_resolve = make_module(kFsResolve);
-        VkPushConstantRange resolve_push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(std::uint32_t)};
+        VkPushConstantRange resolve_push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ResolvePush)};
         VkPipelineLayoutCreateInfo resolve_lci{};
         resolve_lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         resolve_lci.setLayoutCount = 1;
@@ -1017,7 +1027,8 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
         resolve_lci.pPushConstantRanges = &resolve_push;
         check(vkCreatePipelineLayout(device.device, &resolve_lci, nullptr, &resolve_layout),
               "vkCreatePipelineLayout (resolve)");
-        resolve_pipeline = make_pipeline(resolve_layout, fs_resolve, kHdrFormat, kDepthFormat);
+        resolve_pipeline = make_pipeline(resolve_layout, fs_resolve, kHdrFormat, kDepthFormat,
+                                         VK_SAMPLE_COUNT_1_BIT, true);
     }
     (void)tonemap_pipeline(kOffscreenFormat);
     for (const Swapchain& s : swapchains) {
@@ -1026,8 +1037,11 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
         }
     }
 
+    hdr.reserve(render_extents.size());
     for (const VkExtent2D extent : render_extents) {
-        HdrTarget t;
+        // In hdr from the start: the destructor frees what a failure part
+        // way leaves (null handles are ignored).
+        HdrTarget& t = hdr.emplace_back();
         t.extent = extent;
         VkImageCreateInfo ici{};
         ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -1095,7 +1109,6 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
         write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         write.pImageInfo = &image_info;
         vkUpdateDescriptorSets(device.device, 1, &write, 0, nullptr);
-        hdr.push_back(t);
     }
 }
 
@@ -1223,8 +1236,9 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
     if (multisampled) {
         begin_pass(cmd, t.ms_view, t.extent, t.ms_depth_view, VK_ATTACHMENT_LOAD_OP_CLEAR,
                    VK_ATTACHMENT_STORE_OP_STORE);
-    } else {
-        begin_pass(cmd, t.view, t.extent, t.depth_view);
+    } else {  // kept for later passes, as the resolve's is
+        begin_pass(cmd, t.view, t.extent, t.depth_view, VK_ATTACHMENT_LOAD_OP_CLEAR,
+                   VK_ATTACHMENT_STORE_OP_STORE);
     }
     vkCmdDraw(cmd, 3, 1, 0, 0);
     if (terrain) {
@@ -1234,36 +1248,49 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
     vkCmdEndRendering(cmd);
     if (multisampled) {
         // The weighted resolve (D-028) into the HDR target, and the nearest
-        // sample's depth into its depth.
-        transition(cmd, t.ms, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-        VkImageMemoryBarrier2 rb = dbs[0];
-        rb.srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                          VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-        rb.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        rb.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        rb.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-        rb.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-        rb.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        // sample's depth into its depth: the multisampled targets now read,
+        // the HDR target written (after the previous frame's tone-map read).
+        std::array<VkImageMemoryBarrier2, 3> rbs{};
+        for (VkImageMemoryBarrier2& b : rbs) {
+            b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        }
+        rbs[0].image = t.ms;
+        rbs[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        rbs[0].srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        rbs[0].srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        rbs[0].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        rbs[0].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        rbs[0].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        rbs[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        rbs[1].image = t.ms_depth;
+        rbs[1].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+        rbs[1].srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                              VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        rbs[1].srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        rbs[1].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        rbs[1].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        rbs[1].oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        rbs[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        rbs[2].image = t.image;
+        rbs[2].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        rbs[2].srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        rbs[2].dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        rbs[2].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        rbs[2].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        rbs[2].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         VkDependencyInfo rdep{};
         rdep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        rdep.imageMemoryBarrierCount = 1;
-        rdep.pImageMemoryBarriers = &rb;
+        rdep.imageMemoryBarrierCount = static_cast<std::uint32_t>(rbs.size());
+        rdep.pImageMemoryBarriers = rbs.data();
         vkCmdPipelineBarrier2(cmd, &rdep);
-        transition(cmd, t.image, VK_IMAGE_LAYOUT_UNDEFINED,
-                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
-                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_layout, 0, 1,
                                 &t.resolve_set, 0, nullptr);
-        const auto count = static_cast<std::uint32_t>(samples);
-        vkCmdPushConstants(cmd, resolve_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(count),
-                           &count);
+        ResolvePush rp;
+        rp.samples = static_cast<std::uint32_t>(samples);
+        vkCmdPushConstants(cmd, resolve_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(rp), &rp);
         draw_fullscreen(cmd, t.view, t.extent, t.depth_view);
     }
     transition(cmd, t.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
