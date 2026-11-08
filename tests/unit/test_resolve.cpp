@@ -1,5 +1,6 @@
 #include <array>
 #include <cmath>
+#include <limits>
 
 #include <gtest/gtest.h>
 
@@ -46,6 +47,11 @@ TEST(Resolve, NeverDividesByZeroOrOverflows) {
     const Vec3 c = weighted_resolve(huge);
     EXPECT_TRUE(std::isfinite(c.x) && std::isfinite(c.y) && std::isfinite(c.z));
     EXPECT_GT(c.x, 0.0F);
+    const float inf = std::numeric_limits<float>::infinity();
+    const std::array<Vec3, 4> overflowed = {Vec3(inf), Vec3(0.5F), Vec3(0.5F), Vec3(0.5F)};
+    const Vec3 o = weighted_resolve(overflowed);
+    EXPECT_TRUE(std::isfinite(o.x)) << "a sample past a 16-bit float's range";
+    EXPECT_GT(o.x, 0.5F);
     const std::array<Vec3, 4> black = {Vec3(0.0F), Vec3(0.0F), Vec3(0.0F), Vec3(0.0F)};
     EXPECT_EQ(weighted_resolve(black).x, 0.0F);
     EXPECT_EQ(weighted_resolve({}).x, 0.0F);  // no samples

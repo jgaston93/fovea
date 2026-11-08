@@ -4,7 +4,8 @@
 // does it on the GPU: the samples' mean in linear HDR, each weighted by
 // 1 / (1 + its luminance), so one very bright sample can't swamp an edge
 // (which would stay jagged once tone-mapped). No weight is zero, so neither
-// is their sum. Here for tests, and as the shader's reference.
+// is their sum; samples are clamped to 65504, the largest 16-bit float,
+// first. Here for tests, and as the shader's reference.
 
 #include <span>
 
