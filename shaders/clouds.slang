@@ -65,7 +65,7 @@ float shape_quantile(float x) {
 // edges eroded by the detail. `lod` the shape volume's mip by the pixel's
 // footprint: as it coarsens, the density tends to its mean, so distant
 // broken cloud reads as the thin layer it averages to.
-float shape_density(float coverage, float3 cells, float lod, bool erode) {
+float shape_density(float coverage, float3 cells, float lod, bool erode, float widen) {
     if (coverage <= 0.0) {
         return 0.0;
     }
@@ -77,9 +77,10 @@ float shape_density(float coverage, float3 cells, float lod, bool erode) {
         // Whole a third of the way up the values above the threshold (the
         // shape's values bunch: over all of them, most cloud stayed thin,
         // and the erosion took it).
-        // A tenth more than the coverage over the threshold: the erosion
-        // takes back about that.
-        const float above = min(coverage * 1.1, 1.0);
+        // More than the coverage over the threshold (`widen`): the erosion
+        // takes back about a tenth, and a volume's thinner base and top a
+        // little more.
+        const float above = min(coverage * widen, 1.0);
         const float threshold = shape_quantile(1.0 - above);
         const float core = shape_quantile(1.0 - above * 0.67);
         d = saturate((base - threshold) / max(core - threshold, 1e-3));
@@ -156,7 +157,7 @@ CloudOut fs_clouds(CloudPixel i) {
     if (hit.y == 0.0) {
         discard;
     }
-    const float density = shape_density(l.w, cells, shape_lod(footprint), true);
+    const float density = shape_density(l.w, cells, shape_lod(footprint), true, 1.1);
     const float tau = cloud_depth(l) * density;
     const float alpha = opaque_alpha(exp(-tau));
     if (alpha < 1e-3) {
@@ -262,7 +263,7 @@ CloudOut fs_clouds_volume(CloudPixel i) {
         const float lod = shape_lod(footprint * max(t / max(t0, 1.0), 1.0));
         float3 up;
         const float y = (point_height(rel, up) - l.x) / thickness;
-        const float density = shape_density(l.w, cloud_cells(rel, i.layer), lod, true) *
+        const float density = shape_density(l.w, cloud_cells(rel, i.layer), lod, true, 1.25) *
                               height_shape(y);
         if (density <= 1e-3) {
             continue;
@@ -279,7 +280,7 @@ CloudOut fs_clouds_volume(CloudPixel i) {
             const float3 q = rel + to_light * along;
             float3 q_up;
             const float qy = (point_height(q, q_up) - l.x) / thickness;
-            toward += shape_density(l.w, cloud_cells(q, i.layer), lod + 1.0, false) *
+            toward += shape_density(l.w, cloud_cells(q, i.layer), lod + 1.0, false, 1.25) *
                       height_shape(qy) * step;
         }
         const float od = toward * kCloudExtinction;
