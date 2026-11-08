@@ -12,8 +12,8 @@
 #include <vector>
 
 #include "fovea/core/attitude.hpp"
-#include "fovea/core/geodesy.hpp"
 #include "fovea/core/containers.hpp"
+#include "fovea/core/geodesy.hpp"
 #include "fovea/core/math.hpp"
 #include "fovea/core/scene.hpp"
 
