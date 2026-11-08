@@ -5,6 +5,7 @@
 // Bruneton). The shaders' copy is shaders/include/atmosphere.slang; the
 // tests check the GPU's tables against a CPU integral of the same model.
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <vector>
@@ -31,12 +32,30 @@ struct Atmosphere {
     double sun_angular_radius_deg = 0.267;
 };
 
+// The atmosphere with the aerosols (Mie) set for a visibility (D-030):
+// Koschmieder's relation, extinction 3.912 / V for the meteorological
+// visibility V (where a black object's contrast falls to 2%), taken in green
+// light at sea level, the Rayleigh part included. The aerosols keep
+// Hillaire's ratio of scattering to extinction (0.9). Clearer air than
+// Rayleigh alone allows (about 290 km) leaves no aerosols.
+inline Atmosphere with_visibility(Atmosphere a, double visibility_m) {
+    const double extinction = 3.912 / (std::max(visibility_m, 1.0) / 1000.0);  // per km
+    const double mie = std::max(extinction - a.rayleigh_scattering[1], 0.0);
+    a.mie_extinction = mie;
+    a.mie_scattering = mie * (3.996 / 4.440);
+    return a;
+}
+
 // The tables' sizes (the shaders' kTransmittanceSize and so on).
 inline constexpr std::uint32_t kTransmittanceWidth = 256;
 inline constexpr std::uint32_t kTransmittanceHeight = 64;
 inline constexpr std::uint32_t kMultiScatteringSize = 32;
 inline constexpr std::uint32_t kSkyViewWidth = 192;
 inline constexpr std::uint32_t kSkyViewHeight = 108;
+inline constexpr std::uint32_t kAerialWidth = 32;  // the aerial-perspective volume, per view
+inline constexpr std::uint32_t kAerialHeight = 32;
+inline constexpr std::uint32_t kAerialDepth = 64;
+inline constexpr double kAerialDistanceKm = 300.0;  // its far slice's far edge
 
 // What the sky's compute passes made, read back for tests: RGBA rows, top
 // first; the view's sky-view table; and its light (pre-exposure).
@@ -44,6 +63,7 @@ struct SkyReadback {
     std::vector<float> transmittance;     // kTransmittanceWidth x kTransmittanceHeight
     std::vector<float> multi_scattering;  // kMultiScatteringSize squared
     std::vector<float> sky_view;          // kSkyViewWidth x kSkyViewHeight
+    std::vector<float> aerial;            // the view's volume: kAerialDepth slices, nearest first
     std::array<float, 3> sun_irradiance{};
     std::array<float, 3> sky_irradiance{};
     float exposure = 0.0F;

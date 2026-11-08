@@ -103,7 +103,10 @@ float4 fs_scene(Fullscreen i) : SV_Target {
         // Below the horizon: the ground plane, eye_height_m below the eye,
         // lit as level ground.
         const float3 e = s.sun_irradiance * saturate(-lighting.sun_local.z) + s.sky_irradiance;
-        colour = lerp(kGround, kGridLine, grid_lines(g, g_width)) * e * kInvPi * s.exposure;
+        const float3 lit = lerp(kGround, kGridLine, grid_lines(g, g_width)) * e * kInvPi;
+        // Through the air to the eye (step 3): t is the distance, metres.
+        const float4 air = aerial_perspective(i.position.xy, t * 0.001);
+        colour = (lit * air.a + air.rgb) * s.exposure;
     } else {
         colour = sky_radiance(ray) * s.exposure;
         const float r = atmosphere.sun_angular_radius;

@@ -47,10 +47,10 @@ std::unique_ptr<Renderer> make_offscreen(std::vector<OffscreenOutput> outputs) {
 constexpr Geodetic kKhsv{34.6372, -86.7751, 190.0};
 
 SceneView view_towards(double yaw_deg, double pitch_deg, std::uint32_t w, std::uint32_t h,
-                       double half_fov_deg = 30.0) {
+                       double half_fov_deg = 30.0, double eye_height_m = 2.0) {
     ReferenceScene scene;
     scene.origin = kKhsv;
-    scene.eye_height_m = 2.0;
+    scene.eye_height_m = eye_height_m;
     ViewDesc v;
     v.pose.rotation = {yaw_deg, pitch_deg, 0.0};
     const double half_v = half_fov_deg * static_cast<double>(h) / static_cast<double>(w);
@@ -93,7 +93,8 @@ std::array<double, 3> texel(const std::vector<float>& t, std::uint32_t w, std::u
 TEST(Sky, TablesMatchACpuIntegralOfTheSameModel) {
     auto r = make_offscreen({{64, 32}});
     FOVEA_NEED_VULKAN(r);
-    const test::AtmosphereReference ref{Atmosphere{}};
+    const test::AtmosphereReference ref{
+        with_visibility(Atmosphere{}, EnvironmentState{}.visibility_m)};
     const SceneView v = view_towards(0.0, 10.0, 64, 32);
     const double eye_r =
         Atmosphere{}.bottom_radius_km + ecef_to_geodetic(v.eye_ecef).alt_m / 1000.0;
@@ -163,11 +164,14 @@ TEST(Sky, BlueOverheadPalerAtTheHorizonAndRedderTowardASettingSun) {
     r->set_sky(at_utc(6, 21, 17.0));  // late morning, the sun 70 degrees up
     r->draw_scene_frame(std::vector<SceneView>{v});
     const SkyReadback noon = r->read_back_sky(0);
-    const auto zenith = texel(noon.sky_view, kSkyViewWidth, kSkyViewWidth - 1, 0);
+    // Away from the sun, 60 degrees up (row 10: the rows squeeze toward
+    // the horizon), and just above the horizon: the zenith itself is only
+    // 15 degrees from this sun, in the haze's bright aureole.
+    const auto high = texel(noon.sky_view, kSkyViewWidth, kSkyViewWidth - 1, 10);
     const auto low = texel(noon.sky_view, kSkyViewWidth, kSkyViewWidth - 1, horizon);
-    std::printf("noon: zenith b/r %.2f, horizon b/r %.2f\n", blueness(zenith), blueness(low));
-    EXPECT_GT(blueness(zenith), 1.5);
-    EXPECT_GT(blueness(zenith), blueness(low) * 1.2);
+    std::printf("noon: 60 degrees up b/r %.2f, horizon b/r %.2f\n", blueness(high), blueness(low));
+    EXPECT_GT(blueness(high), 1.5);
+    EXPECT_GT(blueness(high), blueness(low) * 1.2);
 
     r->set_sky(at_utc(6, 22, 0.75));  // 00:45 UTC: 7:45 pm, the sun setting
     r->draw_scene_frame(std::vector<SceneView>{v});
@@ -281,6 +285,103 @@ TEST(Sky, TheLightFollowsTheDateAndTime) {
     EXPECT_NEAR(morning->exposure * morning->level, key, key * 1e-3);
     const double floor = 1e-4 * Atmosphere{}.sun_illuminance[0];
     EXPECT_NEAR(night->exposure, key / floor, key / floor * 1e-3);
+}
+
+// Visibility sets the haze (milestone 6 step 3, D-030): along a level ray
+// from sea level, the air's transmittance falls to about 2% at the set
+// visibility (Koschmieder: a black object's contrast against the horizon
+// sky is the air's transmittance), and doubling the visibility moves that
+// distance with it. Read from the aerial-perspective volume (8-bit images
+// can't show a 2% contrast); within a factor of 1.5, the volume holding the
+// mean of red, green and blue where Koschmieder's is green's.
+TEST(Sky, VisibilityIsWhereTheHazeLeavesTwoPercent) {
+    auto r = make_offscreen({{64, 64}});
+    FOVEA_NEED_VULKAN(r);
+    ReferenceScene scene;
+    scene.origin = {34.6372, -86.7751, 0.0};  // at sea level, where visibility is set
+    scene.eye_height_m = 2.0;
+    ViewDesc d;
+    // A narrow view, so the froxel rows near its middle are level.
+    d.projection.frustum = {-2.0, 2.0, 2.0, -2.0};
+    const SceneView v = reference_scene_view(d, scene);
+    r->set_sky(at_utc(6, 21, 17.0));
+    for (const double visibility_km : {20.0, 40.0}) {
+        r->set_visibility(visibility_km * 1000.0);
+        r->draw_scene_frame(std::vector<SceneView>{v});
+        const SkyReadback s = r->read_back_sky(0);
+        // The two middle columns' transmittance in the two rows just above
+        // level (those below meet the ground at the horizon, 5 km from a
+        // 2 m eye) at each slice's far edge, then where it crosses 2%.
+        std::vector<double> t(kAerialDepth);
+        for (std::uint32_t k = 0; k < kAerialDepth; ++k) {
+            double sum = 0.0;
+            for (std::uint32_t y = 14; y <= 15; ++y) {
+                for (std::uint32_t x = 15; x <= 16; ++x) {
+                    const std::size_t i =
+                        ((static_cast<std::size_t>(k) * kAerialHeight + y) * kAerialWidth + x) * 4;
+                    sum += static_cast<double>(s.aerial[i + 3]);
+                }
+            }
+            t[k] = sum / 4.0;
+        }
+        const auto far_edge = [](double k) {
+            const double w = (k + 1.0) / kAerialDepth;
+            return w * w * kAerialDistanceKm;
+        };
+        double at = -1.0;
+        for (std::uint32_t k = 1; k < kAerialDepth; ++k) {
+            if (t[k] <= 0.02 && t[k - 1] > 0.02) {
+                // Between the two edges, by the log of the transmittance.
+                const double f = std::log(t[k - 1] / 0.02) / std::log(t[k - 1] / t[k]);
+                at = far_edge(k - 1) + f * (far_edge(k) - far_edge(k - 1));
+                break;
+            }
+        }
+        std::printf("visibility %.0f km: transmittance 2%% at %.1f km\n", visibility_km, at);
+        EXPECT_GT(at, visibility_km / 1.5);
+        EXPECT_LT(at, visibility_km * 1.5);
+    }
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
+// The haze reaches what is drawn: seen from 300 m up, the reference scene's
+// ground a few rows below the horizon (about 5 km away) all but melts into
+// the sky above the horizon at 500 m visibility, and stands apart from it
+// at 200 km.
+TEST(Sky, FarGroundFadesIntoTheSkyAsVisibilityFalls) {
+    constexpr std::uint32_t kW = 96;
+    constexpr std::uint32_t kH = 96;
+    const SceneView v = view_towards(0.0, 0.0, kW, kH, 30.0, 300.0);
+    // A level view: the horizon is just below the middle row (dipping
+    // 0.6 degrees from 300 m); 6 rows either side of the middle. A renderer
+    // for each visibility, so each takes its exposure at once.
+    const auto difference = [&](double visibility_m) -> double {
+        auto r = make_offscreen({{kW, kH}});
+        if (r == nullptr) {
+            return -1.0;
+        }
+        r->set_sky(at_utc(6, 21, 17.0));
+        r->set_visibility(visibility_m);
+        r->draw_scene_frame(std::vector<SceneView>{v});
+        const auto px = r->read_back_rgba(0);
+        EXPECT_EQ(r->validation_messages(), 0U);
+        const auto at = [&](std::uint32_t y, std::uint32_t c) {
+            return static_cast<double>(px[(static_cast<std::size_t>(y) * kW + kW / 2) * 4 + c]);
+        };
+        double d = 0.0;
+        for (std::uint32_t c = 0; c < 3; ++c) {
+            d += std::abs(at(kH / 2 + 6, c) - at(kH / 2 - 6, c));
+        }
+        return d;
+    };
+    const double thick = difference(500.0);
+    if (thick < 0.0) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const double clear = difference(200000.0);
+    std::printf("ground against sky: %.0f at 500 m visibility, %.0f at 200 km\n", thick, clear);
+    EXPECT_LT(thick, 30.0);
+    EXPECT_GT(clear, 3.0 * thick);
 }
 
 }  // namespace

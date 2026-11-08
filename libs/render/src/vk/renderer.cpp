@@ -33,6 +33,7 @@
 #include "fovea/core/geodesy.hpp"
 #include "fovea/render/renderer.hpp"
 #include "overlay_ui.hpp"
+#include "shaders/kCsAerial.hpp"
 #include "shaders/kCsExposure.hpp"
 #include "shaders/kCsIrradiance.hpp"
 #include "shaders/kCsMultiScattering.hpp"
@@ -1032,10 +1033,11 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     // The lighting's: one dynamic uniform buffer, offset to the view's block.
     // The sky's (milestone 6 step 2): each view's light, the views'
     // sky-view tables and the atmosphere (shaders/include/frame.slang).
-    const std::array<VkDescriptorType, 4> frame_types = {
+    const std::array<VkDescriptorType, 5> frame_types = {
         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
-    std::array<VkDescriptorSetLayoutBinding, 4> frame_bindings{};
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
+    std::array<VkDescriptorSetLayoutBinding, 5> frame_bindings{};
     for (std::uint32_t b = 0; b < frame_bindings.size(); ++b) {
         frame_bindings[b].binding = b;
         frame_bindings[b].descriptorType = frame_types[b];
@@ -1051,7 +1053,7 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
 
     const auto count = static_cast<std::uint32_t>(render_extents.size());
     const std::array<VkDescriptorPoolSize, 5> pool_sizes = {
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count + 1},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count + 2},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 2},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
@@ -1090,9 +1092,9 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
           "vkAllocateDescriptorSets (frame)");
 
     const GpuContext gpu = gpu_context();
-    const std::array<VkShaderModule, 5> sky_modules = {
+    const std::array<VkShaderModule, 6> sky_modules = {
         make_module(kCsTransmittance), make_module(kCsMultiScattering), make_module(kCsSkyView),
-        make_module(kCsIrradiance), make_module(kCsExposure)};
+        make_module(kCsIrradiance),    make_module(kCsExposure),        make_module(kCsAerial)};
     try {
         sky_tables = std::make_unique<SkyGpu>(gpu, count, Atmosphere{}, sky_modules);
     } catch (...) {
@@ -1104,6 +1106,7 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     for (VkShaderModule m : sky_modules) {
         vkDestroyShaderModule(device.device, m, nullptr);
     }
+    sky_tables->set_visibility(EnvironmentState{}.visibility_m);
     sky_inputs.resize(count);
 
     const VkDescriptorBufferInfo lighting_info{lighting, 0, sizeof(ViewLighting)};
@@ -1113,7 +1116,9 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
                                               VK_IMAGE_LAYOUT_GENERAL};
     const VkDescriptorBufferInfo atmosphere_info{sky_tables->atmosphere_buffer(), 0,
                                                  SkyGpu::atmosphere_size()};
-    std::array<VkWriteDescriptorSet, 4> fws{};
+    const VkDescriptorImageInfo aerial_info{sky_tables->sampler(), sky_tables->aerial_volumes(),
+                                            VK_IMAGE_LAYOUT_GENERAL};
+    std::array<VkWriteDescriptorSet, 5> fws{};
     for (std::uint32_t b = 0; b < fws.size(); ++b) {
         fws[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         fws[b].dstSet = frame_set;
@@ -1125,6 +1130,7 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     fws[1].pBufferInfo = &view_sky_info;
     fws[2].pImageInfo = &sky_view_info;
     fws[3].pBufferInfo = &atmosphere_info;
+    fws[4].pImageInfo = &aerial_info;
     vkUpdateDescriptorSets(device.device, static_cast<std::uint32_t>(fws.size()), fws.data(), 0,
                            nullptr);
 
@@ -1343,10 +1349,13 @@ void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
         l.view = static_cast<std::uint32_t>(i);
         const double height_km = std::max(eye.alt_m, 0.0) / 1000.0;
         l.eye_radius_km = static_cast<float>(sky_tables->atmosphere().bottom_radius_km + height_km);
+        l.inv_width = 1.0F / static_cast<float>(std::max(hdr[i].extent.width, 1U));
+        l.inv_height = 1.0F / static_cast<float>(std::max(hdr[i].extent.height, 1U));
+        l.views = static_cast<std::uint32_t>(hdr.size());
         const std::uint32_t at = lighting_offset(slot, i);
         std::memcpy(static_cast<std::uint8_t*>(lighting_mapped) + at, &l, sizeof(l));
         (void)vmaFlushAllocation(allocator, lighting_memory, at, sizeof(l));
-        sky_inputs[i] = {height_km, -sun_local.z, sun_up};
+        sky_inputs[i] = {height_km, -sun_local.z, sun_up, view.clip_to_local, Vec3(sun_local)};
     }
     // Exposure moves toward its target with a time constant of a second
     // (D-031), a frame period a frame: by the frame clock, not the wall's,
@@ -1956,6 +1965,12 @@ std::uint32_t Renderer::draw_scene_frame(std::span<const SceneView> views,
 
 void Renderer::set_sky(const SkyBodies& sky) {
     impl_->sky = sky;
+}
+
+void Renderer::set_visibility(double visibility_m) {
+    if (impl_->sky_tables) {
+        impl_->sky_tables->set_visibility(visibility_m);
+    }
 }
 
 SkyReadback Renderer::read_back_sky(std::uint32_t output) {

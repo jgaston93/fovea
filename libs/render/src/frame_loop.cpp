@@ -84,6 +84,7 @@ const FrameRecord& FrameLoop::step() {
         summary_.views_below_ground += ride_entities(*options_.rig, scene, rigged_, shown);
     }
     renderer_.set_sky(sky_bodies(julian_date_at(scene.environment, shown)));
+    renderer_.set_visibility(scene.environment.visibility_m);
 
     // The overlay shows the stats up to the previous frame.
     const OverlayContent* overlay = nullptr;

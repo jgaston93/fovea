@@ -57,5 +57,6 @@ fovea_add_shader(fovea_render "${sky_shader}" cs_multi_scattering compute kCsMul
 fovea_add_shader(fovea_render "${sky_shader}" cs_sky_view compute kCsSkyView)
 fovea_add_shader(fovea_render "${sky_shader}" cs_irradiance compute kCsIrradiance)
 fovea_add_shader(fovea_render "${sky_shader}" cs_exposure compute kCsExposure)
+fovea_add_shader(fovea_render "${sky_shader}" cs_aerial compute kCsAerial)
 # Just the generated shader headers: what clang-tidy needs from a build.
 add_custom_target(fovea_shaders DEPENDS ${FOVEA_SHADER_HEADERS})

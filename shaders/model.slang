@@ -47,6 +47,7 @@ struct ModelVertex {
     float4 position : SV_Position;
     float3 normal;
     float2 uv;
+    float3 rel;  // the point relative to the eye, ECEF axes, metres
     nointerpolation uint material;
 };
 
@@ -60,6 +61,7 @@ ModelVertex vs_model(VertexIn v, uint instance: SV_VulkanInstanceID) {
                             dot(d.row2.xyz, v.normal));
     ModelVertex o;
     o.position = mul(push.ecef_to_clip, float4(rel, 1.0));
+    o.rel = rel;
     o.normal = n;
     o.uv = v.uv;
     o.material = d.material;
@@ -98,5 +100,8 @@ float4 fs_model(ModelVertex i, bool front: SV_IsFrontFace) : SV_Target {
     const float3 n = normalize(i.normal) * (front ? 1.0 : -1.0);
     // Lambertian under the sun and sky, pre-exposed (D-031).
     const ViewSky s = view_sky[lighting.view];
-    return float4(colour.rgb * irradiance_on(n, s) * kInvPi * s.exposure, coverage);
+    // Through the air to the eye (step 3).
+    const float4 air = aerial_perspective(i.position.xy, length(i.rel) * 0.001);
+    const float3 lit = colour.rgb * irradiance_on(n, s) * kInvPi;
+    return float4((lit * air.a + air.rgb) * s.exposure, coverage);
 }
