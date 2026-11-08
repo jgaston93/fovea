@@ -44,7 +44,7 @@ struct SkyPush {
     std::uint32_t views = 0;
     float adapt = 1.0F;
     float key = 0.0F;
-    float floor_illuminance = 0.0F;
+    float knee_illuminance = 0.0F;
     Mat4 clip_to_local{1.0F};
     std::array<float, 3> sun_local{};
     float moon_scale = 0.0F;
@@ -53,11 +53,12 @@ struct SkyPush {
 };
 static_assert(sizeof(SkyPush) == 128, "must match SkyPush in sky.slang");
 
-// The exposure takes a level surface's light to pi: a white one shows as
-// 1 before tone mapping. Below a ten-thousandth of the sun's illuminance
-// (deep twilight) it stops rising, so night stays dark (D-031).
+// The exposure takes the light to pi: a white surface facing the sun shows
+// as 1 before tone mapping. Below a twentieth of the sun's illuminance (an
+// overcast day, or the sun a few degrees up) it adapts less and less: see
+// cs_exposure (D-031, step 4).
 constexpr double kExposureKey = std::numbers::pi;
-constexpr double kExposureFloor = 1e-4;
+constexpr double kExposureKnee = 0.05;
 
 [[noreturn]] void fail(const std::string& what) {
     throw std::runtime_error(what);
@@ -467,7 +468,7 @@ void SkyGpu::record(VkCommandBuffer cmd, std::span<const SkyViewInput> views, fl
     const double sun_luminance = 0.2126 * atmosphere_params_.sun_illuminance[0] +
                                  0.7152 * atmosphere_params_.sun_illuminance[1] +
                                  0.0722 * atmosphere_params_.sun_illuminance[2];
-    push.floor_illuminance = static_cast<float>(kExposureFloor * sun_luminance);
+    push.knee_illuminance = static_cast<float>(kExposureKnee * sun_luminance);
     const auto set_view = [&](std::uint32_t v) {
         const SkyViewInput& in = views[v];
         push.view = v;

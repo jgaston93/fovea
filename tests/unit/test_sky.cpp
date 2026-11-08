@@ -282,20 +282,18 @@ TEST(Sky, TheLightFollowsTheDateAndTime) {
                 night->level);
     EXPECT_GT(noon->level, morning->level * 1.5);
     EXPECT_LT(night->level, noon->level * 1e-4);
-    // The exposure's key (pi) over that light. Below the floor, a
-    // ten-thousandth of the sun's illuminance, exposure keeps rising half as
-    // fast in stops as the light falls (step 4): key / (floor sqrt(light /
-    // floor)).
+    // The exposure's key (pi) over that light. Below the knee, a twentieth
+    // of the sun's illuminance, it adapts three quarters of a stop a stop
+    // (step 4): key / (knee (light / knee)^0.75).
     const double key = 3.14159265358979;
     EXPECT_NEAR(noon->exposure * noon->light, key, key * 1e-3);
-    EXPECT_NEAR(morning->exposure * morning->light, key, key * 1e-3);
-    const double floor = 1e-4 * Atmosphere{}.sun_illuminance[0];
-    ASSERT_LT(night->light, floor);
-    const double night_target = key / (floor * std::sqrt(night->light / floor));
-    std::printf("night: light %.3g, exposure %.1f (floor's %.2f)\n", night->light, night->exposure,
-                key / floor);
-    EXPECT_NEAR(night->exposure, night_target, night_target * 1e-3);
-    EXPECT_GT(night->exposure, key / floor);
+    const double knee = 0.05 * Atmosphere{}.sun_illuminance[0];
+    for (const auto& l : {*morning, *night}) {
+        const double adapted = l.light >= knee ? l.light : knee * std::pow(l.light / knee, 0.75);
+        EXPECT_NEAR(l.exposure, key / adapted, key / adapted * 1e-3) << l.light;
+    }
+    std::printf("night: light %.3g, %.1f stops darker than full adaptation\n", night->light,
+                std::log2(key / night->light / night->exposure));
 }
 
 // Visibility sets the haze (milestone 6 step 3, D-030): along a level ray

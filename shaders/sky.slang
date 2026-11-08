@@ -28,7 +28,7 @@ struct SkyPush {
     uint views;
     float adapt;  // how far exposure moves to its target this frame, 0 to 1
     float key;    // exposure times a level surface's illuminance
-    float floor_illuminance;  // exposure stops rising below this (night)
+    float knee_illuminance;  // below it, exposure adapts less (dusk and night)
     // For the aerial-perspective volume: the view's clip space to its level
     // frame (x north, y east, z down), and the sun in that frame.
     float4x4 clip_to_local;
@@ -259,19 +259,18 @@ void cs_irradiance(uint3 id: SV_DispatchThreadID) {
 // sun's on a surface facing it, and the sky's. Not the light on level
 // ground: that falls toward nothing as the sun sets, while the air toward
 // the sun stays bright, and an exposure following it washed dusk out.
-// Moved toward its target by `adapt`, in stops. Below the floor (deep
-// twilight, about 10 lux) it keeps rising, but half as fast in stops as the
-// light falls: a moonlit night (0.25 lux) shows at a sixth of a day's
-// brightness, a moonless one at a hundredth, dark but not black, as
-// night vision adapts (step 4).
+// Moved toward its target by `adapt`, in stops. Below the knee (a twentieth
+// of the sun's illuminance: overcast, or the sun low) it rises three
+// quarters of a stop for each stop the light falls, as eyes adapt only so
+// far: deep dusk shows about 2 stops darker than day, a moonlit night
+// about 4, a moonless one about 6, dark but not black (step 4).
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void cs_exposure(uint3 id: SV_DispatchThreadID) {
     const ViewSky s = view_sky_out[0];
     const float light = luminance(s.sun_irradiance + s.moon_irradiance + s.sky_irradiance);
-    const float floor_light = push.floor_illuminance;
-    const float adapted =
-        light >= floor_light ? light : floor_light * sqrt(max(light, 1e-12) / floor_light);
+    const float knee = push.knee_illuminance;
+    const float adapted = light >= knee ? light : knee * pow(max(light, 1e-12) / knee, 0.75);
     const float target = push.key / adapted;
     float stops = log2(target);
     if (exposure_state[1] != 0.0) {
