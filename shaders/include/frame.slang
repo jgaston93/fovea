@@ -29,9 +29,21 @@ struct ViewLighting {
     float4x4 cascade[4];
     float4 cascade_texel;
     uint shadow_light;  // 0 none, 1 the sun, 2 the moon
-    float unused2;      // single floats: a float3 would align to 16
-    float unused3;
-    float unused4;
+    // The weather (step 6, D-034; weather.slang): the eye's height above
+    // the ellipsoid, metres; how many layers, and of them clouds; the up at
+    // the eye (ECEF); the fraction of the light on level ground the clouds
+    // above the eye leave (on average), for the air and the fog; the eye in
+    // the cloud noise's cells; and the layers, lowest first: base and top
+    // (metres), extinction per metre, and a cloud's coverage (0 to 1) or -1
+    // for fog, rain and snow.
+    float eye_height_m;
+    uint layer_count;
+    uint cloud_count;
+    float3 up;
+    float weather_light;
+    float3 noise_origin;
+    float unused2;
+    float4 layer[6];
 };
 
 // Written by the sky's compute passes for each view: mirrored as ViewSky in
@@ -168,8 +180,13 @@ float4 aerial_perspective_uv(float2 uv, float distance_km) {
 // (its irradiance counts only the disc above the horizon), and the sky's,
 // as on level ground, which a model's walls also take for now. The moon's
 // too (step 4).
-float3 irradiance_on(float3 n, ViewSky s, float2 lit) {
-    return s.sun_irradiance * saturate(dot(n, lighting.sun)) * lit.x +
-           s.moon_irradiance * saturate(dot(n, lighting.moon)) * lit.y + s.sky_irradiance;
+// With the clouds above (step 6): `clouds` is under_clouds' for the point.
+float3 irradiance_on(float3 n, ViewSky s, float2 lit, float4 clouds) {
+    return (s.sun_irradiance * saturate(dot(n, lighting.sun)) * lit.x +
+            s.moon_irradiance * saturate(dot(n, lighting.moon)) * lit.y) *
+               clouds.x +
+           clouds.yzw;
 }
+
+#include "weather.slang"
 #endif

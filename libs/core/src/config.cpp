@@ -338,8 +338,89 @@ void parse_reference_scene(Parser& p, const toml::table& t, ReferenceScene& out)
     }
 }
 
+// One [[environment.layer]] (step 6, D-034).
+void parse_weather_layer(Parser& p, const toml::table& t, const std::string& path,
+                         WeatherLayer& out) {
+    p.check_keys(t, {"kind", "base_m", "thickness_m", "coverage", "visibility_m"}, path);
+    const auto* kind = t.get("kind");
+    const auto* name = kind != nullptr ? kind->as_string() : nullptr;
+    if (name == nullptr) {
+        p.error(kind != nullptr ? kind->source() : t.source(),
+                "'" + path + ".kind' must be \"cloud\", \"fog\", \"rain\" or \"snow\"");
+    } else if (name->get() == "cloud") {
+        out.kind = WeatherKind::cloud;
+    } else if (name->get() == "fog") {
+        out.kind = WeatherKind::fog;
+    } else if (name->get() == "rain") {
+        out.kind = WeatherKind::rain;
+    } else if (name->get() == "snow") {
+        out.kind = WeatherKind::snow;
+    } else {
+        p.error(kind->source(), "'" + path +
+                                    ".kind' must be \"cloud\", \"fog\", \"rain\" or "
+                                    "\"snow\" (got \"" +
+                                    name->get() + "\")");
+    }
+    // Fog's own visibility is short; rain's and snow's longer.
+    out.visibility_m = out.kind == WeatherKind::fog    ? 200.0
+                       : out.kind == WeatherKind::rain ? 5000.0
+                       : out.kind == WeatherKind::snow ? 1500.0
+                                                       : 1000.0;
+    if (const auto* n = t.get("base_m")) {
+        if (auto v = p.number(*n, path + ".base_m")) {
+            check_range(p, *n, path + ".base_m", *v, -500.0, 20000.0, false);
+            out.base_m = *v;
+        }
+    } else {
+        p.error(t.source(), "'" + path + "' needs base_m, its base above mean sea level");
+    }
+    if (const auto* n = t.get("thickness_m")) {
+        if (auto v = p.number(*n, path + ".thickness_m")) {
+            check_range(p, *n, path + ".thickness_m", *v, 0.0, 10000.0, true);
+            out.thickness_m = *v;
+        }
+    } else {
+        p.error(t.source(), "'" + path + "' needs thickness_m");
+    }
+    if (const auto* n = t.get("coverage")) {
+        if (out.kind != WeatherKind::cloud) {
+            p.error(n->source(), "'" + path + ".coverage' is for clouds only");
+        } else if (auto v = p.number(*n, path + ".coverage")) {
+            check_range(p, *n, path + ".coverage", *v, 0.0, 1.0, false);
+            out.coverage = *v;
+        }
+    }
+    if (const auto* n = t.get("visibility_m")) {
+        if (out.kind == WeatherKind::cloud) {
+            p.error(n->source(), "'" + path + ".visibility_m' is for fog, rain and snow only");
+        } else if (auto v = p.number(*n, path + ".visibility_m")) {
+            check_range(p, *n, path + ".visibility_m", *v, 0.0, 1e7, true);
+            out.visibility_m = *v;
+        }
+    }
+}
+
 void parse_environment(Parser& p, const toml::table& t, EnvironmentConfig& out) {
-    p.check_keys(t, {"date", "time", "time_runs", "visibility_m"}, "environment");
+    p.check_keys(t, {"date", "time", "time_runs", "visibility_m", "layer"}, "environment");
+    if (const auto* n = t.get("layer")) {
+        const toml::array* list = n->as_array();
+        if (list == nullptr || !list->is_array_of_tables()) {
+            p.error(n->source(),
+                    "'environment.layer' must be a list of tables: write each as "
+                    "[[environment.layer]]");
+        } else if (list->size() > kMaxWeatherLayers) {
+            p.error(n->source(), "at most " + std::to_string(kMaxWeatherLayers) +
+                                     " [[environment.layer]] tables (got " +
+                                     std::to_string(list->size()) + ")");
+        } else {
+            for (std::size_t i = 0; i < list->size(); ++i) {
+                WeatherLayer layer;
+                parse_weather_layer(p, *list->get(i)->as_table(),
+                                    "environment.layer[" + std::to_string(i) + "]", layer);
+                (void)out.layers.push_back(layer);
+            }
+        }
+    }
     if (const auto* n = t.get("date")) {
         if (const auto* d = n->as_date()) {
             const toml::date v = d->get();

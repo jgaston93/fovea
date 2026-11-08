@@ -306,14 +306,21 @@ fovea::RendererOptions renderer_options(const fovea::DisplayConfig& config) {
     return r;
 }
 
-// The date, time and visibility as config sets them (milestone 6, D-029),
-// the clock started at `at` when time runs.
-fovea::EnvironmentState environment_state(const fovea::EnvironmentConfig& e, fovea::LocalTime at) {
+// The date, time, visibility and weather as config sets them (milestone 6,
+// D-029), the clock started at `at` when time runs; the layers' sea-level
+// heights made ellipsoidal with the geoid's height ([host]'s, as the host's
+// altitudes are).
+fovea::EnvironmentState environment_state(const fovea::EnvironmentConfig& e, fovea::LocalTime at,
+                                          double geoid_height_m) {
     fovea::EnvironmentState s;
     s.julian_date = fovea::julian_date(e.year, e.month, e.day, e.utc_seconds);
     s.set_at = at;
     s.time_runs = e.time_runs;
     s.visibility_m = e.visibility_m;
+    for (fovea::WeatherLayer layer : e.layers) {
+        layer.base_m += geoid_height_m;
+        (void)s.layers.push_back(layer);
+    }
     return s;
 }
 
@@ -351,8 +358,10 @@ int run_headless(const Options& options, const fovea::DisplayConfig& config) {
         return 1;
     }
     const auto views = fovea::reference_scene_views(config);
-    const fovea::EnvironmentState environment = environment_state(config.environment, fovea::now());
+    const fovea::EnvironmentState environment = environment_state(
+        config.environment, fovea::now(), config.host ? config.host->geoid_height_m : 0.0);
     renderer->set_visibility(environment.visibility_m);
+    renderer->set_weather(environment.layers.span());
     for (std::uint32_t f = 0; f < options.frames; ++f) {
         renderer->set_sky(fovea::sky_bodies(fovea::julian_date_at(environment, fovea::now())));
         if (options.clear) {
@@ -479,7 +488,8 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
     auto scene_state = std::make_unique<fovea::SceneState>();
     // Config's environment until a host sets it: the host adapter edits the
     // same working copy.
-    scene_state->edit().environment = environment_state(config.environment, fovea::now());
+    scene_state->edit().environment = environment_state(
+        config.environment, fovea::now(), config.host ? config.host->geoid_height_m : 0.0);
     scene_state->publish();
     // Declared before the logger, so the logger stops (flushing) before the
     // file closes, whichever way this function exits.

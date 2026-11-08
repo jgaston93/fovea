@@ -64,6 +64,25 @@ struct EntityState {
     FixedArray<Articulation, kMaxArticulations> parts;
 };
 
+// A global weather layer (milestone 6 step 6, D-034): a cloud layer, drawn
+// at its base, its coverage shaping procedural noise and shading the ground
+// below it; or a band of fog, rain or snow, its visibility the air's within
+// it. Heights are above the WGS-84 ellipsoid: writers convert sea-level
+// heights with the geoid's (D-020).
+enum class WeatherKind : std::uint8_t { cloud, fog, rain, snow };
+
+struct WeatherLayer {
+    WeatherKind kind = WeatherKind::cloud;
+    double base_m = 0.0;
+    double thickness_m = 0.0;
+    double coverage = 1.0;         // clouds: the fraction of the sky they cover, 0 to 1
+    double visibility_m = 1000.0;  // fog, rain and snow: within the band
+};
+
+// Fog, three cloud layers, rain and snow at once: CIGI's global layers less
+// its rarer ones (sleet, hail, sand, dust).
+inline constexpr std::size_t kMaxWeatherLayers = 6;
+
 // The date and time, and the weather (milestone 6, D-029). The time is
 // the UTC Julian date it was at set_at, on this computer's clock: while time
 // runs, every frame (and every channel) takes it plus the time since, so a
@@ -74,7 +93,8 @@ struct EnvironmentState {
     // Frozen unless a writer starts it (config's default does), so state
     // made in code, tests' included, draws the same every time.
     bool time_runs = false;
-    double visibility_m = 50000.0;  // drawn from step 3
+    double visibility_m = 50000.0;                       // drawn from step 3
+    FixedArray<WeatherLayer, kMaxWeatherLayers> layers;  // step 6
 };
 
 // The UTC Julian date at t.

@@ -10,6 +10,7 @@
 #include <cstdint>
 
 #include "fovea/core/math.hpp"
+#include "fovea/core/scene.hpp"
 
 namespace fovea {
 
@@ -59,8 +60,16 @@ struct ViewLighting {
     std::array<Mat4, 4> cascade{};
     std::array<float, 4> cascade_texel{};
     std::uint32_t shadow_light = 0;
-    std::array<float, 3> unused2{};
+    // The weather (step 6, D-034; see frame.slang).
+    float eye_height_m = 0.0F;
+    std::uint32_t layer_count = 0;
+    std::uint32_t cloud_count = 0;
+    std::array<float, 3> up{0.0F, 0.0F, 1.0F};
+    float weather_light = 1.0F;
+    std::array<float, 3> noise_origin{};
+    float unused2 = 0.0F;
+    std::array<std::array<float, 4>, kMaxWeatherLayers> layer{};
 };
-static_assert(sizeof(ViewLighting) == 368, "must match ViewLighting in frame.slang");
+static_assert(sizeof(ViewLighting) == 496, "must match ViewLighting in frame.slang");
 
 }  // namespace fovea
