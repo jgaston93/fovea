@@ -103,6 +103,20 @@ TEST(Config, MsaaIsOneTwoFourOrEight) {
     }
 }
 
+// How clouds are drawn (milestone 6 step 6): [display] clouds.
+TEST(Config, DisplayChoosesTheCloudModel) {
+    EXPECT_EQ(parse(kMinimal).config->clouds, CloudModel::layer);
+    for (const auto& [name, model] :
+         {std::pair{"layer", CloudModel::layer}, std::pair{"volumetric", CloudModel::volumetric},
+          std::pair{"skybox", CloudModel::skybox}}) {
+        const auto r = parse(std::string("[display]\nclouds = \"") + name + "\"\n" + kMinimal);
+        ASSERT_TRUE(r.ok()) << name;
+        EXPECT_EQ(r.config->clouds, model);
+    }
+    EXPECT_FALSE(parse("[display]\nclouds = \"puffy\"\n" + kMinimal).ok());
+    EXPECT_FALSE(parse("[display]\nclouds = 1\n" + kMinimal).ok());
+}
+
 TEST(Config, EnvironmentSetsTheDateTimeAndVisibility) {
     const auto d = parse(kMinimal);
     ASSERT_TRUE(d.ok());

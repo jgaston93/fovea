@@ -75,6 +75,7 @@ fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/stars.slang" fs_sta
 fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/clouds.slang" vs_clouds vertex kVsClouds)
 fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/clouds.slang" fs_clouds fragment kFsClouds)
 fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/clouds.slang" fs_clouds_volume fragment kFsCloudsVolume)
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/clouds.slang" fs_clouds_skybox fragment kFsCloudsSkybox)
 set(cloud_noise "${PROJECT_SOURCE_DIR}/shaders/cloud_noise.slang")
 fovea_add_shader(fovea_render "${cloud_noise}" cs_shape compute kCsCloudShape)
 fovea_add_shader(fovea_render "${cloud_noise}" cs_detail compute kCsCloudDetail)

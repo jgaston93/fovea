@@ -171,8 +171,9 @@ CloudsGpu::CloudsGpu(const GpuContext& gpu, VkFormat colour, VkFormat depth,
         check(vkCreatePipelineLayout(gpu_.device, &plci, nullptr, &layout_),
               "vkCreatePipelineLayout (clouds)");
         const VkShaderModule vertex = shaders.vertex;
-        const VkShaderModule fragment =
-            model == CloudModel::volumetric ? shaders.volume : shaders.layer;
+        const VkShaderModule fragment = model == CloudModel::volumetric ? shaders.volume
+                                        : model == CloudModel::skybox   ? shaders.skybox
+                                                                        : shaders.layer;
 
         std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
         for (VkPipelineShaderStageCreateInfo& st : stages) {

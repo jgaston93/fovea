@@ -80,8 +80,9 @@ struct WeatherLayer {
 };
 
 // How cloud layers are drawn ([display] clouds): as a surface at the
-// layer's base, or as a volume from base to top, marched (dearer).
-enum class CloudModel : std::uint8_t { layer, volumetric };
+// layer's base, as a volume from base to top, marched (dearer), or painted
+// on the sky at infinity (cheapest: no parallax, nothing to fly to).
+enum class CloudModel : std::uint8_t { layer, volumetric, skybox };
 
 // Fog, three cloud layers, rain and snow at once: CIGI's global layers less
 // its rarer ones (sleet, hail, sand, dust).
