@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -239,37 +240,47 @@ TEST(Sky, EveryViewTakesTheSameExposure) {
 
 // The light follows the sun (milestone 6 step 1, now through the air): a
 // level surface gets more at noon than at 8 am, and none from the sun at
-// night; exposure rises as the light falls, until night's floor.
+// night; each first frame takes its exposure at once, so it is exactly the
+// key over the light, or over night's floor.
 TEST(Sky, TheLightFollowsTheDateAndTime) {
-    auto r = make_offscreen({{64, 32}});
-    FOVEA_NEED_VULKAN(r);
     const SceneView v = view_towards(0.0, 10.0, 64, 32);
     struct Light {
         double level = 0.0;
-        float exposure = 0.0F;
+        double exposure = 0.0;
     };
-    const auto light_at = [&](double hours) {
+    const auto light_at = [&](double hours) -> std::optional<Light> {
+        auto r = make_offscreen({{64, 32}});
+        if (r == nullptr) {
+            return std::nullopt;
+        }
         const SkyBodies sky = at_utc(6, 21, hours);
         r->set_sky(sky);
         r->draw_scene_frame(std::vector<SceneView>{v});
-        // A long wait: the exposure gets to its target.
-        r->draw_scene_frame(std::vector<SceneView>{v});
         const SkyReadback s = r->read_back_sky(0);
+        EXPECT_EQ(r->validation_messages(), 0U);
         Light l;
         l.level = luminance(s.sun_irradiance) * std::max(sun_at(v, sky).mu, 0.0) +
                   luminance(s.sky_irradiance);
-        l.exposure = s.exposure;
+        l.exposure = static_cast<double>(s.exposure);
         return l;
     };
-    const Light noon = light_at(18.0);
-    const Light morning = light_at(13.0);
-    const Light night = light_at(6.0);
-    std::printf("level light: noon %.1f, 8 am %.1f, night %.4f\n", noon.level, morning.level,
-                night.level);
-    EXPECT_GT(noon.level, morning.level * 1.5);
-    EXPECT_LT(night.level, noon.level * 1e-4);
-    EXPECT_LT(noon.exposure, night.exposure);
-    EXPECT_EQ(r->validation_messages(), 0U);
+    const auto noon = light_at(18.0);
+    if (!noon) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const auto morning = light_at(13.0);
+    const auto night = light_at(6.0);
+    std::printf("level light: noon %.1f, 8 am %.1f, night %.4f\n", noon->level, morning->level,
+                night->level);
+    EXPECT_GT(noon->level, morning->level * 1.5);
+    EXPECT_LT(night->level, noon->level * 1e-4);
+    // The exposure's key (pi) over the light; at night, over the floor, a
+    // ten-thousandth of the sun's illuminance.
+    const double key = 3.14159265358979;
+    EXPECT_NEAR(noon->exposure * noon->level, key, key * 1e-3);
+    EXPECT_NEAR(morning->exposure * morning->level, key, key * 1e-3);
+    const double floor = 1e-4 * Atmosphere{}.sun_illuminance[0];
+    EXPECT_NEAR(night->exposure, key / floor, key / floor * 1e-3);
 }
 
 }  // namespace

@@ -421,8 +421,24 @@ struct Renderer::Impl {
     // each frame before the views; the inputs sized once.
     std::unique_ptr<SkyGpu> sky_tables;
     std::vector<SkyViewInput> sky_inputs;
-    LocalTime last_scene_frame;
     bool drew_scene = false;
+    double frame_period_s = 1.0 / 60.0;  // RendererOptions::frame_rate_hz
+
+    // What the terrain, models and sky need of the device (one place, so
+    // the positional fields stay in step).
+    GpuContext gpu_context() const {
+        return {physical.physical_device,
+                device.device,
+                allocator,
+                queue,
+                queue_family,
+                bc_textures,
+                max_anisotropy,
+                timeline,
+                samples,
+                frame_layout,
+                frame_set};
+    }
 
     // Terrain, once loaded (milestone 3 step 5).
     std::unique_ptr<TerrainGpu> terrain;
@@ -1073,9 +1089,7 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     check(vkAllocateDescriptorSets(device.device, &fai, &frame_set),
           "vkAllocateDescriptorSets (frame)");
 
-    const GpuContext gpu{
-        physical.physical_device, device.device, allocator, queue,        queue_family, bc_textures,
-        max_anisotropy,           timeline,      samples,   frame_layout, frame_set};
+    const GpuContext gpu = gpu_context();
     const std::array<VkShaderModule, 5> sky_modules = {
         make_module(kCsTransmittance), make_module(kCsMultiScattering), make_module(kCsSkyView),
         make_module(kCsIrradiance), make_module(kCsExposure)};
@@ -1328,21 +1342,18 @@ void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
                        static_cast<float>(sun_local.z)};
         l.view = static_cast<std::uint32_t>(i);
         const double height_km = std::max(eye.alt_m, 0.0) / 1000.0;
-        l.eye_radius_km = static_cast<float>(Atmosphere{}.bottom_radius_km + height_km);
+        l.eye_radius_km = static_cast<float>(sky_tables->atmosphere().bottom_radius_km + height_km);
         const std::uint32_t at = lighting_offset(slot, i);
         std::memcpy(static_cast<std::uint8_t*>(lighting_mapped) + at, &l, sizeof(l));
         (void)vmaFlushAllocation(allocator, lighting_memory, at, sizeof(l));
         sky_inputs[i] = {height_km, -sun_local.z, sun_up};
     }
     // Exposure moves toward its target with a time constant of a second
-    // (D-031); the first frame takes it at once.
-    const LocalTime t = now();
-    float adapt = 1.0F;
-    if (drew_scene) {
-        const double dt = std::chrono::duration<double>(t - last_scene_frame).count();
-        adapt = static_cast<float>(1.0 - std::exp(-std::max(dt, 0.0) / 1.0));
-    }
-    last_scene_frame = t;
+    // (D-031), a frame period a frame: by the frame clock, not the wall's,
+    // so a replay drawn faster than real time sees what the live run did.
+    // The first frame takes it at once.
+    const float adapt =
+        drew_scene ? static_cast<float>(1.0 - std::exp(-frame_period_s / 1.0)) : 1.0F;
     drew_scene = true;
     sky_tables->record(cmd, sky_inputs, adapt);
 }
@@ -1892,6 +1903,7 @@ std::unique_ptr<Renderer> Renderer::for_windows(Platform& platform,
     }
     impl->create_device(true);
     impl->choose_samples(options.msaa);
+    impl->frame_period_s = 1.0 / std::max(options.frame_rate_hz, 1.0);
     for (Swapchain& s : impl->swapchains) {
         impl->build_swapchain(s);  // deferred while a window has no size
     }
@@ -1912,6 +1924,7 @@ std::unique_ptr<Renderer> Renderer::offscreen(std::span<const OffscreenOutput> o
     impl->create_instance({}, options.validation);
     impl->create_device(false);
     impl->choose_samples(options.msaa);
+    impl->frame_period_s = 1.0 / std::max(options.frame_rate_hz, 1.0);
     std::vector<VkExtent2D> render_extents;
     for (const OffscreenOutput& o : outputs) {
         impl->create_offscreen(o);
@@ -1946,8 +1959,8 @@ void Renderer::set_sky(const SkyBodies& sky) {
 }
 
 SkyReadback Renderer::read_back_sky(std::uint32_t output) {
-    if (!impl_->sky_tables || impl_->frame_number == 0) {
-        fail("read_back_sky: nothing has been drawn yet");
+    if (!impl_->sky_tables || !impl_->sky_tables->started()) {
+        fail("read_back_sky: no scene has been drawn yet");
     }
     return impl_->sky_tables->read_back(output);
 }
@@ -1959,17 +1972,7 @@ TerrainLoad Renderer::load_terrain(std::unique_ptr<TerrainDatabase> database,
         fail("load_terrain: terrain is already loaded");
     }
     check(vkDeviceWaitIdle(m.device.device), "vkDeviceWaitIdle");
-    const GpuContext gpu{m.physical.physical_device,
-                         m.device.device,
-                         m.allocator,
-                         m.queue,
-                         m.queue_family,
-                         m.bc_textures,
-                         m.max_anisotropy,
-                         m.timeline,
-                         m.samples,
-                         m.frame_layout,
-                         m.frame_set};
+    const GpuContext gpu = m.gpu_context();
     const std::array<VkShaderModule, 4> modules = {
         m.make_module(kVsTerrain), m.make_module(kFsTerrain), m.make_module(kVsModel),
         m.make_module(kFsModel)};

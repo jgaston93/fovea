@@ -58,9 +58,13 @@ public:
     VkSampler sampler() const { return sampler_; }
     VkBuffer atmosphere_buffer() const { return atmosphere_.buffer; }
     static VkDeviceSize atmosphere_size();
+    const Atmosphere& atmosphere() const { return atmosphere_params_; }
+    // Whether record() has run: the tables exist (in GENERAL).
+    bool started() const { return started_; }
 
     // Waits for the GPU and copies the tables and one view's light out
-    // (tests only: allocates, and stalls).
+    // (tests only: allocates, and stalls). Submits to the queue, so call it
+    // on the thread that draws, as every other submit is.
     SkyReadback read_back(std::uint32_t view);
 
 private:

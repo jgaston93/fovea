@@ -14,7 +14,9 @@ struct ViewLighting {
     float3 sun_local;  // towards the sun, the eye's level frame (x north, y east, z down)
     uint view;         // this view's entries in the arrays below
     float eye_radius;  // km: the atmosphere's bottom radius plus the eye's height
-    float3 unused;
+    float unused0;     // single floats: a float3 would align to 16 and grow the block
+    float unused1;
+    float unused2;
 };
 
 // Written by the sky's compute passes for each view: mirrored as ViewSky in

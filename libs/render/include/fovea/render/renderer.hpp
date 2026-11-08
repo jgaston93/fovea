@@ -35,6 +35,9 @@ struct RendererOptions {
     // 8, as the GPU can (every Vulkan GPU can do 4); a count it can't do
     // fails, naming those it can.
     std::uint32_t msaa = 4;
+    // The frame clock's rate ([display] target_hz): exposure adapts by a
+    // frame period each frame drawn (D-031).
+    double frame_rate_hz = 60.0;
 };
 
 struct GpuInfo {

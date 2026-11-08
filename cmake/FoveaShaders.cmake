@@ -12,11 +12,12 @@
 # the shaders (clang-tidy needs the headers without a full build).
 
 set(FOVEA_SHADER_EMBED "${CMAKE_CURRENT_LIST_DIR}/EmbedSpirv.cmake")
+# Shared code the shaders #include (shaders/include): any change rebuilds
+# every shader, which is cheap.
+file(GLOB FOVEA_SHADER_INCLUDES CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_LIST_DIR}/../shaders/include/*.slang")
 
 function(fovea_add_shader target source entry stage name)
-    # Shared code the shaders #include (shaders/include): any change
-    # rebuilds every shader, which is cheap.
-    file(GLOB includes CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/shaders/include/*.slang")
     set(out_dir "${CMAKE_CURRENT_BINARY_DIR}/generated/shaders")
     set(spv "${out_dir}/${name}.spv")
     set(hpp "${out_dir}/${name}.hpp")
@@ -28,7 +29,7 @@ function(fovea_add_shader target source entry stage name)
                 -warnings-as-errors all ${ARGN} -o "${spv}"
         COMMAND ${CMAKE_COMMAND} -DSPV=${spv} -DHPP=${hpp} -DNAME=${name}
                 -P "${FOVEA_SHADER_EMBED}"
-        DEPENDS "${source}" ${includes} "${FOVEA_SHADER_EMBED}"
+        DEPENDS "${source}" ${FOVEA_SHADER_INCLUDES} "${FOVEA_SHADER_EMBED}"
         COMMENT "slangc ${name} (${entry}, ${stage})"
         VERBATIM)
     target_sources(${target} PRIVATE "${hpp}")
