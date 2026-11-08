@@ -24,7 +24,7 @@ As before, each step is its own pull request. Steps 1 and 2 run in WSL and CI (l
 ### Step 1 results (2026-11-07)
 
 - At 4 samples, a red slab seen from above leaves 86 pixels along its sides between red and the grey ground, their redness tracking how much of them it covers (correlation 0.92: four samples cover a pixel in quarters, and the tone curve bends the rest); at 1 sample, none. The same on lavapipe and NVIDIA (standard sample positions).
-- The terrain goldens on NVIDIA (RTX, the desk machine) against lavapipe's: 0.38% (`terrain_hills`) and 0.11% (`models_on_hills`) of pixels differ by more than 4, within the 1%. The reference scene's, with no edges, are unchanged.
+- The terrain goldens on NVIDIA (the desk machine) against lavapipe's: 0.38% (`terrain_hills`) and 0.11% (`models_on_hills`) of pixels differ by more than 4, within the 1%. The reference scene's, with no edges, are unchanged.
 - The depth is resolved by the resolve shader, not the render pass: lavapipe's render pass can only take the first sample, and the validation layer CI installs (1.3.275) reports the render pass's depth resolve as a hazard though the spec orders it after the draws.
 
 ## Step 2: Alpha to coverage
