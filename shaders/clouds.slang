@@ -140,6 +140,11 @@ float opaque_alpha(float transmittance) {
     return transmittance < 1e-3 ? 1.0 : 1.0 - transmittance;
 }
 
+// Henyey-Greenstein's phase function.
+float henyey_greenstein(float g, float c) {
+    return (1.0 - g * g) / (4.0 * kPi * pow(max(1.0 + g * g - 2.0 * g * c, 1e-4), 1.5));
+}
+
 // The layer as a surface at its base.
 [shader("fragment")]
 CloudOut fs_clouds(CloudPixel i) {
@@ -158,37 +163,56 @@ CloudOut fs_clouds(CloudPixel i) {
     if (hit.y == 0.0) {
         discard;
     }
-    const float density = shape_density(l.w, cells, shape_lod(footprint), true, 1.1);
-    const float tau = cloud_depth(l) * density;
+    const float lod = shape_lod(footprint);
+    const float density = shape_density(l.w, cells, lod, true, 1.1);
+    // Its depth mottled by the detail's finer octave, so a base isn't one
+    // flat grey.
+    const float mottle =
+        cloud_detail.SampleLevel(cells / (kDetailCells / 3.0), max(lod - 1.0, 0.0)).g;
+    const float tau = cloud_depth(l) * density * lerp(0.6, 1.4, mottle);
     const float alpha = opaque_alpha(exp(-tau));
     if (alpha < 1e-3) {
         discard;
     }
-    // What it reflects up, or scatters through down (less the light
-    // passing straight through: the scene behind, which the blend keeps by
-    // 1 - alpha), of the light on its top. Thicker cores reflect more and
-    // let less through.
     const ViewSky s = view_sky[lighting.view];
     float3 up;
     (void)point_height(rel, up);
     const bool below = lighting.eye_height_m < l.x;
-    const float through = cloud_diffuse(tau);
-    const float scattered = below ? max(through - exp(-tau), 0.0) : 1.0 - through;
-    float3 lit = light_on_top(s, up) * scattered * kInvPi;
+    // The light, the sun's or the moon's, and the cloud toward it across
+    // the layer, 300 m on: a high light reaches a part through the cloud's
+    // own depth, a low one through the cloud on its side, so the edges
+    // that face it are bright and the far ones grey.
+    const bool by_moon = lighting.shadow_light == 2;
+    const float3 to_light = by_moon ? lighting.moon : lighting.sun;
+    const float3 light = by_moon ? s.moon_irradiance : s.sun_irradiance;
+    const float light_up = saturate(dot(to_light, up));
+    const float3 across = to_light - up * dot(to_light, up);
+    const float across_len = length(across);
+    const float3 toward = across_len > 1e-3 ? across / across_len * 300.0 : float3(0.0);
+    const float ahead = shape_density(l.w, cloud_cells(rel + toward, i.layer), lod + 1.0, false, 1.1);
+    const float tau_light = lerp(cloud_depth(l) * max(ahead, density), tau, light_up);
+    float3 colour;  // its radiance, before alpha
+    if (below) {
+        // What the cloud lets down, scattered: of the light, through its
+        // depth toward it (half goes down); of the sky, through its own.
+        // Thicker parts are darker, edges facing the light brightest.
+        colour = (light * 0.5 * cloud_diffuse(tau_light) + s.sky_irradiance * cloud_diffuse(tau)) *
+                 kInvPi;
+    } else {
+        // What it reflects up: more where it is thick, its sides facing the
+        // light lit more than those away from it.
+        const float reflect = 1.0 - cloud_diffuse(tau);
+        const float facing = lerp(0.7, 1.15, saturate(0.5 + (density - ahead) * 2.0));
+        colour = (light * light_up * facing + s.sky_irradiance) * reflect * kInvPi;
+    }
+    float3 lit = colour * alpha;
     // Seen from below toward the sun, its thin edges glow with the light
     // scattered forward through them (single scattering, optical depth
     // tau: at most where tau is 1).
     if (below) {
-        const float c = dot(d, lighting.sun);
-        const float g = 0.6;
-        const float phase = (1.0 - g * g) / (4.0 * kPi * pow(1.0 + g * g - 2.0 * g * c, 1.5));
-        lit += s.sun_irradiance * phase * tau * exp(-tau);
+        lit += light * henyey_greenstein(0.6, dot(d, to_light)) * tau * exp(-tau);
     }
     return finish(i.position, lit, alpha, hit.x, rel, mu, s);
-}
-
-float henyey_greenstein(float g, float c) {
-    return (1.0 - g * g) / (4.0 * kPi * pow(max(1.0 + g * g - 2.0 * g * c, 1e-4), 1.5));
 }
 
 // How a cloud thins toward its base and rounds toward its top, by its
