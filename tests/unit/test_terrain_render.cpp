@@ -733,6 +733,105 @@ TEST(TerrainRender, MultisamplingBlendsAnEdgeByHowMuchOfThePixelItCovers) {
     }
 }
 
+// Alpha to coverage (milestone 5 step 2): a box's top textured with alpha
+// rising evenly across it, its material masked at 0.5, is cut down its
+// middle. At 4 samples the cut's pixels are partly covered, between the
+// red top and the grey ground; at 1 they are one or the other; either way
+// the cut is where the cutoff puts it, within a pixel.
+TEST(TerrainRender, AlphaToCoverageSmoothsAMaskedEdgeWhereTheCutoffPutsIt) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    s.placements = {{"cut", lat0, lon0, 120.0, 10.0F}};
+    test::GlbSpec g = test::glb_box(20.0F, 2.0F, 20.0F);
+    g.base_colour = {1.0F, 0.0F, 0.0F, 1.0F};
+    g.extras = R"({"fovea_material": 1})";
+    g.material = R"("alphaMode":"MASK","alphaCutoff":0.5,)";
+    RgbaImage ramp{64, 4, std::vector<std::uint8_t>(64 * 4 * 4, 255)};
+    for (std::uint32_t y = 0; y < ramp.height; ++y) {
+        for (std::uint32_t x = 0; x < ramp.width; ++x) {
+            ramp.pixels[(y * ramp.width + x) * 4 + 3] =
+                static_cast<std::uint8_t>(std::lround(255.0 * x / (ramp.width - 1)));
+        }
+    }
+    g.image = encode_png(ramp);
+    s.models = {{"cut", test::make_glb(g)}};
+    const fs::path dir = write_db("cut", s);
+    constexpr std::uint32_t kSize = 256;
+    const SceneView v = view_at({lat0, lon0, 120.0}, 200.0, -90.0);
+    // The cut: the top's middle (its texture's u = 0.5) as a line in the
+    // image, along the box's depth.
+    const DVec3 base = geodetic_to_ecef({lat0, lon0, 120.0});
+    const DMat3 ned = ned_to_ecef(lat0, lon0);
+    const double heading = glm::radians(10.0);
+    const auto at = [&](double along) {
+        const DVec3 n(along * std::cos(heading), along * std::sin(heading), -2.0);
+        return project(v, ecef_to_geodetic(base + ned * n), kSize, kSize);
+    };
+    const glm::dvec2 a = at(-15.0);
+    const glm::dvec2 b = at(15.0);
+    const int mid = static_cast<int>(kSize / 2);
+    for (const std::uint32_t msaa : {1U, 4U}) {
+        RendererOptions options;
+        options.msaa = msaa;
+        if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
+            options.validation = Validation::required;
+        }
+        auto r = make_renderer(kSize, kSize, options);
+        if (!r) {
+            GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+        }
+        (void)r->load_terrain(open_db(dir));
+        settle_models(*r, {v}, 1);
+        ASSERT_EQ(r->terrain_stats().placements_drawn, 1U);
+        EXPECT_EQ(r->validation_messages(), 0U);
+        const auto px = r->read_back_rgba(0);
+        const auto colour = [&](int x, int y) {
+            const std::size_t i =
+                (static_cast<std::size_t>(y) * kSize + static_cast<std::size_t>(x)) * 4;
+            return std::array<double, 3>{static_cast<double>(px[i]), static_cast<double>(px[i + 1]),
+                                         static_cast<double>(px[i + 2])};
+        };
+        const auto grey = colour(4, mid);
+        int between = 0;
+        double worst = 0.0;
+        for (int y = mid - 15; y < mid + 15; ++y) {
+            const double t = (y + 0.5 - a.y) / (b.y - a.y);
+            const double cut = a.x + t * (b.x - a.x);
+            const int c = static_cast<int>(std::floor(cut));
+            // Red on one side, grey on the other.
+            const auto red =
+                colour(c - 6, y)[0] > colour(c + 6, y)[0] ? colour(c - 6, y) : colour(c + 6, y);
+            const bool red_left = colour(c - 6, y)[0] > colour(c + 6, y)[0];
+            ASSERT_GT(red[0], grey[0] + 50.0) << "no red top at row " << y;
+            // Where the redness crosses a half, between pixel centres.
+            double crossing = -1.0;
+            double previous = 0.0;
+            for (int x = c - 5; x <= c + 5; ++x) {
+                const double m0 = mix_of(px, kSize, x, y, grey, red);
+                const double m = red_left ? 1.0 - m0 : m0;  // rising left to right
+                if (m > 0.05 && m < 0.95) {
+                    ++between;
+                }
+                if (x > c - 5 && crossing < 0.0 && previous < 0.5 && m >= 0.5) {
+                    crossing = x - 0.5 + (0.5 - previous) / (m - previous);
+                }
+                previous = m;
+            }
+            ASSERT_GE(crossing, 0.0) << "no cut at row " << y;
+            worst = std::max(worst, std::abs(crossing - cut));
+        }
+        std::printf("msaa %u: %d pixels between, the cut at most %.2f pixels from the cutoff's\n",
+                    msaa, between, worst);
+        EXPECT_LT(worst, 1.0);
+        if (msaa == 1) {
+            EXPECT_EQ(between, 0) << "a cut-out's edge between the two with one sample";
+        } else {
+            EXPECT_GE(between, 20) << "a cut-out's edge as hard as with one sample";
+        }
+    }
+}
+
 TEST(TerrainRender, AModelThatCannotLoadIsReportedAndTheRestDrawn) {
     double lat0 = 0.0;
     double lon0 = 0.0;

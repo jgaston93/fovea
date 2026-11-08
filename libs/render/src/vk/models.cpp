@@ -34,7 +34,7 @@ static_assert(sizeof(GpuMaterial) == 32, "must match Material in model.slang");
 struct ModelPush {
     Mat4 ecef_to_clip{1.0F};
     std::array<float, 3> sun{};
-    std::uint32_t unused = 0;
+    std::uint32_t samples = 1;  // the scene pass's: masks use alpha to coverage past 1
 };
 static_assert(sizeof(ModelPush) == 80, "must match ModelPush in model.slang");
 
@@ -319,6 +319,11 @@ ModelGpu::ModelGpu(const GpuContext& gpu, std::filesystem::path database_dir,
         VkPipelineMultisampleStateCreateInfo multisample{};
         multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
         multisample.rasterizationSamples = gpu.samples;
+        // Masked materials' cut-outs smoothed (milestone 5 step 2): the
+        // fragment's alpha covers that share of the pixel's samples. Every
+        // other material writes alpha 1, all of them.
+        multisample.alphaToCoverageEnable =
+            gpu.samples != VK_SAMPLE_COUNT_1_BIT ? VK_TRUE : VK_FALSE;
         VkPipelineDepthStencilStateCreateInfo depth_state{};
         depth_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         depth_state.depthTestEnable = VK_TRUE;
@@ -648,6 +653,7 @@ std::uint32_t ModelGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uin
     ModelPush push;
     push.ecef_to_clip = view.ecef_to_clip;
     push.sun = sun;
+    push.samples = static_cast<std::uint32_t>(gpu_.samples);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set_, 0, nullptr);
     const VkDeviceSize zero = 0;
