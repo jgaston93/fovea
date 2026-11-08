@@ -175,6 +175,10 @@ float4 fs_scene(Fullscreen i) : SV_Target {
     // Through the fog, rain and snow (step 6): to the ground plane, or out
     // of them.
     colour = through_bands(colour, -ray.z, ray.z > 0.0 && scene.grid != 0 ? t : 1e9, s, s.exposure);
+    // Within half floats, the sum too (the sky and the sun's disc, each
+    // within them, can pass their largest together: an infinity a cloud
+    // over it would only multiply, on NVIDIA, which rounds to it).
+    colour = min(colour, float3(60000.0));
     // The horizon line: where the ray is level, as wide as a grid line.
     if (scene.grid != 0) {
         const float level = abs(ray.z) / max(ray_z_width, 1e-6);
