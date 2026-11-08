@@ -69,16 +69,51 @@ float grid_lines(float2 g, float2 w_raw) {
 // The sky seen along a ray of the level frame (x north, y east, z down),
 // from the view's sky-view table: by its zenith angle, and its azimuth from
 // the sun's.
-float3 sky_radiance(float3 ray) {
+// One layer of the table: lit by a light whose direction is `light`, its
+// azimuth taken from that light's.
+float3 sky_layer(float3 ray, float3 light, uint layer) {
     const float zenith = acos(clamp(-ray.z, -1.0, 1.0));
     const float2 h = ray.xy;
-    const float2 sun_h = lighting.sun_local.xy;
+    const float2 light_h = light.xy;
     float azimuth = 0.0;
-    if (dot(h, h) > 1e-10 && dot(sun_h, sun_h) > 1e-10) {
-        azimuth = acos(clamp(dot(normalize(h), normalize(sun_h)), -1.0, 1.0));
+    if (dot(h, h) > 1e-10 && dot(light_h, light_h) > 1e-10) {
+        azimuth = acos(clamp(dot(normalize(h), normalize(light_h)), -1.0, 1.0));
     }
     const float2 uv = sky_view_uv(atmosphere, lighting.eye_radius, zenith, azimuth);
-    return sky_view_table.SampleLevel(float3(uv, float(lighting.view)), 0.0).rgb;
+    return sky_view_table.SampleLevel(float3(uv, float(layer)), 0.0).rgb;
+}
+
+// The sunlit layer, the moonlit one (step 4) and the night's airglow.
+float3 sky_radiance(float3 ray) {
+    return sky_layer(ray, lighting.sun_local, lighting.view) +
+           sky_layer(ray, lighting.moon_local, lighting.view + lighting.views) + kAirglow;
+}
+
+static const float kMoonAngularRadius = 0.00452;  // radians: 0.259 degrees, at its mean distance
+// The moon's albedo, as a Lambertian sphere giving its 2.5e-6 of the sun's
+// illuminance when full (its real 0.12, with the opposition surge).
+static const float kMoonAlbedo = 0.18;
+
+// The moon's disc where the ray meets it: its sunlit part (the phase, from
+// the sun's direction), seen through the air. Before exposure.
+float3 moon_disc(float3 ray, float edge_width) {
+    const float3 d = lighting.moon_local;
+    const float c = dot(ray, d);
+    const float angle = acos(clamp(c, -1.0, 1.0));
+    const float cover = saturate((kMoonAngularRadius - angle) / edge_width + 0.5);
+    if (cover <= 0.0 || lighting.moon_up <= 0.0) {
+        return float3(0.0);
+    }
+    // The point of the sphere this ray meets, as seen from far off: its
+    // offset across the disc, in radii, and the normal facing the eye.
+    const float3 across = (ray - d * c) / sin(kMoonAngularRadius);
+    const float3 n = across - d * sqrt(saturate(1.0 - dot(across, across)));
+    const float lit = saturate(dot(n, lighting.sun_local));
+    const float3 through =
+        transmittance_table.SampleLevel(transmittance_uv(atmosphere, lighting.eye_radius, -d.z), 0.0)
+            .rgb;
+    return cover * lighting.moon_up * kMoonAlbedo * kInvPi * lit * atmosphere.sun_illuminance *
+           through;
 }
 
 [shader("fragment")]
@@ -108,7 +143,8 @@ float4 fs_scene(Fullscreen i) : SV_Target {
     } else if (ray.z > 0.0) {
         // Below the horizon: the ground plane, eye_height_m below the eye,
         // lit as level ground.
-        const float3 e = s.sun_irradiance * saturate(-lighting.sun_local.z) + s.sky_irradiance;
+        const float3 e = s.sun_irradiance * saturate(-lighting.sun_local.z) +
+                         s.moon_irradiance * saturate(-lighting.moon_local.z) + s.sky_irradiance;
         const float3 lit = lerp(kGround, kGridLine, grid_lines(g, g_width)) * e * kInvPi;
         // Through the air to the eye (step 3): t is the distance, metres.
         const float4 air = aerial_perspective(i.position.xy, t * 0.001);
@@ -121,6 +157,7 @@ float4 fs_scene(Fullscreen i) : SV_Target {
         // covers. Kept within half floats (a low sun, bright against a
         // dim sky, would pass their largest).
         colour += disc * min(s.sun_irradiance * s.exposure / (kPi * r * r), float3(60000.0));
+        colour += min(moon_disc(ray, sun_width) * s.exposure, float3(60000.0));
     }
     // The horizon line: where the ray is level, as wide as a grid line.
     if (scene.grid != 0) {

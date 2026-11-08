@@ -47,9 +47,11 @@ struct SkyPush {
     float floor_illuminance = 0.0F;
     Mat4 clip_to_local{1.0F};
     std::array<float, 3> sun_local{};
-    float unused = 0.0F;
+    float moon_scale = 0.0F;
+    std::array<float, 3> moon_local{};
+    std::uint32_t source = 0;
 };
-static_assert(sizeof(SkyPush) == 112, "must match SkyPush in sky.slang");
+static_assert(sizeof(SkyPush) == 128, "must match SkyPush in sky.slang");
 
 // The exposure takes a level surface's light to pi: a white one shows as
 // 1 before tone mapping. Below a ten-thousandth of the sun's illuminance
@@ -230,8 +232,9 @@ SkyGpu::SkyGpu(const GpuContext& gpu, std::uint32_t views, const Atmosphere& atm
     try {
         transmittance_ = make_image(kTransmittanceWidth, kTransmittanceHeight, 1, false);
         multi_scattering_ = make_image(kMultiScatteringSize, kMultiScatteringSize, 1, false);
-        // A layer a view, viewed as an array even for one.
-        sky_view_ = make_image(kSkyViewWidth, kSkyViewHeight, views_, true);
+        // Two layers a view, sunlit then (after every view's) moonlit, viewed
+        // as an array.
+        sky_view_ = make_image(kSkyViewWidth, kSkyViewHeight, views_ * 2, true);
         VkPhysicalDeviceProperties props{};
         vkGetPhysicalDeviceProperties(gpu_.physical, &props);
         if (kAerialDepth * views_ > props.limits.maxImageDimension3D) {
@@ -474,6 +477,8 @@ void SkyGpu::record(VkCommandBuffer cmd, std::span<const SkyViewInput> views, fl
         push.sun_up = static_cast<float>(in.sun_up);
         push.clip_to_local = in.clip_to_local;
         push.sun_local = {in.sun_local.x, in.sun_local.y, in.sun_local.z};
+        push.moon_scale = static_cast<float>(in.moon_scale);
+        push.moon_local = {in.moon_local.x, in.moon_local.y, in.moon_local.z};
         vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
     };
     if (push.views == 0) {
@@ -490,10 +495,14 @@ void SkyGpu::record(VkCommandBuffer cmd, std::span<const SkyViewInput> views, fl
         tables_dirty_ = false;
     }
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines_[2]);
-    for (std::uint32_t v = 0; v < push.views; ++v) {
-        set_view(v);
-        vkCmdDispatch(cmd, (kSkyViewWidth + 7) / 8, (kSkyViewHeight + 7) / 8, 1);
+    for (std::uint32_t source = 0; source < 2; ++source) {
+        push.source = source;
+        for (std::uint32_t v = 0; v < push.views; ++v) {
+            set_view(v);
+            vkCmdDispatch(cmd, (kSkyViewWidth + 7) / 8, (kSkyViewHeight + 7) / 8, 1);
+        }
     }
+    push.source = 0;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines_[5]);
     for (std::uint32_t v = 0; v < push.views; ++v) {
         set_view(v);
@@ -593,6 +602,7 @@ SkyReadback SkyGpu::read_back(std::uint32_t view) {
     std::memcpy(&s, static_cast<const std::uint8_t*>(out.mapped) + sky_at, sizeof(s));
     r.sun_irradiance = s.sun_irradiance;
     r.sky_irradiance = s.sky_irradiance;
+    r.moon_irradiance = s.moon_irradiance;
     r.exposure = s.exposure;
     destroy(out);
     return r;

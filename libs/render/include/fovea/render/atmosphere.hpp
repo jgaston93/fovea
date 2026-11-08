@@ -66,6 +66,7 @@ struct SkyReadback {
     std::vector<float> aerial;            // the view's volume: kAerialDepth slices, nearest first
     std::array<float, 3> sun_irradiance{};
     std::array<float, 3> sky_irradiance{};
+    std::array<float, 3> moon_irradiance{};
     float exposure = 0.0F;
 };
 

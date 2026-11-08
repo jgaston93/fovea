@@ -21,6 +21,8 @@ struct ViewLighting {
     float inv_width;   // 1 / the view's render width, pixels (single floats: a float3
     float inv_height;  // would align to 16 and grow the block)
     uint views;        // how many views share the sky's arrays
+    float3 moon_local;  // towards the moon, the eye's level frame
+    float moon_up;      // how much of the moon's disc is above the eye's horizon
 };
 
 // Written by the sky's compute passes for each view: mirrored as ViewSky in
@@ -29,9 +31,17 @@ struct ViewLighting {
 struct ViewSky {
     float3 sun_irradiance;  // at the eye, on a surface facing the sun
     float exposure;
-    float3 sky_irradiance;  // at the eye, on a level surface
+    float3 sky_irradiance;  // at the eye, on a level surface (moonlit sky and airglow too)
     float unused;
+    float3 moon_irradiance;  // at the eye, on a surface facing the moon (step 4)
+    float unused1;
 };
+
+// The night sky's own faint glow (airglow and starlight, about 2e-4 lux on
+// level ground; the sun's 10,000 units are 100,000 lux): what a moonless
+// sky shows, so night isn't black (milestone 6 step 4). Radiance, per
+// steradian, slightly blue-green as airglow is.
+static const float3 kAirglow = float3(0.55, 0.65, 0.6) * (2e-5 / kPi);
 
 #ifdef FRAME_SET
 [[vk::binding(0, FRAME_SET)]] ConstantBuffer<ViewLighting> lighting;
@@ -40,6 +50,8 @@ struct ViewSky {
 // The views' aerial-perspective volumes, stacked in depth: view v's slices
 // are v * 64 to v * 64 + 63 (milestone 6 step 3).
 [[vk::binding(4, FRAME_SET)]] Sampler3D<float4> aerial_volume;
+// The atmosphere's transmittance table (for the stars and the moon's disc).
+[[vk::binding(5, FRAME_SET)]] Sampler2D<float4> transmittance_table;
 // Binding 3, the atmosphere (atmosphere.slang's Atmosphere), is declared by
 // the shaders that take it.
 
@@ -74,8 +86,10 @@ float4 aerial_perspective_uv(float2 uv, float distance_km) {
 
 // The light falling on a surface of normal n (ECEF axes): the sun's on it
 // (its irradiance counts only the disc above the horizon), and the sky's,
-// as on level ground, which a model's walls also take for now.
+// as on level ground, which a model's walls also take for now. The moon's
+// too (step 4).
 float3 irradiance_on(float3 n, ViewSky s) {
-    return s.sun_irradiance * saturate(dot(n, lighting.sun)) + s.sky_irradiance;
+    return s.sun_irradiance * saturate(dot(n, lighting.sun)) +
+           s.moon_irradiance * saturate(dot(n, lighting.moon)) + s.sky_irradiance;
 }
 #endif

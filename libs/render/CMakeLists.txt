@@ -13,6 +13,7 @@ add_library(fovea_render STATIC
     src/vk/overlay_ui.cpp
     src/vk/renderer.cpp
     src/vk/sky.cpp
+    src/vk/stars.cpp
     src/vk/terrain.cpp
     src/vk/vma.cpp)
 add_library(fovea::render ALIAS fovea_render)
@@ -58,5 +59,8 @@ fovea_add_shader(fovea_render "${sky_shader}" cs_sky_view compute kCsSkyView)
 fovea_add_shader(fovea_render "${sky_shader}" cs_irradiance compute kCsIrradiance)
 fovea_add_shader(fovea_render "${sky_shader}" cs_exposure compute kCsExposure)
 fovea_add_shader(fovea_render "${sky_shader}" cs_aerial compute kCsAerial)
+# The stars (milestone 6 step 4).
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/stars.slang" vs_stars vertex kVsStars)
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/stars.slang" fs_stars fragment kFsStars)
 # Just the generated shader headers: what clang-tidy needs from a build.
 add_custom_target(fovea_shaders DEPENDS ${FOVEA_SHADER_HEADERS})

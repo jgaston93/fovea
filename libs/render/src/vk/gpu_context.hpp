@@ -44,8 +44,10 @@ struct ViewLighting {
     float eye_radius_km = 0.0F;  // the atmosphere's bottom radius plus the eye's height
     float inv_width = 1.0F;      // 1 / the view's render size, pixels
     float inv_height = 1.0F;
-    std::uint32_t views = 1;  // how many views share the sky's arrays
+    std::uint32_t views = 1;                            // how many views share the sky's arrays
+    std::array<float, 3> moon_local{0.0F, 0.0F, 1.0F};  // the eye's level frame
+    float moon_up = 0.0F;  // how much of the moon's disc is above the eye's horizon
 };
-static_assert(sizeof(ViewLighting) == 64, "must match ViewLighting in frame.slang");
+static_assert(sizeof(ViewLighting) == 80, "must match ViewLighting in frame.slang");
 
 }  // namespace fovea

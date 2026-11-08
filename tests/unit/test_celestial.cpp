@@ -10,6 +10,7 @@
 
 namespace {
 
+using fovea::DMat3;
 using fovea::DVec3;
 
 constexpr double kDegree = std::numbers::pi / 180.0;
@@ -101,6 +102,56 @@ TEST(Celestial, TheMoonIsWhereHorizonsPutsItSeenFromTheGround) {
     EXPECT_GT(worst_geocentric, 0.5);
     std::printf("moon: worst %.4f degrees (%.3f without parallax), lit fraction %.4f\n", worst,
                 worst_geocentric, worst_lit);
+}
+
+// The full moon gives 2.5e-6 of the sun's illuminance (about 0.25 lux
+// against 100,000) at a phase angle of 0, a little less a few degrees off
+// (2.1e-6 at this one's 6), the crescent far less (milestone 6 step 4).
+TEST(Celestial, TheMoonIsBrightestFull) {
+    // 2030-05-17 01:00 UT: 99.7% lit (Horizons, above); 2027-08-02 09:20 UT:
+    // new.
+    const double full = fovea::sky_bodies(fovea::julian_date(2030, 5, 17, 3600.0)).moon_illuminance;
+    const double crescent =
+        fovea::sky_bodies(fovea::julian_date(2026, 3, 20, 15.5 * 3600.0)).moon_illuminance;
+    EXPECT_NEAR(full, 2.1e-6, 0.2e-6);
+    EXPECT_LT(crescent, full / 20.0);
+}
+
+// Stars: the catalogue's J2000 positions turned to the date and the Earth's
+// rotation. Polaris stays within its 0.7 degrees of the pole, so its
+// elevation at KHSV is the latitude to within that; Sirius, crossing the
+// meridian (its highest), is due south at 90 - latitude + its declination.
+TEST(Celestial, StarsAreWhereTheSkyTurnsThem) {
+    const auto star = [](double ra_deg, double dec_deg) {
+        const double ra = ra_deg * kDegree;
+        const double dec = dec_deg * kDegree;
+        return DVec3(std::cos(dec) * std::cos(ra), std::cos(dec) * std::sin(ra), std::sin(dec));
+    };
+    const DMat3 to_ned = glm::transpose(fovea::ned_to_ecef(kKhsv.lat_deg, kKhsv.lon_deg));
+    const auto el_az = [&](const DVec3& ecef) {
+        const DVec3 n = to_ned * ecef;
+        return std::array<double, 2>{std::asin(-n.z) / kDegree,
+                                     std::fmod(std::atan2(n.y, n.x) / kDegree + 360.0, 360.0)};
+    };
+    const DVec3 polaris = star(37.95456, 89.26411);
+    const DVec3 sirius = star(101.28708, -16.71611);
+    double best_el = -90.0;
+    double best_az = 0.0;
+    for (int minute = 0; minute < 24 * 60; ++minute) {
+        const fovea::SkyBodies sky =
+            fovea::sky_bodies(fovea::julian_date(2026, 1, 15, minute * 60.0));
+        EXPECT_NEAR(el_az(sky.j2000_to_ecef * polaris)[0], kKhsv.lat_deg, 0.75);
+        const auto s = el_az(sky.j2000_to_ecef * sirius);
+        if (s[0] > best_el) {
+            best_el = s[0];
+            best_az = s[1];
+        }
+    }
+    // Precession moves Sirius's declination by about -0.03 degrees from
+    // J2000 to 2026; a minute's step is a quarter of a degree in azimuth
+    // near the meridian.
+    EXPECT_NEAR(best_el, 90.0 - kKhsv.lat_deg - 16.716 - 0.03, 0.05);
+    EXPECT_NEAR(best_az, 180.0, 0.5);
 }
 
 // Only the part of the sun above the horizon lights (milestone 6 step 1):
