@@ -150,7 +150,7 @@ jobs:
           fetch-depth: 0  # the PR's base, for the changed files
       - name: Python tools compile and parse their data
         run: |
-          python3 -m py_compile tools/fetch-sources.py tools/check-elevation.py tools/check-imagery.py
+          python3 -m py_compile tools/fetch-sources.py tools/check-elevation.py tools/check-imagery.py tools/fetch-stars.py
           python3 -c "import tomllib, json; [tomllib.load(open(f, 'rb')) for f in ('data/sources/khsv.toml', 'data/compile/khsv.toml')]; json.load(open('data/sources/khsv.lock.json'))"
       - name: Install tools
         timeout-minutes: 10

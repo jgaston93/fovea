@@ -59,5 +59,6 @@ SkyBodies sky_bodies(double julian_date_utc) noexcept;
 double disc_above_horizon(const DVec3& towards, const DVec3& up, double radius_deg) noexcept;
 
 inline constexpr double kSunRadiusDeg = 0.267;
+inline constexpr double kMoonRadiusDeg = 0.259;  // at its mean distance (the shaders' too)
 
 }  // namespace fovea

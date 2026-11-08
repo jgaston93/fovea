@@ -38,7 +38,8 @@ void check(VkResult r, const char* what) {
     }
 }
 
-// The solid angle of a pixel at the middle of a view, from its matrix:
+// The solid angle of a pixel on a view's axis, from its matrix (off it, the
+// shader takes cos^3 of the angle):
 // clip x is sx times the view's sideways direction plus an off-centre
 // share of its forward one, and clip w is the forward one alone.
 double pixel_solid_angle(const Mat4& ecef_to_clip, VkExtent2D extent) {

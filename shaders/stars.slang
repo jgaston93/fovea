@@ -61,8 +61,12 @@ StarVertex vs_stars(uint id: SV_VulkanVertexID) {
     StarVertex o;
     o.size = 1.0;
     const float mu = dot(dir, push.up);
-    if (mu <= 0.0) {
-        // Below the horizon: outside the view.
+    // Below the horizon, which dips below level as the eye climbs: outside
+    // the view.
+    const float dip = sqrt(max(1.0 - (atmosphere.bottom_radius / lighting.eye_radius) *
+                                         (atmosphere.bottom_radius / lighting.eye_radius),
+                               0.0));
+    if (mu <= -dip) {
         o.position = float4(2.0, 2.0, 0.0, 1.0);
         o.colour = float3(0.0);
         return o;
@@ -75,7 +79,11 @@ StarVertex vs_stars(uint id: SV_VulkanVertexID) {
     const float3 through =
         transmittance_table.SampleLevel(transmittance_uv(atmosphere, lighting.eye_radius, mu), 0.0)
             .rgb;
-    o.colour = star_colour(s.w) * e * through * push.inv_pixel_solid_angle;
+    // A pixel off the view's axis spans less sky (cos^3 of the angle off
+    // it, which w is for a unit direction): its star is brighter there, so
+    // the star shows the same on either side of a seam between displays.
+    const float w = max(o.position.w, 1e-3);
+    o.colour = star_colour(s.w) * e * through * push.inv_pixel_solid_angle / (w * w * w);
     return o;
 }
 

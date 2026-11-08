@@ -108,8 +108,8 @@ TEST(Celestial, TheMoonIsWhereHorizonsPutsItSeenFromTheGround) {
 // against 100,000) at a phase angle of 0, a little less a few degrees off
 // (2.1e-6 at this one's 6), the crescent far less (milestone 6 step 4).
 TEST(Celestial, TheMoonIsBrightestFull) {
-    // 2030-05-17 01:00 UT: 99.7% lit (Horizons, above); 2027-08-02 09:20 UT:
-    // new.
+    // 2030-05-17 01:00 UT: 99.7% lit (Horizons, above); 2026-03-20 15:30 UT:
+    // a thin crescent, 1.6 days after the new moon of the 19th.
     const double full = fovea::sky_bodies(fovea::julian_date(2030, 5, 17, 3600.0)).moon_illuminance;
     const double crescent =
         fovea::sky_bodies(fovea::julian_date(2026, 3, 20, 15.5 * 3600.0)).moon_illuminance;

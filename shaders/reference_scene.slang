@@ -89,10 +89,21 @@ float3 sky_radiance(float3 ray) {
            sky_layer(ray, lighting.moon_local, lighting.view + lighting.views) + kAirglow;
 }
 
-static const float kMoonAngularRadius = 0.00452;  // radians: 0.259 degrees, at its mean distance
+static const float kMoonAngularRadius = 0.00452;  // radians: kMoonRadiusDeg (celestial.hpp)
 // The moon's albedo, as a Lambertian sphere giving its 2.5e-6 of the sun's
 // illuminance when full (its real 0.12, with the opposition surge).
 static const float kMoonAlbedo = 0.18;
+
+// How much brighter the moon is at phase angle a than a Lambertian sphere:
+// Allen's magnitude law (the moonlight's, celestial.cpp) over the Lambert
+// phase law, both 1 when full. The disc then gives the light it casts.
+float moon_phase_correction(float lit_fraction) {
+    const float a = acos(clamp(2.0 * lit_fraction - 1.0, -1.0, 1.0));
+    const float lambert = (sin(a) + (kPi - a) * cos(a)) / kPi;
+    const float ad = degrees(a);
+    const float allen = pow(10.0, -0.4 * (0.026 * ad + 4e-9 * ad * ad * ad * ad));
+    return lambert > 1e-4 ? allen / lambert : 0.0;
+}
 
 // The moon's disc where the ray meets it: its sunlit part (the phase, from
 // the sun's direction), seen through the air. Before exposure.
@@ -101,7 +112,9 @@ float3 moon_disc(float3 ray, float edge_width) {
     const float c = dot(ray, d);
     const float angle = acos(clamp(c, -1.0, 1.0));
     const float cover = saturate((kMoonAngularRadius - angle) / edge_width + 0.5);
-    if (cover <= 0.0 || lighting.moon_up <= 0.0) {
+    // Below the horizon it is hidden by the ground the scene draws there; its
+    // part above isn't dimmed by moon_up (which is for its light).
+    if (cover <= 0.0) {
         return float3(0.0);
     }
     // The point of the sphere this ray meets, as seen from far off: its
@@ -112,8 +125,8 @@ float3 moon_disc(float3 ray, float edge_width) {
     const float3 through =
         transmittance_table.SampleLevel(transmittance_uv(atmosphere, lighting.eye_radius, -d.z), 0.0)
             .rgb;
-    return cover * lighting.moon_up * kMoonAlbedo * kInvPi * lit * atmosphere.sun_illuminance *
-           through;
+    return cover * moon_phase_correction(lighting.moon_lit) * kMoonAlbedo * kInvPi * lit *
+           atmosphere.sun_illuminance * through;
 }
 
 [shader("fragment")]

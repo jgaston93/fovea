@@ -1373,7 +1373,7 @@ void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
         l.inv_height = 1.0F / static_cast<float>(std::max(hdr[i].extent.height, 1U));
         l.views = sky_tables->views();  // the volumes' stacking, as SkyGpu made them
         const DVec3 moon_local = glm::transpose(level) * moon;
-        const double moon_up = disc_above_horizon(moon, up, 0.259);
+        const double moon_up = disc_above_horizon(moon, up, kMoonRadiusDeg);
         l.moon_local = {static_cast<float>(moon_local.x), static_cast<float>(moon_local.y),
                         static_cast<float>(moon_local.z)};
         l.moon_up = static_cast<float>(moon_up);
@@ -1539,8 +1539,10 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
     sdep.imageMemoryBarrierCount = static_cast<std::uint32_t>(sbs.size());
     sdep.pImageMemoryBarriers = sbs.data();
     vkCmdPipelineBarrier2(cmd, &sdep);
+    // The stars only test the depth: it isn't stored again (STORE would be
+    // a write the barrier above doesn't order).
     begin_pass(cmd, t.view, t.extent, t.depth_view, VK_ATTACHMENT_LOAD_OP_LOAD,
-               VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_LOAD);
+               VK_ATTACHMENT_STORE_OP_NONE, VK_ATTACHMENT_LOAD_OP_LOAD);
     stars->record(cmd, view, sky, t.extent, lighting_offset(slot, i));
     vkCmdEndRendering(cmd);
     transition(cmd, t.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
