@@ -12,6 +12,8 @@ The goal: plug Fovea into the team's simulator over CIGI 3.3. The simulator is E
   - One HAT/HOT Request (ID 24, 32 bytes) per Aerie frame, asking for the Extended Response (Request Type 2).
   - Each request has its own 16-bit ID, and the point is the ownship's current latitude, longitude and MSL altitude.
   - Aerie's frame is 10 ms by default, so about 100 requests a second, or under two per 60 Hz IG frame. One more request is sent at startup.
+  - Update Period is 0 (one-shot), and heights are of the terrain only.
+- **Network.** Messages are in network byte order (big-endian). The ports are configurable, and default to the usual CIGI pair: the ICD names none, so these are the 8004 (IG) and 8005 (host) Fovea's configs and test-host scripts already use.
 
 This milestone goes ahead of the rest of milestone 6. Step 8's airport lights wait on the light files, and step 9 waits on this milestone. The plan's milestone 9 had "terrain queries answered over CIGI"; HAT/HOT moves here, while line of sight and the other entity work stay in milestone 9.
 
@@ -35,7 +37,7 @@ A CIGI altitude is converted to and from ellipsoidal height with `[host] geoid_h
 
 - **Where.** A query thread holds its own `TerrainDatabase` reader. The network thread passes requests to it and gets answers back, all without locks, and sends them in the next IG message. The render thread is never involved, keeping it free of disk I/O and allocation.
 - **The surface.** Answers come from the finest tile that reads cleanly, which is the surface the renderer draws close up. Far away, the renderer draws coarser levels, so a far point's answer can differ from what it shows. That is the conventional choice: the host wants the true ground, not what a level of detail shows.
-- **Terrain only, for now.** Models (buildings, hangars) aren't included. Whether the simulator needs heights over models is a question for the team (see Inputs needed below).
+- **Terrain only, for now,** as the team asked: models (buildings, hangars) aren't included.
 
 ### D-037 The database is WGS-84
 
@@ -50,16 +52,19 @@ The compiler converts positions and ellipsoidal heights from NAD83(2011) to WGS-
   - The KHSV database is recompiled, and the golden terrain images are unchanged or explained.
   - Closes #37.
 
-## Step 2: The HAT/HOT packets
+## Step 2: The HAT/HOT packets, byte order and ports
 
 - **The packets.** In `libs/net`, from the ICD's figures:
   - HAT/HOT Request (4.1.24, Figure 86, p. 152, ID 24, 32 bytes);
   - HAT/HOT Response (4.2.2, Figure 110, p. 217, ID 102, 16 bytes);
   - HAT/HOT Extended Response (4.2.3, Figure 112, p. 219, ID 103, 40 bytes).
   - The errata are checked for each.
+- **Byte order.** The codec writes either order, and `[host] byte_order` (`"network"`, the default, or `"native"`) chooses which the IG sends. Fovea already reads either, by the Byte Swap Magic Number (ICD 2.5, p. 7). The test host gets the same option.
+- **Ports.** `[host] port` defaults to 8004, and the reply goes to `host_port`, default 8005, at the address the host sends from. Both are still configurable.
 - **Done when:**
   - Tests check bytes in both byte orders, with reserved bits and undefined values (Request Type 3) rejected.
   - The fuzz target and corpus cover all three packets.
+  - Start of Frame and the responses are byte-checked big-endian, and Fovea answers a big-endian host in big-endian.
 
 ## Step 3: Answering them (D-036)
 
@@ -94,5 +99,5 @@ The compiler converts positions and ellipsoidal heights from NAD83(2011) to WGS-
 | Needed by | Input |
 |---|---|
 | Plan | D-035 to D-037 accepted |
-| Step 3 | Whether HAT/HOT should include models (roofs, hangars) or only terrain; the Update Period Aerie sends (0, one-shot, is assumed); what it does with the normal and the material code |
-| Step 4 | Aerie's CIGI settings (byte order, ports, rate, the packets it sends besides HAT/HOT), and time with EYAS and Aerie at the desk |
+| Step 2 | Confirm 8004 and 8005 are Aerie's ports |
+| Step 4 | Time with EYAS and Aerie at the desk, and the other packets Aerie sends besides IG Control, Entity Control and HAT/HOT |
