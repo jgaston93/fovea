@@ -161,6 +161,44 @@ TEST(Models, AnImageSharedByTexturesIsDecodedOnce) {
     EXPECT_EQ(m.primitives[1].material, 1U);
 }
 
+// Lit windows (milestone 6 step 8, D-033): emission in cd/m², its factor
+// times KHR_materials_emissive_strength, and its own texture.
+TEST(Models, ReadsEmission) {
+    Spec s;
+    const ModelResult none = read_glb(make_glb(s));
+    ASSERT_TRUE(none.model.has_value()) << none.error;
+    EXPECT_EQ(none.model->materials[0].emissive, (std::array<float, 3>{0, 0, 0}));
+    EXPECT_FALSE(none.model->materials[0].emissive_texture.has_value());
+
+    s.material = R"("emissiveFactor":[1,0.5,0.25],)"
+                 R"("extensions":{"KHR_materials_emissive_strength":{"emissiveStrength":40}},)";
+    s.top = R"("extensionsUsed":["KHR_materials_emissive_strength"],)";
+    const ModelResult strong = read_glb(make_glb(s));
+    ASSERT_TRUE(strong.model.has_value()) << strong.error;
+    EXPECT_EQ(strong.model->materials[0].emissive, (std::array<float, 3>{40, 20, 10}));
+
+    // Its own texture, with the base colour's or alone (which still needs
+    // the texture coordinates).
+    s = textured();
+    s.material = R"("emissiveFactor":[1,1,1],"emissiveTexture":{"index":0},)";
+    const ModelResult lit = read_glb(make_glb(s));
+    ASSERT_TRUE(lit.model.has_value()) << lit.error;
+    EXPECT_EQ(lit.model->materials[0].emissive_texture, 0U);
+    EXPECT_EQ(lit.model->images.size(), 1U);  // shared with the base colour
+    s.image_is_base_colour = false;
+    const ModelResult only = read_glb(make_glb(s));
+    ASSERT_TRUE(only.model.has_value()) << only.error;
+    EXPECT_FALSE(only.model->materials[0].base_colour_texture.has_value());
+    EXPECT_EQ(only.model->materials[0].emissive_texture, 0U);
+    s.uvs.clear();
+    EXPECT_NE(refused(s).find("texture coordinates"), std::string::npos);
+
+    s = {};
+    s.material = R"("emissiveFactor":[1,1,1],)"
+                 R"("extensions":{"KHR_materials_emissive_strength":{"emissiveStrength":-1}},)";
+    EXPECT_NE(refused(s).find("emission"), std::string::npos);
+}
+
 TEST(Models, UnindexedTrianglesAreIndexedInOrder) {
     Spec s;
     s.indexed = false;

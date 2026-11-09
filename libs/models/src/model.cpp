@@ -270,6 +270,31 @@ private:
                 mat.base_colour_texture = t;
             }
         }
+        // Emission (D-033): its factor scaled by KHR_materials_emissive_strength.
+        const float strength =
+            src.has_emissive_strength != 0 ? src.emissive_strength.emissive_strength : 1.0F;
+        for (std::size_t c = 0; c < 3; ++c) {
+            mat.emissive[c] = src.emissive_factor[c] * strength;
+        }
+        if (!std::all_of(mat.emissive.begin(), mat.emissive.end(),
+                         [](float e) { return std::isfinite(e) && e >= 0.0F; })) {
+            error_ = what + ": its emission isn't finite and at least 0";
+            return false;
+        }
+        const cgltf_texture_view& glow = src.emissive_texture;
+        if (glow.texture != nullptr) {
+            if (glow.texcoord != 0 || glow.has_transform != 0) {
+                error_ = what +
+                         ": its emissive texture needs the first texture coordinates, "
+                         "untransformed";
+                return false;
+            }
+            const auto t = texture(glow.texture, m, what);
+            if (!t) {
+                return false;
+            }
+            mat.emissive_texture = t;
+        }
         m.materials.push_back(std::move(mat));
         return true;
     }
@@ -395,7 +420,8 @@ private:
             error_ = what + ": has no normals (export them from Blender)";
             return false;
         }
-        const bool textured = m.materials[material].base_colour_texture.has_value();
+        const ModelMaterial& mat = m.materials[material];
+        const bool textured = mat.base_colour_texture || mat.emissive_texture;
         if (textured && (uv == nullptr || uv->type != cgltf_type_vec2 || uv->count != pos->count)) {
             error_ = what + ": its material has a texture but it has no texture coordinates";
             return false;

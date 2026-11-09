@@ -21,6 +21,12 @@
 #
 # Each material names its Fovea material ID (a custom property, exported in
 # the glTF's extras): 1 walls and roofs, 2 metal, 3 glass.
+#
+# The terminal's buildings and the tower have lit windows (milestone 6
+# step 8, D-033): an emission texture over the panes, most lit and some
+# not, warm, its strength in cd/m² (Fovea reads glTF emission as nits); the
+# tower's cab glows faintly, as cabs are kept dim at night. By day the
+# exposure hides it.
 
 import math
 import os
@@ -42,6 +48,10 @@ def srgb(c):
     return np.array(c[:3], dtype=np.float32) / 255.0
 
 
+def srgb_to_linear(c):
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
 def blank(w_m, h_m, colour, px=PX):
     img = np.ones((int(h_m * px), int(w_m * px), 4), dtype=np.float32)
     img[:, :, :3] = srgb(colour)
@@ -52,13 +62,20 @@ def shade(c, f):
     return tuple(min(255.0, max(0.0, v * f)) for v in c)
 
 
+WINDOW_LIGHT = (255, 214, 160)  # warm, as indoor lighting seen through glass
+WINDOW_NITS = 30.0
+
+
 def office_facade(wall, glass_from=1.0, glass_to=2.6, bay=1.5, seed=0):
     """4 m floors, 24 m before it repeats: a glass band each floor, its
     panes `bay` metres wide behind thin frames that barely show, each pane
     lighter up its height (the sky in it) and a little lighter or darker
-    than its neighbours (blinds drawn or not), so no grid shows."""
+    than its neighbours (blinds drawn or not), so no grid shows. Also its
+    lit windows: each pane lit at night (most, by more or less) or dark."""
     rng = np.random.default_rng(seed)
+    lights = np.random.default_rng(seed + 1)  # its own, so the panes' tints keep theirs
     img = blank(24.0, 4.0, wall)
+    glow = blank(24.0, 4.0, (0, 0, 0))
     a, b = int(glass_from * PX), int(glass_to * PX)
     glass = srgb((112, 130, 146))
     sky = np.linspace(0.86, 1.02, b - a)[:, None, None]
@@ -69,10 +86,12 @@ def office_facade(wall, glass_from=1.0, glass_to=2.6, bay=1.5, seed=0):
         tint = rng.choice([0.97, 0.99, 1.0, 1.0, 1.0, 1.01, 1.05])  # now and then blinds down
         img[a:b, x0:x1, :3] = np.minimum(glass * sky * tint, 1.0)
         img[a:b, x0:x0 + 1, :3] *= 0.86  # the frame, faint
+        lit = lights.choice([0.0, 0.0, 0.5, 0.7, 0.85, 1.0, 1.0])
+        glow[a + 1:b - 1, x0 + 1:x1, :3] = srgb(WINDOW_LIGHT) * lit
     img[a:a + 1, :, :3] *= 0.86
     img[b - 1:b, :, :3] *= 0.86
     img[0:2, :, :3] = srgb(shade(wall, 0.9))  # the floor slab's line, faint
-    return img
+    return img, glow
 
 
 def corrugated(wall, w_m=4.0, h_m=4.0, depth=0.14):
@@ -186,8 +205,10 @@ def plain(colour):
 
 # --- Materials -------------------------------------------------------------
 
-def material(name, texels, fovea, size_m):
-    """A material showing `texels` (size_m[0] x size_m[1] metres)."""
+def material(name, texels, fovea, size_m, glow=None, nits=0.0):
+    """A material showing `texels` (size_m[0] x size_m[1] metres), giving
+    off `nits` cd/m² of light where `glow` (texels the same size, or one
+    colour) is white."""
     m = bpy.data.materials.new(name)
     try:
         m.use_nodes = True  # always so from Blender 5.0
@@ -202,6 +223,17 @@ def material(name, texels, fovea, size_m):
     tex.image = img
     m.node_tree.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
     bsdf.inputs["Roughness"].default_value = 0.85
+    if glow is not None:
+        if isinstance(glow, np.ndarray):
+            lit = bpy.data.images.new(name + "_glow", glow.shape[1], glow.shape[0], alpha=False)
+            lit.pixels.foreach_set(np.clip(glow, 0.0, 1.0).ravel())
+            lit.pack()
+            glow_tex = nodes.new("ShaderNodeTexImage")
+            glow_tex.image = lit
+            m.node_tree.links.new(glow_tex.outputs["Color"], bsdf.inputs["Emission Color"])
+        else:
+            bsdf.inputs["Emission Color"].default_value = (*srgb_to_linear(srgb(glow)), 1.0)
+        bsdf.inputs["Emission Strength"].default_value = nits
     m["fovea_material"] = fovea
     m["size_m"] = size_m
     return m
@@ -399,17 +431,17 @@ ROOF = {
 }
 
 
-def flat_roofed(name, w, d, h, facade="office", plant=True):
+def flat_roofed(name, w, d, h, facade="office", plant=True, lit=False):
     """An office, terminal or cargo building: a facade, a membrane roof
-    behind a parapet, plant on the roof."""
+    behind a parapet, plant on the roof; its windows lit at night if
+    `lit`."""
     roof = roof_colour(ROOF[name])
-    if facade == "glass":
-        walls = material("glass_wall",
-                         office_facade(GLASS_WALL, 0.8, 3.2, 2.0, zlib.crc32(name.encode())), 1,
-                         (24.0, 4.0))
-    elif facade == "office":
-        walls = material("office_wall", office_facade(WALL, seed=zlib.crc32(name.encode())), 1,
-                         (24.0, 4.0))
+    if facade in ("glass", "office"):
+        seed = zlib.crc32(name.encode())
+        texels, glow = (office_facade(GLASS_WALL, 0.8, 3.2, 2.0, seed) if facade == "glass"
+                        else office_facade(WALL, seed=seed))
+        walls = material(facade + "_wall", texels, 1, (24.0, 4.0),
+                         glow if lit else None, WINDOW_NITS)
     else:
         walls = material("cargo_wall", metal_wall(shade(roof, 0.9), h, h + 1.0, 4.5, "dock"), 2,
                          (4.5, h + 1.0))
@@ -444,7 +476,8 @@ def hangar(name, w, d, eave, door_on="front"):
 
 def tower(name):
     concrete = material("concrete", plain((176, 172, 164)), 1, (1.0, 1.0))
-    glass = material("cab_glass", cab_glass(), 3, (1.0, 1.0))  # one image a facet
+    glass = material("cab_glass", cab_glass(), 3, (1.0, 1.0),  # one image a facet
+                     WINDOW_LIGHT, 3.0)
     dark = material("roof_dark", plain((70, 72, 74)), 2, (1.0, 1.0))
     m = Model(name)
     m.prism(concrete, concrete, 0, 0, 3.5, 3.5, 0, 38.0, 16)        # the shaft
@@ -457,11 +490,11 @@ def tower(name):
 
 
 MODELS = {
-    "khsv_terminal": lambda n: flat_roofed(n, 197.0, 128.0, 15.0),
-    "khsv_terminal_hall": lambda n: flat_roofed(n, 180.0, 83.0, 12.0, "glass"),
-    "khsv_concourse": lambda n: flat_roofed(n, 37.0, 210.0, 10.0, "glass", plant=False),
+    "khsv_terminal": lambda n: flat_roofed(n, 197.0, 128.0, 15.0, lit=True),
+    "khsv_terminal_hall": lambda n: flat_roofed(n, 180.0, 83.0, 12.0, "glass", lit=True),
+    "khsv_concourse": lambda n: flat_roofed(n, 37.0, 210.0, 10.0, "glass", plant=False, lit=True),
     "khsv_tower": tower,
-    "khsv_tower_base": lambda n: flat_roofed(n, 40.0, 26.0, 8.0),
+    "khsv_tower_base": lambda n: flat_roofed(n, 40.0, 26.0, 8.0, lit=True),
     "khsv_hangar_27x105": lambda n: hangar(n, 27.0, 105.0, 10.0),
     "khsv_hangar_24x147": lambda n: hangar(n, 24.0, 147.0, 10.0),
     "khsv_hangar_27x144": lambda n: hangar(n, 27.0, 144.0, 10.0),

@@ -20,6 +20,7 @@
 // material has a texture), indexed or not, any accessor types (sparse
 // vertex data too, not sparse indices);
 // materials' base colour factor and texture (PNG or JPEG in the file),
+// emissive factor, strength (KHR_materials_emissive_strength) and texture,
 // alpha mode, double-sidedness. Refused, with a reason: anything else a file
 // requires (extensions it lists as required, other primitive modes,
 // external files), skinned meshes (milestone 9), and limits past those
@@ -49,6 +50,11 @@ struct ModelMaterial {
     std::uint8_t fovea_material = 0;
     std::array<float, 4> base_colour{1.0F, 1.0F, 1.0F, 1.0F};  // linear
     std::optional<std::uint32_t> base_colour_texture;          // into Model::textures
+    // Light it gives off (lit windows, D-033): luminance in cd/m², linear,
+    // the emissive factor times its strength, times the texture where it has
+    // one. glTF leaves emission's units open; Fovea reads them as nits.
+    std::array<float, 3> emissive{};
+    std::optional<std::uint32_t> emissive_texture;  // into Model::textures, sRGB
     AlphaMode alpha_mode = AlphaMode::opaque;
     float alpha_cutoff = 0.5F;
     bool double_sided = false;
@@ -64,7 +70,7 @@ struct TextureLevel {
 // An image, decoded once however many textures use it.
 struct ModelImage {
     std::vector<TextureLevel> levels;  // full chain, down to 1 x 1
-    bool srgb = true;                  // base colour is
+    bool srgb = true;                  // base colour and emissive are
 };
 
 // An image and how it's sampled.

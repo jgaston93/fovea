@@ -25,6 +25,7 @@ struct GlbSpec {
     std::array<float, 4> base_colour{0.5F, 0.25F, 1.0F, 1.0F};
     std::string material;             // more of the material: "\"alphaMode\":\"MASK\","
     std::vector<std::uint8_t> image;  // a base colour texture, if any
+    bool image_is_base_colour = true;  // or only in the textures, for s.material to use
     std::string mime = "image/png";
     std::string node;  // more of the node: "\"matrix\":[...],"
     std::string top;   // more of the top level: "\"extensionsRequired\":[...],"

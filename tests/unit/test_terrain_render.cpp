@@ -626,11 +626,12 @@ double mix_of(const std::vector<std::uint8_t>& px, std::uint32_t w, int x, int y
     return along / length;
 }
 
-// The image of a database seen from `v`, settled with its one model, drawn
-// with `msaa` samples a pixel, lit by `sky` if given; empty with no Vulkan
-// (the caller skips).
+// The image of a database seen from `v`, settled with its `placements`
+// models, drawn with `msaa` samples a pixel, lit by `sky` if given; empty
+// with no Vulkan (the caller skips).
 std::vector<std::uint8_t> draw_settled(const fs::path& dir, const SceneView& v, std::uint32_t size,
-                                       std::uint32_t msaa, const SkyBodies* sky = nullptr) {
+                                       std::uint32_t msaa, const SkyBodies* sky = nullptr,
+                                       std::uint32_t placements = 1) {
     RendererOptions options;
     options.msaa = msaa;
     if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
@@ -644,8 +645,8 @@ std::vector<std::uint8_t> draw_settled(const fs::path& dir, const SceneView& v, 
         r->set_sky(*sky);
     }
     (void)r->load_terrain(open_db(dir));
-    settle_models(*r, {v}, 1);
-    EXPECT_EQ(r->terrain_stats().placements_drawn, 1U);
+    settle_models(*r, {v}, placements);
+    EXPECT_EQ(r->terrain_stats().placements_drawn, placements);
     EXPECT_EQ(r->validation_messages(), 0U);
     return r->read_back_rgba(0);
 }
@@ -725,6 +726,60 @@ TEST(TerrainRender, TheSunLightsTheWallsThatFaceItAndNoneFromUnderTheHorizon) {
     std::printf("dusk, sun %.1f degrees: north wall %.0f, south wall %.0f\n", elevation, n, so);
     EXPECT_GT(n, 10.0);  // lit by the sky, not black
     EXPECT_NEAR(n, so, 1.0);
+}
+
+// Lit windows (milestone 6 step 8, D-033): a dark box whose walls give off
+// 40 cd/m² of warm light, beside the same box without, seen from the east.
+// At midnight its wall shows bright where the other's is near black; at
+// noon the exposure hides the glow: the two differ by at most a level.
+TEST(TerrainRender, EmissiveMaterialsGlowAtNightAndNotByDay) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    const double m_lat = 1.0 / 111000.0;
+    const double m_lon = m_lat / std::cos(glm::radians(lat0));
+    s.placements = {{"lit", lat0 + 15.0 * m_lat, lon0, 120.0, 0.0F},
+                    {"dark", lat0 - 15.0 * m_lat, lon0, 120.0, 0.0F}};
+    test::GlbSpec lit = test::glb_box(10.0F, 8.0F, 10.0F);
+    lit.base_colour = {0.1F, 0.1F, 0.1F, 1.0F};
+    lit.extras = R"({"fovea_material": 1})";
+    lit.material = R"("emissiveFactor":[1,0.8,0.5],)"
+                   R"("extensions":{"KHR_materials_emissive_strength":{"emissiveStrength":40}},)";
+    lit.top = R"("extensionsUsed":["KHR_materials_emissive_strength"],)";
+    s.models = {{"lit", test::make_glb(lit)},
+                {"dark", box_glb(10.0F, 8.0F, 10.0F, {0.1F, 0.1F, 0.1F, 1.0F}, "")}};
+    const fs::path dir = write_db("emissive", s);
+    constexpr std::uint32_t kSize = 128;
+    const SceneView v = view_at({lat0, lon0 + 60.0 * m_lon, 120.0}, 4.0, 0.0, 270.0);
+    const auto wall = [&](const std::vector<std::uint8_t>& px, double north_m) {
+        const glm::dvec2 at =
+            project(v, {lat0 + north_m * m_lat, lon0 + 10.0 * m_lon, 124.0}, kSize, kSize);
+        return colour_at(px, kSize, static_cast<int>(at.x), static_cast<int>(at.y));
+    };
+    // 05:00 UTC on 2026-06-21 is midnight at KHSV; 17:00 UTC noon.
+    const SkyBodies night = sky_bodies(julian_date(2026, 6, 21, 5.0 * 3600.0));
+    const auto dark_px = draw_settled(dir, v, kSize, 1, &night, 2);
+    if (dark_px.empty()) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const auto glowing = wall(dark_px, 15.0);
+    const auto unlit = wall(dark_px, -15.0);
+    std::printf("midnight: lit wall %.0f %.0f %.0f, plain %.0f %.0f %.0f\n", glowing[0],
+                glowing[1], glowing[2], unlit[0], unlit[1], unlit[2]);
+    for (std::size_t c = 0; c < 3; ++c) {
+        EXPECT_GT(glowing[c], 200.0) << "channel " << c;
+    }
+    EXPECT_LT(unlit[0], 60.0);
+
+    const SkyBodies noon = sky_bodies(julian_date(2026, 6, 21, 17.0 * 3600.0));
+    const auto day_px = draw_settled(dir, v, kSize, 1, &noon, 2);
+    const auto lit_day = wall(day_px, 15.0);
+    const auto plain_day = wall(day_px, -15.0);
+    std::printf("noon: lit wall %.0f %.0f %.0f, plain %.0f %.0f %.0f\n", lit_day[0], lit_day[1],
+                lit_day[2], plain_day[0], plain_day[1], plain_day[2]);
+    for (std::size_t c = 0; c < 3; ++c) {
+        EXPECT_NEAR(lit_day[c], plain_day[c], 1.0) << "channel " << c;
+    }
 }
 
 // The sky on the June solstice when the sun, in the morning, first stands
