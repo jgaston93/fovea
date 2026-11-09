@@ -99,6 +99,10 @@ int main(int argc, char** argv) {
         auto last = start;
         auto next_report = start + std::chrono::seconds(5);
         bool told_operating = false;
+        // Each segment's environment as it starts: the first's with the
+        // first message that can carry it.
+        std::size_t segment = 0;
+        session.queue_environment(script.environment.front());
         for (;;) {
             const auto t = std::chrono::steady_clock::now();
             if (t - start >= std::chrono::duration<double>(seconds)) {
@@ -115,6 +119,11 @@ int main(int argc, char** argv) {
             const auto now = std::chrono::steady_clock::now();
             if (session.operating()) {
                 flight.step(std::chrono::duration<double>(now - last).count());
+                // Every segment passed, if a step crossed more than one.
+                while (segment != flight.segment_index()) {
+                    segment = (segment + 1) % script.segments.size();
+                    session.queue_environment(script.environment.at(segment));
+                }
             }
             last = now;
             session.send_frame(flight.state(), now);

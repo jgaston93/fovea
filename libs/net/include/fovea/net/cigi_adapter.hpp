@@ -29,6 +29,22 @@
 // - Start of Frame: after a stall (the network thread held up while frames
 //   ran), only the newest frame start is reported, so a synchronous host
 //   isn't sent a burst of stale frames.
+// - The environment (milestone 6 step 7, D-014 amended), each packet
+//   replacing what it carries in the scene's environment, which config set
+//   until then:
+//   - Celestial Sphere Control (4.1.9) sets the date and time when its
+//     Date/Time Valid flag is set, and whether time runs (Ephemeris Model
+//     Enable) always. Sun, moon and star enables and star intensity aren't
+//     taken: the sky draws them all. A date the sky isn't computed for
+//     (outside 1950 to 2050), or no date at all, rejects the packet.
+//   - Atmosphere Control (4.1.10) sets the global visibility. Humidity,
+//     temperature, wind and pressure change nothing drawn yet.
+//   - Weather Control (4.1.12) sets or removes (Weather Enable off) a global
+//     layer as a whole: Layer IDs 0 to 5 (fog, three clouds, rain, snow),
+//     their base (above mean sea level), thickness, visibility and
+//     coverage. Sleet, hail, sand, dust and the IG's own layers, regional
+//     layers and weather entities are counted and ignored, as is
+//     Environmental Region Control (4.1.11).
 // - Each sample's time on this computer's clock (Pose::sample_t) maps the
 //   host's timestamp across: the host clock's zero is placed where the
 //   fastest message so far puts it (least network delay), creeping later at
@@ -74,13 +90,15 @@ struct CigiAdapterStats {
     std::uint64_t ignored_in_standby = 0;  // messages received in Reset/Standby
     std::uint64_t stale_messages = 0;      // stamped earlier than the last: out of order
     std::uint64_t entity_updates = 0;
-    std::uint64_t rejected_packets = 0;   // known packets that didn't decode
-    std::uint64_t skipped_packets = 0;    // packets this adapter doesn't handle
-    std::uint64_t attached_entities = 0;  // child Entity Controls (milestone 9)
-    std::uint64_t entity_table_full = 0;  // new entities beyond kMaxEntities
-    std::uint64_t frames_reported = 0;    // Start of Frame messages sent
-    std::uint64_t frames_unreported = 0;  // frame starts with no host to send to
-    std::uint64_t frames_coalesced = 0;   // older frame starts left out after a stall
+    std::uint64_t environment_updates = 0;  // Celestial Sphere, Atmosphere, Weather Control
+    std::uint64_t weather_ignored = 0;      // Weather Controls for layers not drawn
+    std::uint64_t rejected_packets = 0;     // known packets that didn't decode
+    std::uint64_t skipped_packets = 0;      // packets this adapter doesn't handle
+    std::uint64_t attached_entities = 0;    // child Entity Controls (milestone 9)
+    std::uint64_t entity_table_full = 0;    // new entities beyond kMaxEntities
+    std::uint64_t frames_reported = 0;      // Start of Frame messages sent
+    std::uint64_t frames_unreported = 0;    // frame starts with no host to send to
+    std::uint64_t frames_coalesced = 0;     // older frame starts left out after a stall
 };
 
 class CigiAdapter final : public HostAdapter {
@@ -105,6 +123,10 @@ public:
 private:
     bool apply(std::span<const std::uint8_t> message, SceneSnapshot& scene, LocalTime received);
     void apply_entity(const cigi::EntityControl& e, SceneSnapshot& scene, LocalTime received);
+    void apply_celestial(const cigi::CelestialSphereControl& c, EnvironmentState& e,
+                         LocalTime received);
+    void apply_atmosphere(const cigi::AtmosphereControl& a, EnvironmentState& e);
+    void apply_weather(const cigi::WeatherControl& w, EnvironmentState& e);
     void report_frames();
     std::uint32_t ig_ticks(LocalTime t) const;  // 10 us since the adapter started
 

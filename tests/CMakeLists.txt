@@ -50,11 +50,13 @@ add_executable(fovea_gpu_tests
     unit/test_display_clock.cpp
     unit/test_frame_loop.cpp
     unit/test_golden.cpp
+    unit/test_host_environment.cpp
     unit/test_renderer.cpp
     unit/test_sky.cpp
     unit/test_terrain_render.cpp)
 target_include_directories(fovea_gpu_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(fovea_gpu_tests PRIVATE fovea::render GTest::gtest_main)
+target_link_libraries(fovea_gpu_tests PRIVATE fovea::render fovea::net fovea_cigi_test_host_lib
+                                              GTest::gtest_main)
 target_compile_definitions(fovea_gpu_tests PRIVATE FOVEA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 fovea_target_defaults(fovea_gpu_tests)
 gtest_discover_tests(fovea_gpu_tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT 120)

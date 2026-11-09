@@ -1,7 +1,8 @@
-// libFuzzer target for the CIGI codec (milestone 2 step 1): any bytes, read
-// as a host-to-IG and as an IG-to-host message, must never read out of
-// bounds or crash (ASan and UBSan watch), and every decoded packet must
-// survive encode -> decode -> encode unchanged. Built by the `fuzz` preset
+// libFuzzer target for the CIGI codec (milestone 2 step 1; the environment's
+// packets from milestone 6 step 7): any bytes, read as a host-to-IG and as
+// an IG-to-host message, must never read out of bounds or crash (ASan and
+// UBSan watch), and every decoded packet must survive encode -> decode ->
+// encode unchanged. Built by the `fuzz` preset
 // (Clang only); the nightly run fuzzes for five minutes:
 //   cmake --preset fuzz && cmake --build --preset fuzz --target fovea_fuzz_cigi
 //   ./build/fuzz/tests/fovea_fuzz_cigi -max_total_time=60 tests/fuzz/corpus/cigi
@@ -47,6 +48,15 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             }
             if (const auto e = decode_entity_control(p.bytes, reader.swapped())) {
                 check_round_trip(*e, decode_entity_control);
+            }
+            if (const auto c = decode_celestial_sphere_control(p.bytes, reader.swapped())) {
+                check_round_trip(*c, decode_celestial_sphere_control);
+            }
+            if (const auto a = decode_atmosphere_control(p.bytes, reader.swapped())) {
+                check_round_trip(*a, decode_atmosphere_control);
+            }
+            if (const auto w = decode_weather_control(p.bytes, reader.swapped())) {
+                check_round_trip(*w, decode_weather_control);
             }
             if (const auto sof = decode_start_of_frame(p.bytes, reader.swapped())) {
                 check_round_trip(*sof, decode_start_of_frame);

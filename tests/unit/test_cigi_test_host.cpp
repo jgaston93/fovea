@@ -1,5 +1,6 @@
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <thread>
@@ -174,10 +175,77 @@ TEST(TestHostFlight, LoopsOrHolds) {
 }
 
 TEST(TestHostScript, ExampleScriptsLoad) {
-    for (const char* name : {"circuit.toml", "gentle.toml"}) {
-        const auto r =
-            load_script(std::string(FOVEA_SOURCE_DIR "/tools/cigi-test-host/scripts/") + name);
-        EXPECT_TRUE(r.script.has_value()) << name << ": " << (r.errors.empty() ? "" : r.errors[0]);
+    int scripts = 0;
+    for (const auto& f :
+         std::filesystem::directory_iterator(FOVEA_SOURCE_DIR "/tools/cigi-test-host/scripts")) {
+        const auto r = load_script(f.path());
+        EXPECT_TRUE(r.script.has_value())
+            << f.path() << ": " << (r.errors.empty() ? "" : r.errors[0]);
+        ++scripts;
+    }
+    EXPECT_GE(scripts, 9);
+}
+
+// A segment's environment (milestone 6 step 7): Celestial Sphere Control
+// from the date, time and time_runs, Atmosphere Control from the
+// visibility, a Weather Control for each layer.
+TEST(TestHostScript, SegmentsSetTheEnvironment) {
+    const std::string head = R"([ig]
+address = "127.0.0.1"
+port = 8004
+[start]
+lat = 34.6
+lon = -86.8
+alt = 300.0
+)";
+    const auto r = parse_script(head + R"([[segment]]
+kind = "hold"
+duration = 5.0
+[[segment]]
+kind = "hold"
+duration = 5.0
+date = 2026-11-03
+time = 06:10:00
+time_runs = false
+visibility = 8000.0
+[[segment.layer]]
+id = 0
+base = 180.0
+thickness = 60.0
+visibility = 300.0
+[[segment.layer]]
+id = 4
+enable = false
+)",
+                                "s.toml");
+    ASSERT_TRUE(r.script.has_value()) << r.errors.at(0);
+    ASSERT_EQ(r.script->environment.size(), 2U);
+    EXPECT_TRUE(r.script->environment[0].empty());
+    const EnvironmentChange& e = r.script->environment[1];
+    ASSERT_TRUE(e.celestial.has_value());
+    EXPECT_TRUE(e.celestial->date_time_valid);
+    EXPECT_FALSE(e.celestial->ephemeris_enable);
+    EXPECT_EQ(e.celestial->date, 11032026U);  // MMDDYYYY
+    EXPECT_EQ(e.celestial->hour, 6);
+    EXPECT_EQ(e.celestial->minute, 10);
+    ASSERT_TRUE(e.atmosphere.has_value());
+    EXPECT_EQ(e.atmosphere->visibility_range_m, 8000.0F);
+    ASSERT_EQ(e.weather.size(), 2U);
+    EXPECT_EQ(e.weather[0].layer_id, 0);
+    EXPECT_TRUE(e.weather[0].weather_enable);
+    EXPECT_EQ(e.weather[0].base_elevation_m, 180.0F);
+    EXPECT_EQ(e.weather[0].thickness_m, 60.0F);
+    EXPECT_EQ(e.weather[0].visibility_range_m, 300.0F);
+    EXPECT_EQ(e.weather[1].layer_id, 4);
+    EXPECT_FALSE(e.weather[1].weather_enable);
+
+    for (const char* bad :
+         {"date = 2026-11-03\n", "date = 2026-11-03\ntime = 06:10:30\n",
+          "date = 1900-01-01\ntime = 06:10:00\n", "[[segment.layer]]\nid = 0\n"}) {
+        EXPECT_FALSE(
+            parse_script(head + "[[segment]]\nkind = \"hold\"\nduration = 5.0\n" + bad, "s.toml")
+                .script.has_value())
+            << bad;
     }
 }
 

@@ -339,6 +339,21 @@ void parse_reference_scene(Parser& p, const toml::table& t, ReferenceScene& out)
 }
 
 // One [[environment.layer]] (step 6, D-034).
+// The first WeatherLayer::id for a kind: clouds take 1 to 3.
+std::size_t layer_ids_from(WeatherKind kind) {
+    switch (kind) {
+        case WeatherKind::fog:
+            return 0;
+        case WeatherKind::cloud:
+            return 1;
+        case WeatherKind::rain:
+            return 4;
+        case WeatherKind::snow:
+            return 5;
+    }
+    return 0;
+}
+
 void parse_weather_layer(Parser& p, const toml::table& t, const std::string& path,
                          WeatherLayer& out) {
     p.check_keys(t, {"kind", "base_m", "thickness_m", "coverage", "visibility_m"}, path);
@@ -426,10 +441,28 @@ void parse_environment(Parser& p, const toml::table& t, EnvironmentConfig& out) 
                                      " [[environment.layer]] tables (got " +
                                      std::to_string(list->size()) + ")");
         } else {
+            // Numbered as a host numbers them (WeatherLayer::id): one fog,
+            // rain and snow layer each, up to three cloud layers.
+            std::array<bool, kMaxWeatherLayers> used{};
             for (std::size_t i = 0; i < list->size(); ++i) {
                 WeatherLayer layer;
-                parse_weather_layer(p, *list->get(i)->as_table(),
-                                    "environment.layer[" + std::to_string(i) + "]", layer);
+                const std::string path = "environment.layer[" + std::to_string(i) + "]";
+                parse_weather_layer(p, *list->get(i)->as_table(), path, layer);
+                const std::size_t first = layer_ids_from(layer.kind);
+                const std::size_t last = layer.kind == WeatherKind::cloud ? first + 2 : first;
+                std::size_t id = first;
+                while (id <= last && used.at(id)) {
+                    ++id;
+                }
+                if (id > last) {
+                    p.error(list->get(i)->source(),
+                            "'" + path +
+                                "': one fog, rain and snow layer each, and up to three "
+                                "cloud layers");
+                    continue;
+                }
+                used.at(id) = true;
+                layer.id = static_cast<std::uint8_t>(id);
                 (void)out.layers.push_back(layer);
             }
         }

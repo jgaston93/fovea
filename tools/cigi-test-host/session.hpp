@@ -15,6 +15,7 @@
 #include "fovea/core/time.hpp"
 #include "fovea/net/cigi.hpp"
 #include "fovea/net/udp.hpp"
+#include "script.hpp"
 
 namespace fovea::test_host {
 
@@ -39,6 +40,11 @@ public:
     // Control (asking for Operate) and, once the IG reports Operate, entity
     // 0 at `state`.
     void send_frame(const FlightState& state, LocalTime t);
+
+    // Sends `change` once, with the next frame that has entity 0 (the IG
+    // ignores more than IG Control until it reports Operate). A later call
+    // before then adds to it.
+    void queue_environment(const EnvironmentChange& change);
 
     // Waits up to `timeout_ms` for a Start of Frame and reads it (and any
     // others waiting). True if one arrived. For synchronous mode.
@@ -65,6 +71,7 @@ private:
     std::uint32_t last_ig_frame_ = 0;
     // When each recent host frame was sent, by frame number modulo the size.
     std::array<std::optional<LocalTime>, 256> sent_{};
+    EnvironmentChange pending_;
     SessionStats stats_;
 };
 

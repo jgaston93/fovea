@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 
 #include "fovea/core/attitude.hpp"
+#include "fovea/core/celestial.hpp"
 #include "fovea/core/geodesy.hpp"
 
 namespace fovea {
@@ -35,6 +37,33 @@ void remove(SceneSnapshot& scene, EntityState* e) {
         *e = *last;
     }
     scene.entities.pop_back();
+}
+
+// Days in a month of the Gregorian calendar.
+unsigned days_in_month(std::uint32_t year, std::uint32_t month) {
+    constexpr std::array<unsigned, 12> kDays{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    const bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    return month == 2 && leap ? 29U : kDays.at(month - 1);
+}
+
+// Weather Control's standard layers that are drawn (or, clouds, kept for
+// when they are: #73), by Layer ID (ICD p. 102); WeatherLayer::id is the
+// same number.
+std::optional<WeatherKind> weather_kind(std::uint8_t layer_id) {
+    switch (static_cast<cigi::WeatherLayerId>(layer_id)) {
+        case cigi::WeatherLayerId::ground_fog:
+            return WeatherKind::fog;
+        case cigi::WeatherLayerId::cloud_1:
+        case cigi::WeatherLayerId::cloud_2:
+        case cigi::WeatherLayerId::cloud_3:
+            return WeatherKind::cloud;
+        case cigi::WeatherLayerId::rain:
+            return WeatherKind::rain;
+        case cigi::WeatherLayerId::snow:
+            return WeatherKind::snow;
+        default:
+            return std::nullopt;
+    }
 }
 
 }  // namespace
@@ -181,9 +210,28 @@ bool CigiAdapter::apply(std::span<const std::uint8_t> message, SceneSnapshot& sc
     mode_ = ig->ig_mode;
 
     while (reader.next(packet)) {
+        const bool swap = reader.swapped();
         if (packet.id == cigi::kEntityControlId) {
-            if (const auto e = cigi::decode_entity_control(packet.bytes, reader.swapped())) {
+            if (const auto e = cigi::decode_entity_control(packet.bytes, swap)) {
                 apply_entity(*e, scene, received);
+            } else {
+                ++stats_.rejected_packets;
+            }
+        } else if (packet.id == cigi::kCelestialSphereControlId) {
+            if (const auto c = cigi::decode_celestial_sphere_control(packet.bytes, swap)) {
+                apply_celestial(*c, scene.environment, received);
+            } else {
+                ++stats_.rejected_packets;
+            }
+        } else if (packet.id == cigi::kAtmosphereControlId) {
+            if (const auto a = cigi::decode_atmosphere_control(packet.bytes, swap)) {
+                apply_atmosphere(*a, scene.environment);
+            } else {
+                ++stats_.rejected_packets;
+            }
+        } else if (packet.id == cigi::kWeatherControlId) {
+            if (const auto w = cigi::decode_weather_control(packet.bytes, swap)) {
+                apply_weather(*w, scene.environment);
             } else {
                 ++stats_.rejected_packets;
             }
@@ -244,6 +292,80 @@ void CigiAdapter::apply_entity(const cigi::EntityControl& e, SceneSnapshot& scen
     entity->active = e.entity_state == cigi::EntityState::active;
     entity->smooth = e.extrapolation_enable;
     ++stats_.entity_updates;
+}
+
+void CigiAdapter::apply_celestial(const cigi::CelestialSphereControl& c, EnvironmentState& e,
+                                  LocalTime received) {
+    // The time now, carried on from the last setting, unless the packet
+    // sets it.
+    double jd = julian_date_at(e, received);
+    if (c.date_time_valid) {
+        // MMDDYYYY (p. 84).
+        const std::uint32_t month = c.date / 1000000U;
+        const std::uint32_t day = c.date / 10000U % 100U;
+        const std::uint32_t year = c.date % 10000U;
+        if (year < 1950 || year > 2050 || month < 1 || month > 12 || day < 1 ||
+            day > days_in_month(year, month)) {
+            ++stats_.rejected_packets;
+            return;
+        }
+        jd = julian_date(year, month, day, c.hour * 3600.0 + c.minute * 60.0);
+    }
+    e.julian_date = jd;
+    e.set_at = received;
+    e.time_runs = c.ephemeris_enable;
+    ++stats_.environment_updates;
+}
+
+void CigiAdapter::apply_atmosphere(const cigi::AtmosphereControl& a, EnvironmentState& e) {
+    if (!std::isfinite(a.visibility_range_m) || a.visibility_range_m < 0.0F) {
+        ++stats_.rejected_packets;  // >= 0 (p. 86)
+        return;
+    }
+    e.visibility_m = static_cast<double>(a.visibility_range_m);
+    ++stats_.environment_updates;
+}
+
+void CigiAdapter::apply_weather(const cigi::WeatherControl& w, EnvironmentState& e) {
+    const std::optional<WeatherKind> kind = weather_kind(w.layer_id);
+    if (w.scope != cigi::WeatherScope::global || !kind) {
+        ++stats_.weather_ignored;
+        return;
+    }
+    WeatherLayer* found = nullptr;
+    for (WeatherLayer& l : e.layers) {
+        if (l.id == w.layer_id) {
+            found = &l;
+        }
+    }
+    if (!w.weather_enable) {
+        if (found != nullptr) {
+            *found = *(e.layers.end() - 1);  // order is not kept: the renderer sorts
+            e.layers.pop_back();
+        }
+        ++stats_.environment_updates;
+        return;
+    }
+    if (!std::isfinite(w.base_elevation_m) || !std::isfinite(w.thickness_m) ||
+        !std::isfinite(w.visibility_range_m) || !std::isfinite(w.coverage) ||
+        w.thickness_m < 0.0F || w.visibility_range_m < 0.0F) {
+        ++stats_.rejected_packets;
+        return;
+    }
+    WeatherLayer layer;
+    layer.kind = *kind;
+    layer.id = w.layer_id;
+    layer.base_m = static_cast<double>(w.base_elevation_m) + options_.geoid_height_m;
+    layer.thickness_m = static_cast<double>(w.thickness_m);
+    layer.coverage = std::clamp(static_cast<double>(w.coverage) / 100.0, 0.0, 1.0);
+    layer.visibility_m = static_cast<double>(w.visibility_range_m);
+    if (found != nullptr) {
+        *found = layer;
+    } else {
+        // Six ids, six places: never full.
+        (void)e.layers.push_back(layer);
+    }
+    ++stats_.environment_updates;
 }
 
 }  // namespace fovea

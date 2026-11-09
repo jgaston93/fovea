@@ -11,7 +11,8 @@
 #include "support/alloc_counter.hpp"
 
 // The expected bytes here are written by hand from the ICD's packet figures
-// (CIGI 3.3 ICD: Figure 39, p. 42; Figure 42, p. 48; Figure 109, p. 212), not
+// (CIGI 3.3 ICD: Figure 39, p. 42; Figure 42, p. 48; Figure 53, p. 82;
+// Figure 54, p. 85; Figure 65, p. 101; Figure 109, p. 212), not
 // produced by the encoder, as a big-endian or a little-endian sender would
 // send them.
 
@@ -118,6 +119,112 @@ void expect_entity_control(const EntityControl& p) {
     EXPECT_EQ(p.lat_or_x, 34.6372);
     EXPECT_EQ(p.lon_or_y, -86.7751);
     EXPECT_EQ(p.alt_or_z, 190.5);
+}
+
+// Figure 53 in a given byte order: 14:35; Date/Time Valid, Moon Enable and
+// Ephemeris Model Enable (Star Field and Sun not: neighbouring bits
+// differ); 3 November 2026; star field 62.5 percent.
+template <typename Order>
+Bytes celestial_sphere_control(Order order) {
+    return cat({
+        {0x09, 0x10, 0x0E, 0x23},  // Packet ID 9, Packet Size 16, Hour 14, Minute 35
+        {0x15},                    // 000 1 0 1 0 1: Reserved, Valid, Stars, Moon, Sun, Ephemeris
+        {0x00, 0x00, 0x00},        // Reserved
+        order(std::uint32_t{11032026}),
+        order(62.5F),
+    });
+}
+
+void expect_celestial_sphere_control(const CelestialSphereControl& p) {
+    EXPECT_EQ(p.hour, 14);
+    EXPECT_EQ(p.minute, 35);
+    EXPECT_TRUE(p.date_time_valid);
+    EXPECT_FALSE(p.star_field_enable);
+    EXPECT_TRUE(p.moon_enable);
+    EXPECT_FALSE(p.sun_enable);
+    EXPECT_TRUE(p.ephemeris_enable);
+    EXPECT_EQ(p.date, 11032026U);
+    EXPECT_EQ(p.star_field_intensity, 62.5F);
+}
+
+// Figure 54 in a given byte order: the atmospheric model enabled, humidity
+// 55 percent, 21.5 C, visibility 8000 m, wind 6.5 m/s horizontal and -1.25
+// vertical from 270 degrees, 1013.25 mb.
+template <typename Order>
+Bytes atmosphere_control(Order order) {
+    return cat({
+        {0x0A, 0x20, 0x01, 0x37},  // Packet ID 10, Packet Size 32, 0000000 1, Humidity 55
+        order(21.5F),
+        order(8000.0F),
+        order(6.5F),
+        order(-1.25F),
+        order(270.0F),
+        order(1013.25F),
+        {0x00, 0x00, 0x00, 0x00},  // Reserved
+    });
+}
+
+void expect_atmosphere_control(const AtmosphereControl& p) {
+    EXPECT_TRUE(p.atmospheric_model_enable);
+    EXPECT_EQ(p.humidity, 55);
+    EXPECT_EQ(p.air_temperature_c, 21.5F);
+    EXPECT_EQ(p.visibility_range_m, 8000.0F);
+    EXPECT_EQ(p.horizontal_wind_mps, 6.5F);
+    EXPECT_EQ(p.vertical_wind_mps, -1.25F);
+    EXPECT_EQ(p.wind_direction_deg, 270.0F);
+    EXPECT_EQ(p.barometric_pressure_mb, 1013.25F);
+}
+
+// Figure 65 in a given byte order: region 0x0102, Layer ID 2 (cloud layer
+// 2), humidity 90; cloud type 10 (stratus), random lightning and scud on,
+// random winds off, weather enabled; severity 5, scope regional; then each
+// float its own value.
+template <typename Order>
+Bytes weather_control(Order order) {
+    return cat({
+        {0x0C, 0x38},  // Packet ID 12, Packet Size 56
+        order(std::uint16_t{0x0102}),
+        {0x02, 0x5A},    // Layer ID 2, Humidity 90
+        {0xAB},          // 1010 1 0 1 1: Cloud Type 10, Lightning, no Winds, Scud, Enable
+        {0x15},          // 000 101 01: Reserved, Severity 5, Scope Regional
+        order(-5.5F),    // Air Temperature
+        order(3000.0F),  // Visibility Range
+        order(12.5F),    // Scud Frequency
+        order(75.0F),    // Coverage
+        order(1500.0F),  // Base Elevation
+        order(400.0F),   // Thickness
+        order(50.0F),    // Transition Band
+        order(9.0F),     // Horizontal Wind Speed
+        order(0.5F),     // Vertical Wind Speed
+        order(180.0F),   // Wind Direction
+        order(850.0F),   // Barometric Pressure
+        order(0.25F),    // Aerosol Concentration
+    });
+}
+
+void expect_weather_control(const WeatherControl& p) {
+    EXPECT_EQ(p.entity_or_region_id, 0x0102);
+    EXPECT_EQ(p.layer_id, 2);
+    EXPECT_EQ(p.humidity, 90);
+    EXPECT_EQ(p.cloud_type, 10);
+    EXPECT_TRUE(p.random_lightning_enable);
+    EXPECT_FALSE(p.random_winds_enable);
+    EXPECT_TRUE(p.scud_enable);
+    EXPECT_TRUE(p.weather_enable);
+    EXPECT_EQ(p.severity, 5);
+    EXPECT_EQ(p.scope, WeatherScope::regional);
+    EXPECT_EQ(p.air_temperature_c, -5.5F);
+    EXPECT_EQ(p.visibility_range_m, 3000.0F);
+    EXPECT_EQ(p.scud_frequency, 12.5F);
+    EXPECT_EQ(p.coverage, 75.0F);
+    EXPECT_EQ(p.base_elevation_m, 1500.0F);
+    EXPECT_EQ(p.thickness_m, 400.0F);
+    EXPECT_EQ(p.transition_band_m, 50.0F);
+    EXPECT_EQ(p.horizontal_wind_mps, 9.0F);
+    EXPECT_EQ(p.vertical_wind_mps, 0.5F);
+    EXPECT_EQ(p.wind_direction_deg, 180.0F);
+    EXPECT_EQ(p.barometric_pressure_mb, 850.0F);
+    EXPECT_EQ(p.aerosol_concentration, 0.25F);
 }
 
 // Figure 109 as a big-endian IG sends it: database -1 (loading 1), status 7;
@@ -227,6 +334,59 @@ TEST(Cigi, EntityControlEncodesTheIcdBytes) {
     EXPECT_EQ(Bytes(out.begin(), out.end()), expected);
 }
 
+// The environment's packets (milestone 6 step 7), from either byte order,
+// and encoded as the ICD lays them out.
+TEST(Cigi, EnvironmentPacketsInBothByteOrders) {
+    for (const bool big : {true, false}) {
+        SCOPED_TRACE(big ? "big-endian host" : "little-endian host");
+        const auto order = [big](auto v) { return big ? be(v) : le(v); };
+        const Bytes message = cat({big ? kIgControlBigEndian : kIgControlLittleEndian,
+                                   celestial_sphere_control(order), atmosphere_control(order),
+                                   weather_control(order)});
+        MessageReader reader(message, kIgControlId);
+        MessageReader::Packet p;
+        ASSERT_TRUE(reader.next(p));
+        ASSERT_TRUE(reader.next(p));
+        EXPECT_EQ(p.id, kCelestialSphereControlId);
+        const auto c = decode_celestial_sphere_control(p.bytes, reader.swapped());
+        ASSERT_TRUE(c.has_value());
+        expect_celestial_sphere_control(*c);
+        ASSERT_TRUE(reader.next(p));
+        EXPECT_EQ(p.id, kAtmosphereControlId);
+        const auto a = decode_atmosphere_control(p.bytes, reader.swapped());
+        ASSERT_TRUE(a.has_value());
+        expect_atmosphere_control(*a);
+        ASSERT_TRUE(reader.next(p));
+        EXPECT_EQ(p.id, kWeatherControlId);
+        const auto w = decode_weather_control(p.bytes, reader.swapped());
+        ASSERT_TRUE(w.has_value());
+        expect_weather_control(*w);
+        EXPECT_FALSE(reader.next(p));
+        EXPECT_EQ(reader.error(), MessageError::none);
+    }
+}
+
+TEST(Cigi, EnvironmentPacketsEncodeTheIcdBytes) {
+    const auto native = [](auto v) {
+        return std::endian::native == std::endian::little ? le(v) : be(v);
+    };
+    const auto decoded = [](const Bytes& b, auto decode) {
+        auto p = decode(b, false);
+        EXPECT_TRUE(p.has_value());
+        return p.value_or(typename decltype(p)::value_type{});
+    };
+    std::array<std::uint8_t, 56> out{};
+    const Bytes c = celestial_sphere_control(native);
+    ASSERT_EQ(encode(decoded(c, decode_celestial_sphere_control), out), 16U);
+    EXPECT_EQ(Bytes(out.begin(), out.begin() + 16), c);
+    const Bytes a = atmosphere_control(native);
+    ASSERT_EQ(encode(decoded(a, decode_atmosphere_control), out), 32U);
+    EXPECT_EQ(Bytes(out.begin(), out.begin() + 32), a);
+    const Bytes w = weather_control(native);
+    ASSERT_EQ(encode(decoded(w, decode_weather_control), out), 56U);
+    EXPECT_EQ(Bytes(out.begin(), out.end()), w);
+}
+
 TEST(Cigi, StartOfFrameFromABigEndianIg) {
     MessageReader reader(kStartOfFrameBigEndian, kStartOfFrameId);
     EXPECT_EQ(reader.error(), MessageError::none);
@@ -294,6 +454,26 @@ TEST(Cigi, ReservedBitsAreSentAsZero) {
     EXPECT_EQ(b[4] & 0x80, 0);  // byte 4 bit 7
     EXPECT_EQ(b[5] & 0xE0, 0);  // byte 5 bits 7-5
     EXPECT_EQ(b[7], 0);
+    CelestialSphereControl c;
+    c.date_time_valid = c.star_field_enable = c.moon_enable = c.sun_enable = c.ephemeris_enable =
+        true;
+    std::array<std::uint8_t, 56> d{};
+    d.fill(0xFF);
+    ASSERT_EQ(encode(c, d), 16U);
+    EXPECT_EQ(d[4] & 0xE0, 0);  // byte 4 bits 7-5
+    EXPECT_EQ(d[5] | d[6] | d[7], 0);
+    AtmosphereControl at;
+    at.atmospheric_model_enable = true;
+    d.fill(0xFF);
+    ASSERT_EQ(encode(at, d), 32U);
+    EXPECT_EQ(d[2], 0x01);  // byte 2 bits 7-1
+    EXPECT_EQ(d[28] | d[29] | d[30] | d[31], 0);
+    WeatherControl w;
+    w.severity = 7;
+    w.scope = static_cast<WeatherScope>(3);
+    d.fill(0xFF);
+    ASSERT_EQ(encode(w, d), 56U);
+    EXPECT_EQ(d[7] & 0xE0, 0);  // byte 7 bits 7-5
 }
 
 TEST(Cigi, UndefinedValuesRejectThePacket) {
@@ -304,6 +484,19 @@ TEST(Cigi, UndefinedValuesRejectThePacket) {
     Bytes clamp = entity_control([](auto v) { return be(v); });
     clamp[4] = static_cast<std::uint8_t>(clamp[4] | 0x60);
     EXPECT_FALSE(decode_entity_control(clamp, needs_swap_from_big_endian()).has_value());
+    // Hour 24 and Minute 60 (p. 83); Weather Control Scope 3 and Severity 6
+    // (p. 104).
+    for (const std::size_t at : {std::size_t{2}, std::size_t{3}}) {
+        Bytes c = celestial_sphere_control([](auto v) { return be(v); });
+        c[at] = at == 2 ? 24 : 60;
+        EXPECT_FALSE(decode_celestial_sphere_control(c, needs_swap_from_big_endian()).has_value());
+    }
+    Bytes scope = weather_control([](auto v) { return be(v); });
+    scope[7] = static_cast<std::uint8_t>(scope[7] | 0x03);
+    EXPECT_FALSE(decode_weather_control(scope, needs_swap_from_big_endian()).has_value());
+    Bytes severity = weather_control([](auto v) { return be(v); });
+    severity[7] = static_cast<std::uint8_t>((severity[7] & 0xE3) | (6 << 2));
+    EXPECT_FALSE(decode_weather_control(severity, needs_swap_from_big_endian()).has_value());
     // IG Mode 3 is only reported by the IG (p. 214): refused from a host...
     Bytes host = kIgControlBigEndian;
     host[4] = static_cast<std::uint8_t>(host[4] | 0x03);
@@ -321,6 +514,9 @@ TEST(Cigi, EncodeNeedsRoomForThePacket) {
     EXPECT_EQ(encode(IgControl{}, std::span(small).first(23)), 0U);
     EXPECT_EQ(encode(EntityControl{}, small), 0U);
     EXPECT_EQ(encode(StartOfFrame{}, std::span(small).first(23)), 0U);
+    EXPECT_EQ(encode(CelestialSphereControl{}, std::span(small).first(15)), 0U);
+    EXPECT_EQ(encode(AtmosphereControl{}, std::span(small).first(31)), 0U);
+    EXPECT_EQ(encode(WeatherControl{}, small), 0U);
 }
 
 TEST(Cigi, MessageChecks) {

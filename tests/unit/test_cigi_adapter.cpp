@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include "fovea/core/attitude.hpp"
+#include "fovea/core/celestial.hpp"
 #include "fovea/core/geodesy.hpp"
 #include "fovea/net/cigi.hpp"
 #include "fovea/net/cigi_adapter.hpp"
@@ -155,6 +156,144 @@ TEST(CigiAdapter, EntityControlPlacesTheEntity) {
     EXPECT_DOUBLE_EQ(e.cur.host_t.seconds, 0.0);  // the first timestamp is the origin
     EXPECT_TRUE(e.cur.host_t.valid);
     EXPECT_EQ(adapter.ig_mode(), cigi::IgMode::operate);
+}
+
+// A host message of IG Control and any packets, each encoded in turn.
+template <typename... Packets>
+Bytes message_of(const cigi::IgControl& ig, const Packets&... packets) {
+    Bytes out(512);
+    std::size_t at = cigi::encode(ig, out);
+    ((at += cigi::encode(packets, std::span(out).subspan(at))), ...);
+    out.resize(at);
+    return out;
+}
+
+cigi::WeatherControl weather(std::uint8_t layer_id, float base, float thickness, float visibility,
+                             float coverage = 100.0F) {
+    cigi::WeatherControl w;
+    w.layer_id = layer_id;
+    w.weather_enable = true;
+    w.base_elevation_m = base;
+    w.thickness_m = thickness;
+    w.visibility_range_m = visibility;
+    w.coverage = coverage;
+    return w;
+}
+
+// Celestial Sphere Control (milestone 6 step 7): the date and time only when
+// Date/Time Valid says so, whether time runs always; a date the sky isn't
+// computed for is refused.
+TEST(CigiAdapter, CelestialSphereControlSetsTheTimeWhenValid) {
+    auto scene = std::make_unique<SceneState>();
+    const double config_jd = julian_date(2026, 3, 20, 15.5 * 3600.0);
+    scene->edit().environment.julian_date = config_jd;
+    scene->edit().environment.time_runs = false;
+    CigiAdapter adapter(CigiAdapterOptions{});
+    Host host(adapter.port());
+    start_operating(adapter, *scene, host);
+
+    cigi::CelestialSphereControl c;
+    c.hour = 14;
+    c.minute = 35;
+    c.date = 11032026;
+    c.ephemeris_enable = true;  // Date/Time Valid off: the time carries on, now running
+    host.send(message_of(operate(1), c));
+    ASSERT_TRUE(
+        poll_until(adapter, *scene, [&] { return adapter.stats().environment_updates == 1; }));
+    const EnvironmentState first = scene->latest().environment;
+    EXPECT_DOUBLE_EQ(first.julian_date, config_jd);
+    EXPECT_TRUE(first.time_runs);
+
+    c.date_time_valid = true;
+    c.ephemeris_enable = false;
+    host.send(message_of(operate(2), c));
+    ASSERT_TRUE(
+        poll_until(adapter, *scene, [&] { return adapter.stats().environment_updates == 2; }));
+    const EnvironmentState second = scene->latest().environment;
+    EXPECT_DOUBLE_EQ(second.julian_date, julian_date(2026, 11, 3, 14 * 3600.0 + 35 * 60.0));
+    EXPECT_FALSE(second.time_runs);
+
+    for (const std::uint32_t bad : {2302026U, 13012026U, 1011949U, 1012051U, 0U}) {
+        c.date = bad;  // 30 February, month 13, 1949, 2051, none
+        host.send(message_of(operate(3), c));
+    }
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().rejected_packets == 5; }));
+    EXPECT_EQ(adapter.stats().environment_updates, 2U);
+    EXPECT_DOUBLE_EQ(scene->latest().environment.julian_date, second.julian_date);
+    // 29 February in a leap year is a date.
+    c.date = 2292028;
+    host.send(message_of(operate(4), c));
+    ASSERT_TRUE(
+        poll_until(adapter, *scene, [&] { return adapter.stats().environment_updates == 3; }));
+}
+
+// Atmosphere Control sets the global visibility; a negative one is refused.
+TEST(CigiAdapter, AtmosphereControlSetsTheVisibility) {
+    auto scene = std::make_unique<SceneState>();
+    CigiAdapter adapter(CigiAdapterOptions{});
+    Host host(adapter.port());
+    start_operating(adapter, *scene, host);
+    cigi::AtmosphereControl a;
+    a.visibility_range_m = 8000.0F;
+    host.send(message_of(operate(1), a));
+    ASSERT_TRUE(
+        poll_until(adapter, *scene, [&] { return adapter.stats().environment_updates == 1; }));
+    EXPECT_EQ(scene->latest().environment.visibility_m, 8000.0);
+    a.visibility_range_m = -1.0F;
+    host.send(message_of(operate(2), a));
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().rejected_packets == 1; }));
+    EXPECT_EQ(scene->latest().environment.visibility_m, 8000.0);
+}
+
+// Weather Control replaces a global layer as a whole, or removes it (Weather
+// Enable off); config's layers are replaced the same way, by their ids.
+// Regional layers, weather entities and the layers not drawn (hail here)
+// are counted and ignored, as is Environmental Region Control.
+TEST(CigiAdapter, WeatherControlSetsAndRemovesGlobalLayers) {
+    auto scene = std::make_unique<SceneState>();
+    auto& layers = scene->edit().environment.layers;
+    (void)layers.push_back({WeatherKind::fog, 100.0, 50.0, 1.0, 200.0, 0});
+    (void)layers.push_back({WeatherKind::rain, 0.0, 1500.0, 1.0, 5000.0, 4});
+    CigiAdapterOptions options;
+    options.geoid_height_m = -30.0;
+    CigiAdapter adapter(options);
+    Host host(adapter.port());
+    start_operating(adapter, *scene, host);
+
+    cigi::WeatherControl regional = weather(0, 0.0F, 10.0F, 10.0F);
+    regional.scope = cigi::WeatherScope::regional;
+    std::array<std::uint8_t, 48> region{};  // Environmental Region Control (4.1.11, p. 88)
+    region[0] = cigi::kEnvironmentalRegionControlId;
+    region[1] = 48;
+    cigi::WeatherControl no_rain = weather(4, 0.0F, 0.0F, 0.0F);
+    no_rain.weather_enable = false;
+    host.send(message_of(operate(1), weather(0, 180.0F, 60.0F, 300.0F),
+                         weather(2, 1500.0F, 400.0F, 1000.0F, 75.0F), no_rain, regional,
+                         weather(7, 0.0F, 100.0F, 100.0F)));
+    Bytes with_region = message_of(operate(2));
+    with_region.insert(with_region.end(), region.begin(), region.end());
+    host.send(with_region);
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 3; }));
+    EXPECT_EQ(adapter.stats().environment_updates, 3U);
+    EXPECT_EQ(adapter.stats().weather_ignored, 2U);
+    EXPECT_EQ(adapter.stats().skipped_packets, 1U);
+
+    const auto& now = scene->latest().environment.layers;
+    ASSERT_EQ(now.size(), 2U);
+    const WeatherLayer* fog = nullptr;
+    const WeatherLayer* cloud = nullptr;
+    for (const WeatherLayer& l : now) {
+        (l.id == 0 ? fog : cloud) = &l;
+    }
+    ASSERT_NE(fog, nullptr);
+    ASSERT_NE(cloud, nullptr);
+    EXPECT_EQ(fog->kind, WeatherKind::fog);
+    EXPECT_EQ(fog->base_m, 150.0);  // 180 above sea level, the geoid 30 m below it
+    EXPECT_EQ(fog->thickness_m, 60.0);
+    EXPECT_EQ(fog->visibility_m, 300.0);
+    EXPECT_EQ(cloud->id, 2);
+    EXPECT_EQ(cloud->kind, WeatherKind::cloud);
+    EXPECT_EQ(cloud->coverage, 0.75);
 }
 
 TEST(CigiAdapter, SamplesShiftAndTimestampsUnwrap) {
