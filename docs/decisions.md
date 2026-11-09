@@ -208,6 +208,8 @@ The sky and the haze over distance follow Hillaire (2020): transmittance and mul
 
 Exposure follows the illuminance at the eye from the sky model (sun, moon and sky), smoothed over about a second, the same in every view, shifted by config's offset. Exposure from each view's histogram would let neighbouring channels disagree and show the seams between displays.
 
+The tone map applies its curve (the ACES fit) to each colour's brightest channel and scales the others with it (2026-11-09, milestone 6 step 8): at night's exposure, lights and lit windows are far past the curve's top, and the curve on each channel clipped them to white.
+
 ## D-032 Cascaded shadow maps, per view
 
 **Status:** Accepted (2026-11-08)
