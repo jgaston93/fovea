@@ -27,19 +27,19 @@ As before, each step is its own pull request, written from the ICD and its errat
 - **Terrain queries.** `libs/terrain` already answers `height_at(lat, lon)` (ellipsoidal, from the finest tile that reads cleanly), ray intersection and line of sight, on the CPU with no Vulkan (`terrain_query.hpp`). Nothing calls them over CIGI.
 - **CIGI.** The codec handles IG Control, Entity Control, Start of Frame, and the environment packets (Celestial Sphere, Atmosphere, Weather Control). The IG sends Start of Frame each frame and nothing else.
 
-## Decisions to accept
+## Decisions (in `decisions.md`)
 
-### D-035 MSL is the host's: one constant, shared
+### D-035 MSL is the host's: one constant, shared (accepted)
 
 A CIGI altitude is converted to and from ellipsoidal height with `[host] geoid_height_m`, the same constant the host uses (Aerie's `ellipsoid_minus_msl_m`). This applies to entity positions, weather layer bases, and HAT/HOT altitudes and heights. Fovea and the host then agree on MSL everywhere, which matters more than either agreeing with the true geoid. A geoid grid (#19) waits for a host that uses a geoid model; the database would then carry that model's grid, as D-020 intended.
 
-### D-036 HAT/HOT are answered off the render thread, from the database's finest data
+### D-036 HAT/HOT are answered off the render thread, from the database's finest data (proposed)
 
 - **Where.** A query thread holds its own `TerrainDatabase` reader. The network thread passes requests to it and gets answers back, all without locks, and sends them in the next IG message. The render thread is never involved, keeping it free of disk I/O and allocation.
 - **The surface.** Answers come from the finest tile that reads cleanly, which is the surface the renderer draws close up. Far away, the renderer draws coarser levels, so a far point's answer can differ from what it shows. That is the conventional choice: the host wants the true ground, not what a level of detail shows.
 - **Terrain only, for now,** as the team asked: models (buildings, hangars) aren't included.
 
-### D-037 The database is WGS-84
+### D-037 The database is WGS-84 (accepted)
 
 The compiler converts positions and ellipsoidal heights from NAD83(2011) to WGS-84 (realization G2139), at an epoch written in the manifest, using PROJ through GDAL. The runtime and hosts are WGS-84 already. Closes #37.
 
@@ -98,6 +98,6 @@ The compiler converts positions and ellipsoidal heights from NAD83(2011) to WGS-
 
 | Needed by | Input |
 |---|---|
-| Plan | D-035 to D-037 accepted |
+| Plan | D-036 accepted (D-035 and D-037 are) |
 | Step 2 | Confirm 8004 and 8005 are Aerie's ports |
 | Step 4 | Time with EYAS and Aerie at the desk, and the other packets Aerie sends besides IG Control, Entity Control and HAT/HOT |
