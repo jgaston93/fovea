@@ -272,6 +272,17 @@ The environment adds three packets: Celestial Sphere Control, Atmosphere Control
   - Emissive materials glow at night and don't by day.
   - At the desk: a night approach into KHSV (looked at).
 
+### Step 8 results, lit windows (2026-11-09)
+
+The step is split: lit windows are done; the airport lights wait on the light files (the owner's check of the FAA data), and the step is parked while the simulator integration milestone goes first.
+
+- **Emission.** `libs/models` reads glTF's emissive factor, `KHR_materials_emissive_strength` and emissive texture (sRGB, the first texture coordinates), as luminance in cd/m² (glTF leaves its units open). The model shader adds it, the same by day and night, before the air and the weather bands, so fog and haze dim it. By day the exposure (D-031) hides it.
+- **The landmarks.** `airport_landmarks.py` gives the KHSV terminal, terminal hall, concourse and tower base lit windows (30 cd/m², warm; most panes lit, some dark, from a random stream of their own so the panes' tints are unchanged), and the tower's cab a faint glow (3 cd/m²; cabs are kept dim at night). Only those five models changed.
+- **The tone map keeps hue.** On a moonless night the exposure is about 2,000, so any lit window is far past the curve's top, and the ACES fit applied to each channel clipped them to white. It is now applied to a colour's brightest channel, the others scaled with it: windows stay warm (255, 231, 188), the sun's disc is a warm white (255, 242, 223), mid-tones a little paler. The golden images changed by up to 36 levels (looked at).
+- **Tests.** Emission read, with and without its own texture, and a negative strength refused. On the GPU: a box with 40 cd/m² walls at midnight shows (255, 231, 188) beside a plain box's 1; at noon the two differ by a level.
+- **At the desk:** a night flyover held 60 Hz (1 missed frame, 0 validation messages). The owner's look at the warm windows is still to do.
+- **Noticed, not yet taken up:** the dawn run (step 7) showed a strong pink cast before sunrise and a hard line where the fog's top meets the horizon.
+
 ## Step 9: Hardware check
 
 - **On the desk.** GPU time and memory with each part on and off (sky and tables, aerial perspective, shadows, clouds, lights) on the KHSV and KHUA routes, at noon, at dusk and at night.
