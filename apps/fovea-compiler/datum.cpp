@@ -15,9 +15,14 @@ namespace {
 constexpr double kStepDeg = 0.01;
 constexpr double kMarginDeg = 0.05;
 
+// Null if PROJ's database doesn't have it (WGS 84 (G2139) needs EPSG 10.0
+// or later).
 OGRSpatialReferenceH geographic_3d(int epsg) {
     OGRSpatialReferenceH srs = OSRNewSpatialReference(nullptr);
-    OSRImportFromEPSG(srs, epsg);
+    if (OSRImportFromEPSG(srs, epsg) != OGRERR_NONE) {
+        OSRDestroySpatialReference(srs);
+        return nullptr;
+    }
     OSRSetAxisMappingStrategy(srs, OAMS_TRADITIONAL_GIS_ORDER);
     return srs;
 }
@@ -43,6 +48,14 @@ std::optional<DatumShift> DatumShift::make(const GeoBounds& area, double epoch,
 
     OGRSpatialReferenceH wgs84 = geographic_3d(9754);  // WGS 84 (G2139)
     OGRSpatialReferenceH nad83 = geographic_3d(6319);  // NAD83(2011)
+    if (wgs84 == nullptr || nad83 == nullptr) {
+        error = std::string("PROJ's database lacks EPSG:") + (wgs84 == nullptr ? "9754" : "6319") +
+                (wgs84 == nullptr ? " (WGS 84 (G2139))" : " (NAD83(2011))") +
+                "; PROJ 9.1 or later has both";
+        OSRDestroySpatialReference(wgs84);
+        OSRDestroySpatialReference(nad83);
+        return std::nullopt;
+    }
     OGRCoordinateTransformationOptionsH options = OCTNewCoordinateTransformationOptions();
     // PROJ's ballpark transformation between two datums changes nothing.
     OCTCoordinateTransformationOptionsSetBallparkAllowed(options, FALSE);

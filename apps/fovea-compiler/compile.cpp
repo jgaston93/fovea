@@ -496,7 +496,7 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
     DatabaseManifest& m = result.manifest;
     m.name = s.name;
     m.area = s.area;
-    m.frame = DatabaseManifest::Frame{"WGS 84 (G2139)", s.datum_epoch};
+    m.frame = DatabaseManifest::Frame{kDatabaseFrame, s.datum_epoch};
     m.elevation_samples = s.samples;
     m.sources = s.credits;
 

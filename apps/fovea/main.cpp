@@ -276,6 +276,12 @@ bool load_terrain(fovea::Renderer& renderer, const fovea::DisplayConfig& config)
         }
         return false;
     }
+    if (!db->manifest().frame) {
+        (void)std::fprintf(stderr,
+                           "fovea: %s was compiled before D-037: its NAD83(2011) is taken as "
+                           "WGS-84, about a metre off; recompile it\n",
+                           t.database.string().c_str());
+    }
     fovea::TerrainOptions options;
     options.max_level = t.max_level;
     options.pixel_error = t.pixel_error;

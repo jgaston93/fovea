@@ -80,7 +80,9 @@ struct DatabaseManifest {
         std::uint8_t level = 0;
     };
     std::optional<Placements> placements;
-    // The frame its coordinates and heights are in (D-037).
+    // The frame its coordinates and heights are in (D-037): kDatabaseFrame,
+    // the only one read. None: compiled before D-037, NAD83(2011) taken as
+    // WGS-84, about a metre off.
     struct Frame {
         std::string name;    // "WGS 84 (G2139)"
         double epoch = 0.0;  // a decimal year
@@ -92,6 +94,9 @@ struct DatabaseManifest {
     bool has_tile(const TileKey& key) const;
     std::optional<std::uint8_t> finest_level() const;
 };
+
+// The frame databases are in (D-037), as the manifest names it.
+inline constexpr const char* kDatabaseFrame = "WGS 84 (G2139)";
 
 std::string manifest_text(const DatabaseManifest& m);
 bool write_manifest(const std::filesystem::path& database_dir, const DatabaseManifest& m);
