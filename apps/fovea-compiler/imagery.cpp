@@ -115,12 +115,15 @@ ImagerySources::~ImagerySources() {
     }
 }
 
-bool ImagerySources::texture(const TileKey& key, std::uint32_t texels, Rgba8Image& out,
-                             std::string& error) const {
+bool ImagerySources::texture(const TileKey& key, std::uint32_t texels, const DatumShift& datum,
+                             Rgba8Image& out, std::string& error) const {
     const GeoBounds b = tile_bounds(key);
+    // Padded by more than the datums' metre or two apart.
+    constexpr double kPad = 1e-4;
     const auto overlaps = [&](const Source& src) {
-        return src.bounds.west_deg < b.east_deg && src.bounds.east_deg > b.west_deg &&
-               src.bounds.south_deg < b.north_deg && src.bounds.north_deg > b.south_deg;
+        return src.bounds.west_deg < b.east_deg + kPad && src.bounds.east_deg > b.west_deg - kPad &&
+               src.bounds.south_deg < b.north_deg + kPad &&
+               src.bounds.north_deg > b.south_deg - kPad;
     };
     const double texel_deg = (b.east_deg - b.west_deg) / texels;
     const std::uint32_t side = texels;
@@ -148,8 +151,11 @@ bool ImagerySources::texture(const TileKey& key, std::uint32_t texels, Rgba8Imag
         ys.resize(count);
         ok.assign(count, 0);
         for (std::size_t i = 0; i < count; ++i) {
-            xs[i] = b.west_deg + (static_cast<double>(i % side) + 0.5) * step;
-            ys[i] = b.south_deg + (static_cast<double>(std::size_t{i / side}) + 0.5) * step;
+            const Nad83Point p = datum.to_nad83(
+                b.south_deg + (static_cast<double>(std::size_t{i / side}) + 0.5) * step,
+                b.west_deg + (static_cast<double>(i % side) + 0.5) * step);
+            xs[i] = p.lon_deg;
+            ys[i] = p.lat_deg;
         }
         // False when any point fails (GDAL 3.8), not only all: each point's
         // `ok` decides.

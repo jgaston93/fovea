@@ -9,6 +9,9 @@
 //   [levels]
 //   root = 12                       # the coarsest level: tiles touching the area
 //   finest = 16                     # every root's descendants down to here
+//   [datum]                         # the database's frame (D-037)
+//   epoch = 2026.0                  # WGS 84 (G2139) at this decimal year; the
+//                                   # sources, NAD83(2011), are converted to it
 //   [elevation]
 //   samples = 257                   # per tile side, odd, up to 1025
 //   cache = "../cache/khsv"         # where tools/fetch-sources.py put the files
@@ -70,6 +73,7 @@ struct CompileSettings {
     std::uint8_t root_level = 0;
     std::uint8_t finest_level = 0;
     std::uint32_t samples = 257;
+    double datum_epoch = 0.0;                      // WGS 84 (G2139) at this decimal year (D-037)
     std::vector<std::filesystem::path> elevation;  // files, highest priority first
     std::filesystem::path geoid;
     std::vector<SourceInfo> credits;

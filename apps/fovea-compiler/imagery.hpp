@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "datum.hpp"
 #include "fovea/terrain/tile_key.hpp"
 #include "texture.hpp"
 
@@ -34,7 +35,9 @@ public:
     // than 1.5 source pixels apart (coarser ones would alias); coarser
     // levels are halved from it (texture.hpp). False, with why, if a texel
     // has no source or the sources are too fine.
-    bool texture(const TileKey& key, std::uint32_t texels, Rgba8Image& out,
+    // The tile and its texels are WGS-84, taken to the sources' NAD83(2011)
+    // by `datum` (D-037).
+    bool texture(const TileKey& key, std::uint32_t texels, const DatumShift& datum, Rgba8Image& out,
                  std::string& error) const;
 
 private:

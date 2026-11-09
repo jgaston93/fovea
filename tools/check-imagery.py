@@ -22,6 +22,10 @@ light, rounded again. Checks, each against a stated tolerance (exit status
     texture isn't shifted (the reference moved by half a texel either way
     matches worse).
 
+The database is WGS 84 (G2139) at the settings' [datum] epoch and the
+sources NAD83(2011) (D-037): texel centres are taken to NAD83(2011) by PROJ
+here, point by point, independently of the compiler's interpolated grid.
+
 Needs python3-gdal, python3-numpy and python3-pil (Ubuntu packages).
 """
 
@@ -41,6 +45,7 @@ from osgeo import gdal, osr
 from PIL import Image
 
 gdal.UseExceptions()
+osr.UseExceptions()
 
 # Least PSNR (dB, over R, G and B) of decoded tiles against the reference,
 # by format. RGBA8 is the reference itself, but for rounding.
@@ -177,9 +182,20 @@ class Reference:
         im = s["imagery"]
         cache = base / im["cache"]
         self.texels = im["texels"]
+        self.epoch = s["datum"]["epoch"]
         geographic = osr.SpatialReference()
         geographic.ImportFromEPSG(4269)
         geographic.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        # The database's WGS-84 to the sources' NAD83(2011), with no
+        # ballpark transformation (which would change nothing).
+        wgs, nad = osr.SpatialReference(), osr.SpatialReference()
+        wgs.ImportFromEPSG(9754)
+        nad.ImportFromEPSG(6319)
+        for srs in (wgs, nad):
+            srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        options = osr.CoordinateTransformationOptions()
+        options.SetBallparkAllowed(False)
+        self.to_nad83 = osr.CoordinateTransformation(wgs, nad, options)
         # As the compiler lists them: '*' the only wildcard, paths normalized
         # (not resolved), a file to the first imagery pattern naming it.
         self.sources, taken = [], set()
@@ -207,7 +223,8 @@ class Reference:
         cols = west + (np.arange(n) + 0.5 + shift[0]) * step
         rows = south + (np.arange(n) + 0.5 + shift[1]) * step
         lon, lat = np.meshgrid(cols, rows)
-        pts = np.column_stack([lon.ravel(), lat.ravel()])
+        wgs = [(x, y, 0.0, self.epoch) for x, y in zip(lon.ravel(), lat.ravel())]
+        pts = np.array(self.to_nad83.TransformPoints(wgs))[:, :2]
         best_depth = np.full(len(pts), -1.0)
         best_other = np.full(len(pts), -1.0)
         best_src = np.full(len(pts), -1)
@@ -216,7 +233,9 @@ class Reference:
         py = np.zeros(len(pts))
         for i, src in enumerate(self.sources):
             w_, s_, e_, n_ = src.bounds
-            if w_ >= west + size or e_ <= west or s_ >= south + size or n_ <= south:
+            pad = 1e-4  # more than the datums' metre or two apart
+            if (w_ >= west + size + pad or e_ <= west - pad or s_ >= south + size + pad
+                    or n_ <= south - pad):
                 continue
             xy = np.array(src.to_source.TransformPoints(pts))[:, :2]
             sx = (xy[:, 0] - src.gt[0]) / src.gt[1] - 0.5

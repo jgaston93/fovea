@@ -23,6 +23,7 @@
 #include <ogr_srs_api.h>
 
 #include "compile.hpp"
+#include "datum.hpp"
 #include "elevation.hpp"
 #include "fovea/core/geodesy.hpp"
 #include "fovea/terrain/database.hpp"
@@ -130,6 +131,9 @@ struct Scene {
     double e_new = 0;               // the new DEM covers e < e_new
     double e_old = 0;               // the old DEM covers e < e_old
     double hole_e = 0, hole_n = 0;  // the hole's south-west corner (100 m square)
+    // As the compiler takes the database's WGS-84 points to the sources'
+    // NAD83(2011) (D-037; the settings' epoch).
+    DatumShift datum = DatumShift::none();
 
     static double plane_a(double e, double n) {
         return 150.0 + 0.01 * (e - 500000.0) - 0.02 * (n - 3830000.0);
@@ -150,6 +154,9 @@ struct Scene {
         const GeoBounds a = tile_bounds(k);
         const GeoBounds b = tile_bounds({kRoot, k.x + 1, k.y});
         extent = {a.south_deg, a.north_deg, a.west_deg, b.east_deg};
+        std::string why;
+        datum = DatumShift::make(extent, 2026.0, why).value_or(DatumShift::none());
+        EXPECT_TRUE(why.empty()) << why;
         // The extent's corners in UTM, with a 60 m margin.
         e_min = n_min = 1e300;
         e_max = n_max = -1e300;
@@ -205,6 +212,15 @@ struct Scene {
         return {plane_d(lat, lon), clear};
     }
 
+    // The expected WGS-84 ellipsoid height at a WGS-84 point: the sources'
+    // at its NAD83(2011) point, plus the geoid there, moved to WGS-84's
+    // ellipsoid; and whether it is clear of every source edge.
+    std::pair<double, bool> ellipsoidal(double lat, double lon, double margin) const {
+        const Nad83Point p = datum.to_nad83(lat, lon);
+        const auto [h, clear] = expected(p.lat_deg, p.lon_deg, margin);
+        return {h + geoid(p.lat_deg, p.lon_deg) + p.height_shift_m, clear};
+    }
+
     std::string settings(const std::string& extra_area = "") const {
         const GeoBounds a = extra_area.empty()
                                 ? GeoBounds{extent.south_deg + 0.001, extent.north_deg - 0.001,
@@ -220,7 +236,7 @@ struct Scene {
         return "name = \"synthetic\"\n" + area +
                "output = \"db\"\n"
                "[levels]\nroot = 15\nfinest = 16\n"
-               "[elevation]\nsamples = 33\ncache = \"cache\"\n"
+               "[datum]\nepoch = 2026.0\n[elevation]\nsamples = 33\ncache = \"cache\"\n"
                "sources = [\"dem/new*.tif\", \"dem/old.tif\", \"dem/backdrop.tif\"]\n"
                "geoid = \"geoid/geoid.tif\"\n"
                "[[credit]]\nlayer = \"elevation\"\nname = \"synthetic\"\ncredit = \"none\"\n";
@@ -305,14 +321,15 @@ TEST_F(Compiler, FinestSamplesAreTheSourcesPlusTheGeoid) {
                 for (std::uint32_t c = 0; c < g.size; ++c) {
                     const double lat = b.south_deg + r * step;
                     const double lon = b.west_deg + c * step;
-                    const auto [h, clear] = scene_->expected(lat, lon, 3.0);
+                    const auto [h, clear] = scene_->ellipsoidal(lat, lon, 3.0);
                     if (!clear) {
                         continue;
                     }
-                    ASSERT_NEAR(g.at(r, c), h + Scene::geoid(lat, lon), 1e-3)
+                    ASSERT_NEAR(g.at(r, c), h, 1e-3)
                         << to_string(key) << " row " << r << " column " << c;
                     ++checked;
-                    const auto [e, n] = scene_->utm(lat, lon);
+                    const Nad83Point p = scene_->datum.to_nad83(lat, lon);
+                    const auto [e, n] = scene_->utm(p.lat_deg, p.lon_deg);
                     const bool hole = e > scene_->hole_e && e < scene_->hole_e + 100 &&
                                       n > scene_->hole_n && n < scene_->hole_n + 100;
                     if (e < scene_->e_new && !hole) {
@@ -348,9 +365,9 @@ TEST_F(Compiler, CoarseSamplesAreCellAverages) {
             for (std::uint32_t c = 0; c < g.size; ++c) {
                 const double lat = b.south_deg + r * step;
                 const double lon = b.west_deg + c * step;
-                const auto [h, clear] = scene_->expected(lat, lon, 30.0);  // a cell is ~17 m
+                const auto [h, clear] = scene_->ellipsoidal(lat, lon, 30.0);  // a cell is ~17 m
                 if (clear) {
-                    ASSERT_NEAR(g.at(r, c), h + Scene::geoid(lat, lon), 0.02)
+                    ASSERT_NEAR(g.at(r, c), h, 0.02)
                         << to_string(key) << " row " << r << " column " << c;
                     ++checked;
                 }
@@ -446,13 +463,83 @@ TEST_F(Compiler, TheReaderAnswersHeightsFromTheCompiledDatabase) {
     const DatabaseTerrain terrain(*opened);
     const double lat = (scene_->extent.south_deg + scene_->extent.north_deg) / 2 + 0.0011;
     const double lon = scene_->extent.west_deg + 0.0013;
-    const auto [h, clear] = scene_->expected(lat, lon, 5.0);
+    const auto [h, clear] = scene_->ellipsoidal(lat, lon, 5.0);
     ASSERT_TRUE(clear);
     const auto got = terrain.height_at(lat, lon);
     ASSERT_TRUE(got.has_value());
     // Bilinear between ~1 m samples of a plane in UTM: centimetres at most.
-    EXPECT_NEAR(*got, h + Scene::geoid(lat, lon), 0.01);
+    EXPECT_NEAR(*got, h, 0.01);
     EXPECT_TRUE(terrain.problems().empty());
+}
+
+// The database's frame (D-037): WGS 84 (G2139) at the settings' epoch,
+// from the sources' NAD83(2011). Against PROJ 9.4's own cs2cs (EPSG:9754 to
+// EPSG:6319, NAD83(2011) to ITRF2014 by the NGS's time-dependent Helmert)
+// to a millimetre, so a ballpark transformation (no change), a lost epoch
+// or a turned sign shows; NOAA's NCAT doesn't do ITRF.
+TEST(CompilerDatum, MatchesProjAndDependsOnTheEpoch) {
+    GDALAllRegister();
+    const GeoBounds area{34.55, 34.73, -86.89, -86.66};
+    std::string why;
+    const auto d2026 = DatumShift::make(area, 2026.0, why);
+    ASSERT_TRUE(d2026.has_value()) << why;
+    const auto d2010 = DatumShift::make(area, 2010.0, why);
+    ASSERT_TRUE(d2010.has_value()) << why;
+    const double m_lat = 1.0 / 110900.0;  // degrees a metre, about, here
+    const double m_lon = m_lat / std::cos(glm::radians(34.64));
+    struct Case {
+        const DatumShift& d;
+        double lat, lon;          // WGS-84
+        double nad_lat, nad_lon;  // cs2cs
+        double nad_h;             // of a WGS-84 height of 0
+    };
+    for (const Case& c : {Case{*d2026, 34.6372, -86.7751, 34.637193250, -86.775090216, 1.300107730},
+                          Case{*d2010, 34.6372, -86.7751, 34.637193367, -86.775092894, 1.312035566},
+                          Case{*d2026, 34.70, -86.60, 34.699993211, -86.599990253, 1.300641499}}) {
+        const Nad83Point p = c.d.to_nad83(c.lat, c.lon);
+        EXPECT_NEAR((p.lat_deg - c.nad_lat) / m_lat, 0.0, 1e-3) << c.lat << ", " << c.lon;
+        EXPECT_NEAR((p.lon_deg - c.nad_lon) / m_lon, 0.0, 1e-3) << c.lat << ", " << c.lon;
+        EXPECT_NEAR(p.height_shift_m, -c.nad_h, 1e-3) << c.lat << ", " << c.lon;
+    }
+    // About a metre and a quarter apart, and moving: a quarter of a metre
+    // from 2010 to 2026.
+    const Nad83Point now = d2026->to_nad83(34.6372, -86.7751);
+    const Nad83Point then = d2010->to_nad83(34.6372, -86.7751);
+    const double across =
+        std::hypot((now.lat_deg - 34.6372) / m_lat, (now.lon_deg + 86.7751) / m_lon);
+    EXPECT_GT(across, 1.0);
+    EXPECT_LT(across, 1.5);
+    EXPECT_GT(
+        std::hypot((now.lat_deg - then.lat_deg) / m_lat, (now.lon_deg - then.lon_deg) / m_lon),
+        0.2);
+    // Back again, to a tenth of a millimetre.
+    double lat = now.lat_deg;
+    double lon = now.lon_deg;
+    d2026->to_wgs84(lat, lon);
+    EXPECT_NEAR((lat - 34.6372) / m_lat, 0.0, 1e-4);
+    EXPECT_NEAR((lon + 86.7751) / m_lon, 0.0, 1e-4);
+    // Epochs that aren't years, refused.
+    EXPECT_FALSE(DatumShift::make(area, 26.0, why).has_value());
+    EXPECT_FALSE(DatumShift::make(area, std::nan(""), why).has_value());
+}
+
+// Settings must name the epoch, and the manifest records the frame.
+TEST_F(Compiler, TheManifestRecordsTheFrame) {
+    ASSERT_TRUE(result_->ok);
+    ASSERT_TRUE(result_->manifest.frame.has_value());
+    EXPECT_EQ(result_->manifest.frame->name, "WGS 84 (G2139)");
+    EXPECT_EQ(result_->manifest.frame->epoch, 2026.0);
+    std::unique_ptr<TerrainDatabase> opened;
+    const auto r = TerrainDatabase::open(db(), opened);
+    ASSERT_TRUE(r.manifest.has_value() && r.manifest->frame.has_value());
+    EXPECT_EQ(r.manifest->frame->epoch, 2026.0);
+    std::string text = scene_->settings();
+    const auto at = text.find("[datum]\nepoch = 2026.0\n");
+    ASSERT_NE(at, std::string::npos);
+    text.erase(at, std::string("[datum]\nepoch = 2026.0\n").size());
+    const auto loaded = parse_settings(text, "settings.toml", scene_->dir);
+    ASSERT_FALSE(loaded.errors.empty());
+    EXPECT_NE(loaded.errors[0].find("[datum]"), std::string::npos);
 }
 
 TEST(CompilerFailures, AreaBeyondTheSourcesFailsAndWritesNothing) {
@@ -772,8 +859,9 @@ TEST_F(CompilerImagery, FinestTexelsAreTheSourcesAtTheirCentres) {
             const double step = (b.east_deg - b.west_deg) / got.size;
             for (std::uint32_t r = 0; r < got.size; ++r) {
                 for (std::uint32_t c = 0; c < got.size; ++c) {
-                    const auto [want, clear] = scene_->expected(b.south_deg + (r + 0.5) * step,
-                                                                b.west_deg + (c + 0.5) * step, 9.0);
+                    const Nad83Point p = scene_->datum.to_nad83(b.south_deg + (r + 0.5) * step,
+                                                                b.west_deg + (c + 0.5) * step);
+                    const auto [want, clear] = scene_->expected(p.lat_deg, p.lon_deg, 9.0);
                     if (!clear) {
                         continue;
                     }
@@ -1269,7 +1357,7 @@ TEST(CompilerRunways, AirportFileMistakesAreRefused) {
     const std::string good =
         "name = \"t\"\narea = { south = 1.0, north = 2.0, west = 3.0, east = 4.0 }\n"
         "output = \"db\"\n[levels]\nroot = 3\nfinest = 5\n"
-        "[elevation]\nsamples = 65\ncache = \"cache\"\n"
+        "[datum]\nepoch = 2026.0\n[elevation]\nsamples = 65\ncache = \"cache\"\n"
         "sources = [\"dem/a.tif\"]\ngeoid = \"geoid/g.tif\"\n"
         "[runways]\nairport = \"airport.toml\"\n";
     const std::string airport =
@@ -1383,24 +1471,28 @@ TEST(CompilerPlacements, LandOnTheLowestGroundUnderTheirFootprint) {
     // The ground is a plane, so its lowest point under the footprint is a
     // corner: 10 m either side across, 20 m front and back, turned 30
     // degrees (the front north-north-east, the left west-north-west).
+    // Where it went: the placement file's NAD83(2011), in WGS-84 (D-037).
+    double wlat = lat;
+    double wlon = lon;
+    scene.datum.to_wgs84(wlat, wlon);
     const double h = glm::radians(30.0);
-    const DMat3 ned = ned_to_ecef(lat, lon);
+    const DMat3 ned = ned_to_ecef(wlat, wlon);
     double lowest = 1e300;
     for (const double x : {-10.0, 10.0}) {
         for (const double z : {-20.0, 20.0}) {
             const DVec3 front(std::cos(h), std::sin(h), 0.0);
             const DVec3 left(std::sin(h), -std::cos(h), 0.0);
-            const Geodetic g =
-                ecef_to_geodetic(geodetic_to_ecef({lat, lon, 0.0}) + ned * (front * z + left * x));
-            const auto [height, clear] = scene.expected(g.lat_deg, g.lon_deg, 3.0);
+            const Geodetic g = ecef_to_geodetic(geodetic_to_ecef({wlat, wlon, 0.0}) +
+                                                ned * (front * z + left * x));
+            const auto [height, clear] = scene.ellipsoidal(g.lat_deg, g.lon_deg, 3.0);
             ASSERT_TRUE(clear);
-            lowest = std::min(lowest, height + Scene::geoid(g.lat_deg, g.lon_deg));
+            lowest = std::min(lowest, height);
         }
     }
     EXPECT_NEAR((*placed)[0].height_m, lowest, 0.02);
     // And not the height at its origin: the ground rises across it.
-    const auto [at_origin, clear] = scene.expected(lat, lon, 3.0);
-    EXPECT_GT(at_origin + Scene::geoid(lat, lon) - lowest, 0.3);
+    const auto [at_origin, clear] = scene.ellipsoidal(wlat, wlon, 3.0);
+    EXPECT_GT(at_origin - lowest, 0.3);
 }
 
 TEST(CompilerPlacements, HeadingsAreTakenIntoZeroTo360) {
@@ -1427,7 +1519,7 @@ TEST(CompilerPlacements, SeveralFilesAddUpAndRepeatsAreRefused) {
     const std::string good =
         "name = \"t\"\narea = { south = 1.0, north = 2.0, west = 3.0, east = 4.0 }\n"
         "output = \"db\"\n[levels]\nroot = 3\nfinest = 5\n"
-        "[elevation]\nsamples = 65\ncache = \"cache\"\n"
+        "[datum]\nepoch = 2026.0\n[elevation]\nsamples = 65\ncache = \"cache\"\n"
         "sources = [\"dem/a.tif\"]\ngeoid = \"geoid/g.tif\"\n"
         "[placements]\nmodels = \"models\"\n";
     const auto one = [](const std::string& model, double lat) {
@@ -1553,7 +1645,7 @@ TEST(CompilerSettings, ListsFilesNewestFirstAndFlagsTheRest) {
     const std::string text =
         "name = \"t\"\narea = { south = 1.0, north = 2.0, west = 3.0, east = 4.0 }\n"
         "output = \"db\"\n[levels]\nroot = 3\nfinest = 5\n"
-        "[elevation]\nsamples = 65\ncache = \"cache\"\n"
+        "[datum]\nepoch = 2026.0\n[elevation]\nsamples = 65\ncache = \"cache\"\n"
         "sources = [\"dem/*_2024.tif\", \"dem/*.tif\"]\ngeoid = \"geoid/g.tif\"\n";
     const auto r = parse_settings(text, "s.toml", dir);
     ASSERT_TRUE(r.settings.has_value()) << (r.errors.empty() ? "" : r.errors[0]);
@@ -1595,7 +1687,7 @@ TEST(CompilerSettings, RejectsMistakes) {
     const std::string good =
         "name = \"t\"\narea = { south = 1.0, north = 2.0, west = 3.0, east = 4.0 }\n"
         "output = \"db\"\n[levels]\nroot = 3\nfinest = 5\n"
-        "[elevation]\nsamples = 65\ncache = \"cache\"\n"
+        "[datum]\nepoch = 2026.0\n[elevation]\nsamples = 65\ncache = \"cache\"\n"
         "sources = [\"dem/a.tif\"]\ngeoid = \"geoid/g.tif\"\n";
     EXPECT_TRUE(errors(good).empty());
     const auto with = [&](const std::string& from, const std::string& to) {
