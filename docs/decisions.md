@@ -232,11 +232,11 @@ Each global cloud layer is a lit, textured layer at its base (the ICD's mean-sea
 
 **Status:** Accepted (2026-11-09)
 
-A CIGI altitude is converted to and from ellipsoidal height with `[host] geoid_height_m`, the same constant the host uses (the team's simulator, Aerie under EYAS: `ellipsoid_minus_msl_m`, −28.25 m at KHSV, GEOID18 there). This covers entity positions, weather layer bases, and HAT/HOT altitudes and heights. Fovea and the host then agree on MSL exactly everywhere, which matters more than either matching the true geoid. The configs on both sides must match: a mismatch shifts the whole world vertically. A geoid grid waits for a host that uses a geoid model, or for areas large enough that one constant drifts by metres (#19, kept open to revisit).
+A CIGI altitude is converted to and from ellipsoidal height with `[host] geoid_height_m`, the same constant the host uses (the team's simulator, Aerie under EYAS: `ellipsoid_minus_msl_m`; at KHSV −29.55 m since D-037, GEOID18's −28.25 m less the 1.30 m from NAD83(2011) to WGS-84). This covers entity positions, weather layer bases, and HAT/HOT altitudes and heights. Fovea and the host then agree on MSL exactly everywhere, which matters more than either matching the true geoid. The configs on both sides must match: a mismatch shifts the whole world vertically. A geoid grid waits for a host that uses a geoid model, or for areas large enough that one constant drifts by metres (#19, kept open to revisit).
 
 ## D-036 HAT/HOT are answered off the render thread, from the database's finest data
 
-**Status:** Proposed (2026-11-09)
+**Status:** Accepted (2026-11-09)
 
 A query thread with its own `TerrainDatabase` reader answers HAT/HOT requests, which reach it from the network thread and go back to it without locks, to be sent in the next IG message. The render thread is never involved. Answers come from the finest tile that reads cleanly, the true ground rather than whatever level of detail a far view draws. Terrain only, for now (the team's choice); models aren't included.
 
