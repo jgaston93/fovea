@@ -62,11 +62,14 @@ Rules:
  Paging thread ◀──requests (SPSC ring)──────────────────────────────┼───┘
        │                                                            │
        └──GPU uploads (transfer queue, timeline semaphore)──completions (SPSC ring)
+
+ Network thread ──height requests (SPSC ring)──▶ Query thread ──answers (SPSC ring)──▶ Network thread
 ```
 
 - **SceneState handoff** uses a wait-free triple buffer of a fixed-size snapshot. The writer publishes complete snapshots, and the render thread takes the latest one at the start of each frame. Neither side ever waits on the other.
 - **Snapshot contents:** a fixed-capacity entity table (D-011: no entity is special; views attach their viewpoints to entities or fix them in the world), and environment state (time of day, and later weather). Every sample carries two timestamps: host time from the protocol and local receive time from a monotonic clock. Each entity keeps its last two samples, so the renderer can interpolate or extrapolate without the network thread knowing about frames.
 - **Paging** (milestone 3 step 6): the render thread pushes tile requests (from each view's tile selection, and where its eye is heading) into an SPSC ring, having reserved each a slot in a fixed-size tile cache. The paging thread does the file I/O, decoding, image creation and staging, and records the copies. Completions come back through another SPSC ring with their command buffers, which the render thread submits ahead of its own frame, in the same submit (no transfer queue yet, D-021: the render thread waits for nothing, and no queue-ownership transfers are needed); a timeline semaphore that every frame signals tells the paging thread when staging memory and command buffers are free again. Evicted slots are reused only once the frames that drew them have finished. The same thread loads the models the database places (milestone 4 step 3), each once, between tiles, through the same staging ring and batches, handing them over through a third ring; their GPU memory is shared buffers and a bindless image array, filled and never freed while the database is loaded.
+- **Terrain queries** (Integration 1 step 3, D-036): a host's HAT/HOT requests go from the network thread to a query thread through an SPSC ring (`HeightQueries`, protocol-neutral, in core), and the answers come back through another, to leave in the next message to the host. The query thread has its own reader of the database (`DatabaseTerrain`, in terrain), so a tile read from disk delays only the answers waiting on it. It sleeps on an atomic until requests are posted. The render thread is never involved.
 - **Control and stats:** stats are written into a separate SPSC ring that a stats or control thread drains. Milestone 1 writes them to a log file. A later milestone exposes them, together with control commands, over a local socket for the external control UI. That traffic stays separate from CIGI.
 
 ## Render path rules

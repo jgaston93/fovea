@@ -48,6 +48,22 @@
 //     coverage. Sleet, hail, sand, dust and the IG's own layers, regional
 //     layers and weather entities are counted and ignored, as is
 //     Environmental Region Control (4.1.11).
+// - HAT/HOT Requests (4.1.24, Integration 1 step 3, D-036) go to a query
+//   thread through HeightQueries, and its answers go back in the next
+//   Start of Frame's message as HAT/HOT Responses (4.2.2) or Extended
+//   Responses (4.2.3):
+//   - A geodetic point's altitude is above mean sea level, made
+//     ellipsoidal with geoid_height_m (D-035); an entity point is X, Y, Z
+//     in the entity's body axes from its latest pose.
+//   - HAT is the point's height above the terrain, HOT the terrain's above
+//     mean sea level (the same constant). The Extended Response adds the
+//     surface normal; its material code is 0 until terrain materials exist.
+//   - Update Period n > 0 answers every nth frame (the first at once) until
+//     a request with the same ID sets it to 0, the entity is destroyed, or
+//     the IG enters Reset/Standby. Every answer carries the low 4 bits of
+//     the last Host Frame Number received when it was asked.
+//   - Valid is 0 outside the database, where no tile reads, for an entity
+//     that doesn't exist, and for every request without a query thread.
 // - Each sample's time on this computer's clock (Pose::sample_t) maps the
 //   host's timestamp across: the host clock's zero is placed where the
 //   fastest message so far puts it (least network delay), creeping later at
@@ -60,6 +76,7 @@
 #include <optional>
 
 #include "fovea/core/frame_events.hpp"
+#include "fovea/core/height_queries.hpp"
 #include "fovea/core/scene.hpp"
 #include "fovea/net/cigi.hpp"
 #include "fovea/net/host_adapter.hpp"
@@ -89,6 +106,9 @@ struct CigiAdapterOptions {
     // How long poll() waits for a message: also how late a Start of Frame
     // can leave after its frame starts.
     int wait_ms = 1;
+    // Where HAT/HOT Requests are answered (the query thread's); nullptr
+    // answers each one invalid.
+    HeightQueries* heights = nullptr;
 };
 
 // Counts since the adapter started. Read them on the network thread, or
@@ -109,10 +129,21 @@ struct CigiAdapterStats {
     std::uint64_t frames_reported = 0;      // Start of Frame messages sent
     std::uint64_t frames_unreported = 0;    // frame starts with no host to send to
     std::uint64_t frames_coalesced = 0;     // older frame starts left out after a stall
+    std::uint64_t hat_hot_requests = 0;     // HAT/HOT Requests received
+    std::uint64_t hat_hot_answers = 0;      // responses sent, periodic ones each time
+    std::uint64_t hat_hot_invalid = 0;      // of those, Valid 0
+    std::uint64_t hat_hot_dropped = 0;      // answers lost: queues full, or no host to send to
+    std::uint64_t hat_hot_periodic_full =
+        0;  // periodic requests over kMaxPeriodicHatHot, sent once
 };
 
 class CigiAdapter final : public HostAdapter {
 public:
+    static constexpr std::size_t kMaxPeriodicHatHot = 64;
+    // Invalid HAT/HOT answers made on the network thread a frame (an entity
+    // that isn't there, no query thread); more are lost.
+    static constexpr std::size_t kMaxLocalAnswers = 256;
+
     // `frame_starts`: the render thread's frame starts, one Start of Frame
     // each; nullptr sends none. Throws std::runtime_error if the port can't
     // be bound.
@@ -137,7 +168,11 @@ private:
                          LocalTime received);
     void apply_atmosphere(const cigi::AtmosphereControl& a, EnvironmentState& e);
     void apply_weather(const cigi::WeatherControl& w, EnvironmentState& e);
-    void report_frames();
+    void report_frames(const SceneSnapshot& scene);
+    void apply_hat_hot(const cigi::HatHotRequest& r, const SceneSnapshot& scene);
+    void request_height(const cigi::HatHotRequest& r, const SceneSnapshot& scene);
+    void answer_invalid(const HeightRequest& request);
+    std::size_t encode_answer(const HeightAnswer& a, std::span<std::uint8_t> out);
     std::uint32_t ig_ticks(LocalTime t) const;  // 10 us since the adapter started
 
     CigiAdapterOptions options_;
@@ -155,8 +190,19 @@ private:
     std::optional<LocalTime> host_epoch_;
     LocalTime host_epoch_updated_;
     CigiAdapterStats stats_;
-    // One UDP datagram at most (65,507 bytes of IPv4 payload).
+    // Periodic HAT/HOT requests, and the frames since each was last asked.
+    struct Periodic {
+        cigi::HatHotRequest request;
+        std::uint32_t frames = 0;
+    };
+    FixedArray<Periodic, kMaxPeriodicHatHot> periodic_;
+    // Answers made here (Valid 0, no query needed), sent with the query
+    // thread's.
+    FixedArray<HeightAnswer, kMaxLocalAnswers> local_answers_;
+    bool posted_ = false;  // requests pushed since the query thread was last notified
+    // One UDP datagram at most (65,507 bytes of IPv4 payload), each way.
     std::array<std::uint8_t, 65536> buffer_{};
+    std::array<std::uint8_t, 65507> out_{};
 };
 
 }  // namespace fovea

@@ -33,6 +33,14 @@ public:
     // where the database has no data.
     virtual std::optional<double> height_at(double lat_deg, double lon_deg) const = 0;
 
+    // The terrain's upward unit normal at a point, in local east, north and
+    // up components, or nothing where height_at has nothing. From the slope
+    // of height_at across kNormalStep each way (one way at the database's
+    // edge), so on a sampled grid it is the slope of the cell the point is in.
+    std::optional<DVec3> normal_at(double lat_deg, double lon_deg) const;
+
+    static constexpr double kNormalStep = 0.5;  // m
+
     // First terrain hit along the ray within max_distance_m. A ray that
     // starts below the surface hits at its origin.
     virtual std::optional<TerrainHit> intersect(const DRay& ray, double max_distance_m) const = 0;

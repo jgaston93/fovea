@@ -100,6 +100,28 @@ The compiler converts positions and ellipsoidal heights from NAD83(2011) to WGS-
   - Each answer arrives in the IG's next message (Aerie sends about two requests a frame), measured. It holds up under 100 requests a frame, with the render thread untouched (`AllocationCounter`, frame timing).
   - Stats count requests, answers and invalid answers.
 
+### Step 3 results (2026-11-09)
+
+- **The pieces:**
+  - `HeightQueries` (core) carries protocol-neutral requests and answers on two SPSC rings.
+  - `HeightQueryThread` (terrain) answers them from a `DatabaseTerrain` that `fovea` opens just for it. It sleeps on an atomic until requests are posted.
+  - `CigiAdapter` (net) turns HAT/HOT Requests into those requests and the answers back into packets, appended to the next Start of Frame's message. A query's tag carries the HAT/HOT ID, the Request Type and the Host Frame Number's low 4 bits.
+- **The surface normal** is new on `TerrainQuery`: `normal_at` takes the slope of `height_at` 0.5 m each way (one way at the database's edge), so on a grid it is the slope of the cell the point is in. On a tilted plane it matches the plane's to 1e-5.
+- **Behaviour:**
+  - Periodic requests are answered at once, then every nth frame. A request with the same ID replaces one, and Update Period 0 ends it. One about a destroyed entity ends with an invalid answer, and entering Reset/Standby ends them all. The table holds 64; more are answered once and counted.
+  - Without a database, or for an entity that isn't there or isn't drawn, the answer is Valid 0, made on the network thread.
+  - The query thread's answers go out before those made on the network thread, so an invalid answer ending a periodic request comes after the last valid one. (A test caught them the other way round.)
+  - Every answer carries the LSN. The ICD requires it only for periodic requests, and hosts ignore it otherwise.
+- **Tests** (`test_hat_hot.cpp`), against a tilted-plane database:
+  - HAT, HOT and Extended, with HAT plus HOT equal to the MSL altitude to 1e-9 m, and Valid 0 outside;
+  - a period of 3 kept and stopped by 0;
+  - an entity point 50 m ahead of a pitched entity, followed as it moves and ended when it's destroyed;
+  - no database;
+  - the query thread through 3,000 requests (more than its rings hold), in order.
+- **Load:** 100 requests in one message, 20 times over, every one answered in the IG's next message (median 2.8 ms from sending, mostly the test's own waits), with the network thread allocating nothing (`AllocationCounter` around `poll()`). The render thread sees no requests at all.
+- **Checks:** TSan and ASan are clean on the threaded tests, and 393 tests pass on lavapipe.
+- **Not yet:** the desk run with the test host and Aerie's pattern (step 4). `DatabaseTerrain` keeps every tile it reads (about 260 KB each at 257 samples), so a long flight over new ground grows it; that gets an issue if step 4 shows it matters.
+
 ## Step 4: The test host and the real simulator
 
 - **The test host.** `cigi-test-host` can send HAT/HOT requests from a script, logging the answers. Its default is Aerie's pattern: Extended, at the ownship, once per host frame at 100 Hz. One-shot and periodic requests at fixed points are also possible. A KHSV script lands on 36L and checks the HAT at touchdown against the gear height.
@@ -114,6 +136,6 @@ The compiler converts positions and ellipsoidal heights from NAD83(2011) to WGS-
 
 | Needed by | Input |
 |---|---|
-| Step 1 | Aerie's `ellipsoid_minus_msl_m` set to −29.55 m at KHSV, with Fovea's |
-| Step 2 | Confirm 8004 and 8005 are Aerie's ports |
+| Step 1 | ~~Aerie's `ellipsoid_minus_msl_m` set to −29.55 m at KHSV, with Fovea's~~ Done (the team, 2026-11-09) |
+| Step 2 | ~~Confirm 8004 and 8005 are Aerie's ports~~ Confirmed (the team, 2026-11-09) |
 | Step 4 | Time with EYAS and Aerie at the desk, and the other packets Aerie sends besides IG Control, Entity Control and HAT/HOT |

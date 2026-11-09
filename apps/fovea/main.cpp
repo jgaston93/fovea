@@ -41,6 +41,8 @@
 #include "fovea/render/frame_loop.hpp"
 #include "fovea/render/renderer.hpp"
 #include "fovea/render/view.hpp"
+#include "fovea/terrain/database.hpp"
+#include "fovea/terrain/height_query_thread.hpp"
 
 namespace {
 
@@ -248,6 +250,17 @@ void print_host_stats(const fovea::CigiAdapter& adapter) {
             "after stalls\n",
             static_cast<unsigned long long>(s.stale_messages),
             static_cast<unsigned long long>(s.frames_coalesced));
+    }
+    if (s.hat_hot_requests > 0) {
+        std::printf(
+            "CIGI: %llu HAT/HOT requests, %llu answers (%llu invalid), %llu lost, %llu periodic "
+            "over the table's %zu\n",
+            static_cast<unsigned long long>(s.hat_hot_requests),
+            static_cast<unsigned long long>(s.hat_hot_answers),
+            static_cast<unsigned long long>(s.hat_hot_invalid),
+            static_cast<unsigned long long>(s.hat_hot_dropped),
+            static_cast<unsigned long long>(s.hat_hot_periodic_full),
+            fovea::CigiAdapter::kMaxPeriodicHatHot);
     }
     if (s.attached_entities > 0 || s.entity_table_full > 0) {
         std::printf(
@@ -505,6 +518,13 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
     // messages into the scene state and sends a Start of Frame for each of
     // the loop's frames. Declared before the loop, so the loop stops first.
     std::unique_ptr<fovea::FrameStartRing> frame_starts;
+    // HAT/HOT (Integration 1 step 3, D-036): the query thread, with its own
+    // reader of the database. Declared before the host link, so it stops
+    // after the network thread that asks it.
+    std::unique_ptr<fovea::TerrainDatabase> query_db;
+    std::unique_ptr<fovea::DatabaseTerrain> query_terrain;
+    std::unique_ptr<fovea::HeightQueries> height_queries;
+    std::unique_ptr<fovea::HeightQueryThread> query_thread;
     std::unique_ptr<fovea::CigiAdapter> host_adapter;
     std::unique_ptr<fovea::HostThread> host_thread;
     std::unique_ptr<fovea::FrameLoop> loop;
@@ -539,6 +559,19 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
                                           : fovea::cigi::ByteOrder::native;
             host_options.geoid_height_m = h.geoid_height_m;
             host_options.environment = scene_state->edit().environment;
+            // Without a database (or with one that won't open: load_terrain
+            // said why), every HAT/HOT request is answered invalid.
+            if (config.terrain && !options.clear) {
+                (void)fovea::TerrainDatabase::open(config.terrain->database, query_db);
+            }
+            if (query_db) {
+                query_terrain = std::make_unique<fovea::DatabaseTerrain>(*query_db);
+                height_queries = std::make_unique<fovea::HeightQueries>();
+                query_thread =
+                    std::make_unique<fovea::HeightQueryThread>(*query_terrain, *height_queries);
+                query_thread->start();
+                host_options.heights = height_queries.get();
+            }
             frame_starts = std::make_unique<fovea::FrameStartRing>();
             try {
                 host_adapter =
@@ -579,7 +612,8 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         if (loop) {
             // Rendering runs on its own thread; wake for events, or at least
             // every 100 ms to check the time limit and the loop's health.
-            if (loop->failed() || (host_thread && host_thread->failed())) {
+            if (loop->failed() || (host_thread && host_thread->failed()) ||
+                (query_thread && query_thread->failed())) {
                 break;  // stop() below rethrows what went wrong
             }
             int timeout_ms = 100;
@@ -642,6 +676,14 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
                 host_thread->stop();
             } catch (...) {
                 host_error = std::current_exception();
+            }
+            if (query_thread) {
+                try {
+                    query_thread->stop();
+                } catch (const std::exception& e) {
+                    (void)std::fprintf(stderr, "fovea: the HAT/HOT query thread failed: %s\n",
+                                       e.what());
+                }
             }
             print_host_stats(*host_adapter);
             if (host_error && !render_error) {

@@ -2,6 +2,7 @@
 # alone, so a host can link it (foundational decision 1).
 add_library(fovea_terrain STATIC
     src/database.cpp
+    src/height_query_thread.cpp
     src/terrain_query.cpp
     src/tile_file.cpp
     src/tile_key.cpp)
