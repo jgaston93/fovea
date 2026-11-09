@@ -20,6 +20,12 @@ struct Material {
     uint sampler;        // wrap u x 3 + wrap v
     uint alpha_mode;     // 0 opaque, 1 mask, 2 blend (drawn opaque for now)
     float alpha_cutoff;
+    float3 emissive;        // radiance it gives off, in the sky's units (step 8)
+    uint emissive_image;    // 0xFFFFFFFF: none
+    uint emissive_sampler;
+    uint unused0;
+    uint unused1;
+    uint unused2;
 };
 
 struct ModelPush {
@@ -106,7 +112,16 @@ float4 fs_model(ModelVertex i, bool front: SV_IsFrontFace) : SV_Target {
     const float2 shade = shadowed(shadow_lit(shadow_maps, shadow_sampler, i.rel, n, ddx(i.rel), ddy(i.rel)));
     // Under rain or snow, their overcast's light alone (step 6).
     const float kind = precipitation_over(i.rel);
-    const float3 lit = colour.rgb * irradiance_at(kind, n, s, shade) * kInvPi;
+    float3 lit = colour.rgb * irradiance_at(kind, n, s, shade) * kInvPi;
+    // What it gives off (lit windows, step 8, D-033), the same by day and
+    // night: the exposure (D-031) hides it by day.
+    float3 glow = m.emissive;
+    if (m.emissive_image != 0xFFFFFFFFu) {
+        glow *= images[NonUniformResourceIndex(m.emissive_image)]
+                    .Sample(samplers[NonUniformResourceIndex(m.emissive_sampler)], i.uv)
+                    .rgb;
+    }
+    lit += glow;
     // Through the air, then the fog, rain and snow (step 6, D-034).
     const float dist = length(i.rel);
     const float mu = dot(i.rel, lighting.up) / max(dist, 1e-3);

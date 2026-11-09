@@ -75,7 +75,9 @@ std::vector<std::uint8_t> make_glb(const GlbSpec& s) {
         std::to_string(s.base_colour[2]) + "," + std::to_string(s.base_colour[3]) + "]";
     std::string images;
     if (!s.image.empty()) {
-        material += ",\"baseColorTexture\":{\"index\":0}";
+        if (s.image_is_base_colour) {
+            material += ",\"baseColorTexture\":{\"index\":0}";
+        }
         const int v = add(s.image.data(), s.image.size());
         images =
             ",\"textures\":[{\"source\":0,\"sampler\":0},{\"source\":0,\"sampler\":1}],"

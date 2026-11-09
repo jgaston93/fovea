@@ -30,8 +30,16 @@ struct GpuMaterial {
     std::uint32_t sampler = 0;
     std::uint32_t alpha_mode = 0;
     float alpha_cutoff = 0.5F;
+    std::array<float, 3> emissive{};  // radiance, in the sky's units
+    std::uint32_t emissive_image = 0;  // kNoImage: none
+    std::uint32_t emissive_sampler = 0;
+    std::array<std::uint32_t, 3> unused{};
 };
-static_assert(sizeof(GpuMaterial) == 32, "must match Material in model.slang");
+static_assert(sizeof(GpuMaterial) == 64, "must match Material in model.slang");
+
+// The light units (frame.slang): the sun's 10,000 are 100,000 lux, so a
+// unit of radiance is 10 cd/m², and models' emission is in cd/m².
+constexpr float kNitsPerUnit = 10.0F;
 
 struct ModelPush {
     Mat4 ecef_to_clip{1.0F};
@@ -550,6 +558,16 @@ void ModelGpu::stage_and_record(VkCommandBuffer cmd, VkBuffer staging, std::uint
         }
         g.alpha_mode = static_cast<std::uint32_t>(src.alpha_mode);
         g.alpha_cutoff = src.alpha_cutoff;
+        for (std::size_t c = 0; c < 3; ++c) {
+            g.emissive[c] = src.emissive[c] / kNitsPerUnit;
+        }
+        g.emissive_image = kNoImage;
+        if (src.emissive_texture) {
+            const ModelTexture& t = m.textures[*src.emissive_texture];
+            g.emissive_image = first_image + t.image;
+            g.emissive_sampler =
+                static_cast<std::uint32_t>(t.wrap_u) * 3 + static_cast<std::uint32_t>(t.wrap_v);
+        }
     }
     // Earlier frames may be drawing models already in these buffers: the
     // shaders' reads (the material buffer is bound whole) come before the
