@@ -200,7 +200,7 @@ TEST(Sky, TheSunsDiscIsWhereTheSunIs) {
     r->draw_scene_frame(std::vector<SceneView>{v});
     const auto px = r->read_back_rgba(0);
     // Where the view's matrix puts the sun, and the centre of the disc's
-    // saturated pixels.
+    // brightest pixels: warm white, as the tone map keeps its hue (step 8).
     const glm::dvec4 clip = glm::dmat4(v.ecef_to_clip) * glm::dvec4(sky.sun * 1e6, 1.0);
     const double want_x = (clip.x / clip.w + 1.0) * 0.5 * kSize;
     const double want_y = (clip.y / clip.w + 1.0) * 0.5 * kSize;
@@ -210,7 +210,7 @@ TEST(Sky, TheSunsDiscIsWhereTheSunIs) {
     for (std::uint32_t y = 0; y < kSize; ++y) {
         for (std::uint32_t x = 0; x < kSize; ++x) {
             const std::size_t i = (static_cast<std::size_t>(y) * kSize + x) * 4;
-            if (px[i] >= 250 && px[i + 1] >= 250 && px[i + 2] >= 240) {
+            if (px[i] >= 250 && px[i + 1] >= 235 && px[i + 2] >= 210) {
                 sx += x + 0.5;
                 sy += y + 0.5;
                 ++n;

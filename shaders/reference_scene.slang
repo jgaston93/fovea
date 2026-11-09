@@ -202,8 +202,17 @@ struct TonemapPush {
 [[vk::binding(0, 0)]] Sampler2D<float4> hdr_scene;
 
 // A close fit to the ACES filmic curve (K. Narkowicz, 2015).
-float3 aces(float3 x) {
+float aces(float x) {
     return saturate((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14));
+}
+
+// The curve applied to a colour's brightest channel, the others scaled with
+// it, so a colour keeps its hue and saturation however bright (milestone 6
+// step 8): lit windows at night stay warm where the curve on each channel
+// would clip them all to white.
+float3 tone_map(float3 c) {
+    const float m = max(c.r, max(c.g, c.b));
+    return m > 0.0 ? c * (aces(m) / m) : float3(0.0);
 }
 
 float3 encode_srgb(float3 c) {
@@ -213,6 +222,6 @@ float3 encode_srgb(float3 c) {
 [shader("fragment")]
 float4 fs_tonemap(Fullscreen i) : SV_Target {
     const float2 uv = i.ndc * 0.5 + 0.5;
-    const float3 mapped = aces(hdr_scene.Sample(uv).rgb * tonemap.exposure);
+    const float3 mapped = tone_map(max(hdr_scene.Sample(uv).rgb * tonemap.exposure, 0.0));
     return float4(tonemap.encode_srgb != 0 ? encode_srgb(mapped) : mapped, 1.0);
 }
