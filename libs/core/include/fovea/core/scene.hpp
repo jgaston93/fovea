@@ -6,7 +6,9 @@
 // or what the entities are (D-011): a vehicle, a person, a sensor mount.
 // Views attach their viewpoint to an entity, or fix it in the world.
 
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <utility>
 
 #include "fovea/core/attitude.hpp"
@@ -86,6 +88,14 @@ struct WeatherLayer {
 // Fog, three cloud layers, rain and snow at once: CIGI's global layers less
 // its rarer ones (sleet, hail, sand, dust).
 inline constexpr std::size_t kMaxWeatherLayers = 6;
+
+// The kind of layer each WeatherLayer::id is, or nothing beyond them.
+inline std::optional<WeatherKind> weather_kind_of(std::uint8_t id) noexcept {
+    constexpr std::array<WeatherKind, kMaxWeatherLayers> kKinds = {
+        WeatherKind::fog,   WeatherKind::cloud, WeatherKind::cloud,
+        WeatherKind::cloud, WeatherKind::rain,  WeatherKind::snow};
+    return id < kKinds.size() ? std::optional(kKinds.at(id)) : std::nullopt;
+}
 
 // The date and time, and the weather (milestone 6, D-029). The time is
 // the UTC Julian date it was at set_at, on this computer's clock: while time

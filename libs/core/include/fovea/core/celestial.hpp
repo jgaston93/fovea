@@ -47,6 +47,10 @@ struct SkyBodies {
     DMat3 j2000_to_ecef{1.0};
 };
 
+// The years sky_bodies is good for: writers of the date keep within them.
+inline constexpr int kFirstSkyYear = 1950;
+inline constexpr int kLastSkyYear = 2050;
+
 // Where the sun and moon are at a UTC Julian date. Good from 1950 to
 // 2050 (the Almanac's sun, and a fixed Delta T).
 SkyBodies sky_bodies(double julian_date_utc) noexcept;

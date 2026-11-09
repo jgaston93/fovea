@@ -526,6 +526,7 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
                 host_options.host = fovea::UdpEndpoint{*h.host_address, h.host_port};
             }
             host_options.geoid_height_m = h.geoid_height_m;
+            host_options.environment = scene_state->edit().environment;
             frame_starts = std::make_unique<fovea::FrameStartRing>();
             try {
                 host_adapter =

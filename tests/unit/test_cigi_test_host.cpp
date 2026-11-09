@@ -178,6 +178,9 @@ TEST(TestHostScript, ExampleScriptsLoad) {
     int scripts = 0;
     for (const auto& f :
          std::filesystem::directory_iterator(FOVEA_SOURCE_DIR "/tools/cigi-test-host/scripts")) {
+        if (f.path().extension() != ".toml") {
+            continue;
+        }
         const auto r = load_script(f.path());
         EXPECT_TRUE(r.script.has_value())
             << f.path() << ": " << (r.errors.empty() ? "" : r.errors[0]);
@@ -239,9 +242,9 @@ enable = false
     EXPECT_EQ(e.weather[1].layer_id, 4);
     EXPECT_FALSE(e.weather[1].weather_enable);
 
-    for (const char* bad :
-         {"date = 2026-11-03\n", "date = 2026-11-03\ntime = 06:10:30\n",
-          "date = 1900-01-01\ntime = 06:10:00\n", "[[segment.layer]]\nid = 0\n"}) {
+    for (const char* bad : {"date = 2026-11-03\n", "date = 2026-11-03\ntime = 06:10:30\n",
+                            "date = 1900-01-01\ntime = 06:10:00\n", "[[segment.layer]]\nid = 0\n",
+                            "[[segment.layer]]\nid = 1.5\nenable = false\n"}) {
         EXPECT_FALSE(
             parse_script(head + "[[segment]]\nkind = \"hold\"\nduration = 5.0\n" + bad, "s.toml")
                 .script.has_value())

@@ -185,9 +185,10 @@ std::size_t encode(const CelestialSphereControl& p, std::span<std::uint8_t> out)
 
 std::optional<CelestialSphereControl> decode_celestial_sphere_control(
     std::span<const std::uint8_t> in, bool swap) {
-    if (!has_packet(in, kCelestialSphereControlId, kCelestialSphereControlSize) || in[2] > 23 ||
-        in[3] > 59) {
-        return std::nullopt;  // Hour 0-23, Minute 0-59 (p. 83)
+    // Hour and Minute out of range (p. 83) are the adapter's to refuse:
+    // without Date/Time Valid they mean nothing.
+    if (!has_packet(in, kCelestialSphereControlId, kCelestialSphereControlSize)) {
+        return std::nullopt;
     }
     CelestialSphereControl p;
     p.hour = in[2];

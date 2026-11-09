@@ -107,7 +107,7 @@ struct EntityControl {
 // ICD 4.1.9 Celestial Sphere Control (p. 82-84): the date and time of day
 // and the sky's bodies.
 struct CelestialSphereControl {
-    std::uint8_t hour = 0;         // 0 to 23, UTC
+    std::uint8_t hour = 0;         // 0 to 23, UTC, read only with Date/Time Valid
     std::uint8_t minute = 0;       // 0 to 59, UTC
     bool ephemeris_enable = true;  // the IG runs the time of day on
     bool sun_enable = true;
@@ -239,8 +239,8 @@ private:
 // Decoding one packet from MessageReader: nothing if the ID is wrong, the
 // packet is shorter than the ICD's size, or a field holds a value the ICD
 // leaves undefined (Entity State or Ground/Ocean Clamp 3; IG Mode 3 in IG
-// Control, which only the IG may report; Hour over 23 or Minute over 59;
-// Weather Control Scope 3 or Severity over 5). Longer packets are accepted (ICD
+// Control, which only the IG may report; Weather Control Scope 3 or
+// Severity over 5). Longer packets are accepted (ICD
 // 2.11, rule 4). `swap`: MessageReader::swapped().
 std::optional<IgControl> decode_ig_control(std::span<const std::uint8_t> in, bool swap);
 std::optional<EntityControl> decode_entity_control(std::span<const std::uint8_t> in, bool swap);

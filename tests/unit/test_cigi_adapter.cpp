@@ -225,9 +225,84 @@ TEST(CigiAdapter, CelestialSphereControlSetsTheTimeWhenValid) {
     host.send(message_of(operate(4), c));
     ASSERT_TRUE(
         poll_until(adapter, *scene, [&] { return adapter.stats().environment_updates == 3; }));
+    // Hour 24 is refused with Date/Time Valid, and means nothing without:
+    // the clock is still started.
+    c.hour = 24;
+    host.send(message_of(operate(5), c));
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().rejected_packets == 6; }));
+    c.date_time_valid = false;
+    c.ephemeris_enable = true;
+    host.send(message_of(operate(6), c));
+    ASSERT_TRUE(
+        poll_until(adapter, *scene, [&] { return adapter.stats().environment_updates == 4; }));
+    EXPECT_TRUE(scene->latest().environment.time_runs);
 }
 
-// Atmosphere Control sets the global visibility; a negative one is refused.
+// A host may send its time every frame: within the minute the IG's clock is
+// already in, the clock keeps its seconds and runs on; another minute sets
+// it.
+TEST(CigiAdapter, TheSameMinuteAgainLeavesTheClockRunning) {
+    auto scene = std::make_unique<SceneState>();
+    CigiAdapter adapter(CigiAdapterOptions{});
+    Host host(adapter.port());
+    start_operating(adapter, *scene, host);
+    cigi::CelestialSphereControl c;
+    c.date_time_valid = true;
+    c.ephemeris_enable = true;
+    c.date = 3202026;
+    c.hour = 12;
+    c.minute = 0;
+    host.send(message_of(operate(1), c));
+    ASSERT_TRUE(
+        poll_until(adapter, *scene, [&] { return adapter.stats().environment_updates == 1; }));
+    const EnvironmentState first = scene->latest().environment;
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    host.send(message_of(operate(2), c));
+    ASSERT_TRUE(
+        poll_until(adapter, *scene, [&] { return adapter.stats().environment_updates == 2; }));
+    const EnvironmentState again = scene->latest().environment;
+    EXPECT_EQ(again.julian_date, first.julian_date);  // not set back to 12:00:00
+    EXPECT_EQ(again.set_at, first.set_at);
+    EXPECT_TRUE(again.time_runs);
+    c.minute = 30;
+    host.send(message_of(operate(3), c));
+    ASSERT_TRUE(
+        poll_until(adapter, *scene, [&] { return adapter.stats().environment_updates == 3; }));
+    EXPECT_DOUBLE_EQ(scene->latest().environment.julian_date,
+                     julian_date(2026, 3, 20, 12.5 * 3600.0));
+}
+
+// Reset/Standby puts the environment back as config set it (ICD 2.7.3).
+TEST(CigiAdapter, StandbyPutsTheEnvironmentBack) {
+    auto scene = std::make_unique<SceneState>();
+    CigiAdapterOptions options;
+    options.environment.visibility_m = 20000.0;
+    (void)options.environment.layers.push_back({WeatherKind::fog, 100.0, 50.0, 1.0, 200.0, 0});
+    scene->edit().environment = options.environment;
+    CigiAdapter adapter(options);
+    Host host(adapter.port());
+    start_operating(adapter, *scene, host);
+    cigi::AtmosphereControl a;
+    a.visibility_range_m = 3000.0F;
+    cigi::WeatherControl no_fog = weather(0, 0.0F, 0.0F, 0.0F);
+    no_fog.weather_enable = false;
+    host.send(message_of(operate(1), a, no_fog, weather(4, 0.0F, 1500.0F, 5000.0F)));
+    ASSERT_TRUE(
+        poll_until(adapter, *scene, [&] { return adapter.stats().environment_updates == 3; }));
+    EXPECT_EQ(scene->latest().environment.visibility_m, 3000.0);
+    cigi::IgControl standby = operate(2);
+    standby.ig_mode = cigi::IgMode::reset_standby;
+    host.send(message_of(standby));
+    ASSERT_TRUE(poll_until(adapter, *scene,
+                           [&] { return adapter.ig_mode() == cigi::IgMode::reset_standby; }));
+    const EnvironmentState& back = scene->latest().environment;
+    EXPECT_EQ(back.visibility_m, 20000.0);
+    ASSERT_EQ(back.layers.size(), 1U);
+    EXPECT_EQ(back.layers[0].kind, WeatherKind::fog);
+}
+
+// Atmosphere Control sets the global visibility; none, or a negative one,
+// is refused.
 TEST(CigiAdapter, AtmosphereControlSetsTheVisibility) {
     auto scene = std::make_unique<SceneState>();
     CigiAdapter adapter(CigiAdapterOptions{});
@@ -241,7 +316,9 @@ TEST(CigiAdapter, AtmosphereControlSetsTheVisibility) {
     EXPECT_EQ(scene->latest().environment.visibility_m, 8000.0);
     a.visibility_range_m = -1.0F;
     host.send(message_of(operate(2), a));
-    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().rejected_packets == 1; }));
+    a.visibility_range_m = 0.0F;  // none at all can't be drawn
+    host.send(message_of(operate(3), a));
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().rejected_packets == 2; }));
     EXPECT_EQ(scene->latest().environment.visibility_m, 8000.0);
 }
 
