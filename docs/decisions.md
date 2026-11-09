@@ -227,3 +227,21 @@ The compiler builds the `lights` layer (D-018) from the runways' FAA geometry (D
 **Status:** Accepted (2026-11-08)
 
 Each global cloud layer is a lit, textured layer at its base (the ICD's mean-sea-level heights converted with the database's geoid height, D-020), its coverage shaping procedural noise, shadowing the ground below; ground fog is a band of density in the atmosphere; precipitation layers reduce visibility within them, their streaks waiting for particles (milestone 10). Volumetric clouds, regional weather and wet or snowy ground come later, as the frame allows.
+
+## D-035 MSL is the host's: one constant, shared
+
+**Status:** Accepted (2026-11-09)
+
+A CIGI altitude is converted to and from ellipsoidal height with `[host] geoid_height_m`, the same constant the host uses (the team's simulator, Aerie under EYAS: `ellipsoid_minus_msl_m`, −28.25 m at KHSV, GEOID18 there). This covers entity positions, weather layer bases, and HAT/HOT altitudes and heights. Fovea and the host then agree on MSL exactly everywhere, which matters more than either matching the true geoid. The configs on both sides must match: a mismatch shifts the whole world vertically. A geoid grid waits for a host that uses a geoid model, or for areas large enough that one constant drifts by metres (#19, kept open to revisit).
+
+## D-036 HAT/HOT are answered off the render thread, from the database's finest data
+
+**Status:** Proposed (2026-11-09)
+
+A query thread with its own `TerrainDatabase` reader answers HAT/HOT requests, which reach it from the network thread and go back to it without locks, to be sent in the next IG message. The render thread is never involved. Answers come from the finest tile that reads cleanly, the true ground rather than whatever level of detail a far view draws. Terrain only, for now (the team's choice); models aren't included.
+
+## D-037 The database is WGS-84
+
+**Status:** Accepted (2026-11-09)
+
+The compiler converts positions and ellipsoidal heights from NAD83(2011), the sources' frame, to WGS-84 (a current realization, at an epoch written in the manifest), with PROJ through GDAL. It refuses to compile if PROJ offers only a ballpark transformation, which would leave the coordinates unchanged. The runtime and hosts are WGS-84 already; the frames differ by about a metre at KHSV (#37).
