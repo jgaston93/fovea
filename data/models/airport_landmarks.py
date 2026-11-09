@@ -48,10 +48,6 @@ def srgb(c):
     return np.array(c[:3], dtype=np.float32) / 255.0
 
 
-def srgb_to_linear(c):
-    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
-
-
 def blank(w_m, h_m, colour, px=PX):
     img = np.ones((int(h_m * px), int(w_m * px), 4), dtype=np.float32)
     img[:, :, :3] = srgb(colour)
@@ -167,11 +163,15 @@ def standing_seam(roof):
 
 
 def cab_glass():
-    """A tower cab facet: tinted glass, a frame round it."""
+    """A tower cab facet: tinted glass, a frame round it; and its light at
+    night, through the glass, not the frame."""
     img = blank(2.0, 2.0, (70, 90, 104))
     img[:, :4, :3] = srgb((180, 182, 184))
     img[:4, :, :3] = srgb((180, 182, 184))
-    return img
+    glow = blank(2.0, 2.0, WINDOW_LIGHT)
+    glow[:, :4, :3] = 0.0
+    glow[:4, :, :3] = 0.0
+    return img, glow
 
 
 def ac_top(casing):
@@ -207,8 +207,8 @@ def plain(colour):
 
 def material(name, texels, fovea, size_m, glow=None, nits=0.0):
     """A material showing `texels` (size_m[0] x size_m[1] metres), giving
-    off `nits` cd/m² of light where `glow` (texels the same size, or one
-    colour) is white."""
+    off `nits` cd/m² of light where `glow` (texels the same size) is
+    white."""
     m = bpy.data.materials.new(name)
     try:
         m.use_nodes = True  # always so from Blender 5.0
@@ -224,15 +224,12 @@ def material(name, texels, fovea, size_m, glow=None, nits=0.0):
     m.node_tree.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
     bsdf.inputs["Roughness"].default_value = 0.85
     if glow is not None:
-        if isinstance(glow, np.ndarray):
-            lit = bpy.data.images.new(name + "_glow", glow.shape[1], glow.shape[0], alpha=False)
-            lit.pixels.foreach_set(np.clip(glow, 0.0, 1.0).ravel())
-            lit.pack()
-            glow_tex = nodes.new("ShaderNodeTexImage")
-            glow_tex.image = lit
-            m.node_tree.links.new(glow_tex.outputs["Color"], bsdf.inputs["Emission Color"])
-        else:
-            bsdf.inputs["Emission Color"].default_value = (*srgb_to_linear(srgb(glow)), 1.0)
+        lit = bpy.data.images.new(name + "_glow", glow.shape[1], glow.shape[0], alpha=False)
+        lit.pixels.foreach_set(np.clip(glow, 0.0, 1.0).ravel())
+        lit.pack()
+        glow_tex = nodes.new("ShaderNodeTexImage")
+        glow_tex.image = lit
+        m.node_tree.links.new(glow_tex.outputs["Color"], bsdf.inputs["Emission Color"])
         bsdf.inputs["Emission Strength"].default_value = nits
     m["fovea_material"] = fovea
     m["size_m"] = size_m
@@ -476,8 +473,8 @@ def hangar(name, w, d, eave, door_on="front"):
 
 def tower(name):
     concrete = material("concrete", plain((176, 172, 164)), 1, (1.0, 1.0))
-    glass = material("cab_glass", cab_glass(), 3, (1.0, 1.0),  # one image a facet
-                     WINDOW_LIGHT, 3.0)
+    texels, glow = cab_glass()
+    glass = material("cab_glass", texels, 3, (1.0, 1.0), glow, 3.0)  # one image a facet
     dark = material("roof_dark", plain((70, 72, 74)), 2, (1.0, 1.0))
     m = Model(name)
     m.prism(concrete, concrete, 0, 0, 3.5, 3.5, 0, 38.0, 16)        # the shaft

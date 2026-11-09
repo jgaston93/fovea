@@ -255,19 +255,9 @@ private:
             const cgltf_pbr_metallic_roughness& pbr = src.pbr_metallic_roughness;
             std::copy(std::begin(pbr.base_color_factor), std::end(pbr.base_color_factor),
                       mat.base_colour.begin());
-            const cgltf_texture_view& view = pbr.base_color_texture;
-            if (view.texture != nullptr) {
-                if (view.texcoord != 0 || view.has_transform != 0) {
-                    error_ = what +
-                             ": its base colour texture needs the first texture coordinates, "
-                             "untransformed";
-                    return false;
-                }
-                const auto t = texture(view.texture, m, what);
-                if (!t) {
-                    return false;
-                }
-                mat.base_colour_texture = t;
+            if (!texture_view(pbr.base_color_texture, "base colour", m, what,
+                              mat.base_colour_texture)) {
+                return false;
             }
         }
         // Emission (D-033): its factor scaled by KHR_materials_emissive_strength.
@@ -281,22 +271,27 @@ private:
             error_ = what + ": its emission isn't finite and at least 0";
             return false;
         }
-        const cgltf_texture_view& glow = src.emissive_texture;
-        if (glow.texture != nullptr) {
-            if (glow.texcoord != 0 || glow.has_transform != 0) {
-                error_ = what +
-                         ": its emissive texture needs the first texture coordinates, "
-                         "untransformed";
-                return false;
-            }
-            const auto t = texture(glow.texture, m, what);
-            if (!t) {
-                return false;
-            }
-            mat.emissive_texture = t;
+        if (!texture_view(src.emissive_texture, "emissive", m, what, mat.emissive_texture)) {
+            return false;
         }
         m.materials.push_back(std::move(mat));
         return true;
+    }
+
+    // A material's texture, if it has one: on the first texture
+    // coordinates, untransformed.
+    bool texture_view(const cgltf_texture_view& view, const char* slot, Model& m,
+                      const std::string& what, std::optional<std::uint32_t>& out) {
+        if (view.texture == nullptr) {
+            return true;
+        }
+        if (view.texcoord != 0 || view.has_transform != 0) {
+            error_ = what + ": its " + slot +
+                     " texture needs the first texture coordinates, untransformed";
+            return false;
+        }
+        out = texture(view.texture, m, what);
+        return out.has_value();
     }
 
     std::optional<std::uint32_t> texture(const cgltf_texture* t, Model& m,

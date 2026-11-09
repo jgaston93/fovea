@@ -30,15 +30,16 @@ struct GpuMaterial {
     std::uint32_t sampler = 0;
     std::uint32_t alpha_mode = 0;
     float alpha_cutoff = 0.5F;
-    std::array<float, 3> emissive{};  // radiance, in the sky's units
+    std::array<float, 3> emissive{};   // radiance, in the sky's units
     std::uint32_t emissive_image = 0;  // kNoImage: none
     std::uint32_t emissive_sampler = 0;
     std::array<std::uint32_t, 3> unused{};
 };
 static_assert(sizeof(GpuMaterial) == 64, "must match Material in model.slang");
 
-// The light units (frame.slang): the sun's 10,000 are 100,000 lux, so a
-// unit of radiance is 10 cd/m², and models' emission is in cd/m².
+// The light units (frame.slang, Atmosphere::sun_illuminance): the sun's
+// 10,000 are 100,000 lux, so a unit of radiance is 10 cd/m², and models'
+// emission is in cd/m².
 constexpr float kNitsPerUnit = 10.0F;
 
 struct ModelPush {
@@ -48,6 +49,11 @@ struct ModelPush {
 static_assert(sizeof(ModelPush) == 68, "must match ModelPush in model.slang");
 
 constexpr std::uint32_t kNoImage = 0xFFFFFFFFU;
+
+// Into model.slang's samplers[9]: wrap u x 3 + wrap v.
+std::uint32_t sampler_index(const ModelTexture& t) {
+    return static_cast<std::uint32_t>(t.wrap_u) * 3 + static_cast<std::uint32_t>(t.wrap_v);
+}
 static_assert(sizeof(ModelVertex) == 32, "the vertex layout below");
 
 [[noreturn]] void fail(const std::string& what) {
@@ -553,8 +559,7 @@ void ModelGpu::stage_and_record(VkCommandBuffer cmd, VkBuffer staging, std::uint
         if (src.base_colour_texture) {
             const ModelTexture& t = m.textures[*src.base_colour_texture];
             g.image = first_image + t.image;
-            g.sampler =
-                static_cast<std::uint32_t>(t.wrap_u) * 3 + static_cast<std::uint32_t>(t.wrap_v);
+            g.sampler = sampler_index(t);
         }
         g.alpha_mode = static_cast<std::uint32_t>(src.alpha_mode);
         g.alpha_cutoff = src.alpha_cutoff;
@@ -565,8 +570,7 @@ void ModelGpu::stage_and_record(VkCommandBuffer cmd, VkBuffer staging, std::uint
         if (src.emissive_texture) {
             const ModelTexture& t = m.textures[*src.emissive_texture];
             g.emissive_image = first_image + t.image;
-            g.emissive_sampler =
-                static_cast<std::uint32_t>(t.wrap_u) * 3 + static_cast<std::uint32_t>(t.wrap_v);
+            g.emissive_sampler = sampler_index(t);
         }
     }
     // Earlier frames may be drawing models already in these buffers: the
