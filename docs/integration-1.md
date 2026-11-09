@@ -70,7 +70,7 @@ The compiler converts positions and ellipsoidal heights from NAD83(2011) to WGS-
 
 - **The packets** are in `cigi.hpp`, written from Figures 86, 110 and 112, which the errata leave unchanged. Bit positions were read off the field boxes in the PDF. Tests check each one byte for byte in both orders, every bit field set apart from its neighbours, with reserved bits zero on sending and ignored on receipt. Request Type 3 is refused.
 - **Byte order.** Every encoder takes a `swap`, so either order can be written. The adapter and the test host send in network order unless told `byte_order = "native"`. A test checks that a big-endian host's IG Control gets a big-endian Start of Frame back, and another that Start of Frame in network order is Figure 109's bytes.
-- **Ports.** `[host] port` defaults to 8004 and `host_port` to 8005, and `host_address` no longer needs `host_port` with it. Without an address, answers go to `host_port` at the address the host sends from. The test host's `[host] port` defaults to 8005 to match.
+- **Ports.** `[host] port` defaults to 8004 and `host_port` to 8005, and `host_address` no longer needs `host_port` with it. Without an address, answers go to `host_port` at the address the host sends from, or, with `host_port = 0`, to the port it sends from too (as before this step). The test host's `[host] port` defaults to 8005 to match.
 - **Fuzzing.** The target decodes and round-trips all three packets in both orders, and the corpus gains a message of each kind. 60 s and 7.2 million inputs found nothing.
 - Nothing answers requests yet: that is step 3.
 

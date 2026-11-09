@@ -531,7 +531,9 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
             if (h.host_address) {
                 host_options.host = fovea::UdpEndpoint{*h.host_address, h.host_port};
             }
-            host_options.host_port = h.host_port;
+            if (h.host_port != 0) {
+                host_options.host_port = h.host_port;
+            }
             host_options.byte_order = h.byte_order == fovea::HostByteOrder::network
                                           ? fovea::cigi::ByteOrder::network
                                           : fovea::cigi::ByteOrder::native;
@@ -546,15 +548,18 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
                                    e.what());
                 return 1;
             }
+            std::string reply_to = "the host's address and port, once it sends";
+            if (host_options.host) {
+                reply_to = fovea::format_endpoint(*host_options.host);
+            } else if (h.host_port != 0) {
+                reply_to =
+                    "port " + std::to_string(h.host_port) + " at the host's address, once it sends";
+            }
             std::printf(
                 "CIGI 3.3: listening on %s (receive buffer %zu KB); Start of Frame to %s, in %s "
                 "byte order\n",
                 fovea::format_endpoint({host_options.address, host_adapter->port()}).c_str(),
-                host_adapter->receive_buffer_bytes() / 1024,
-                host_options.host ? fovea::format_endpoint(*host_options.host).c_str()
-                                  : ("port " + std::to_string(h.host_port) +
-                                     " at the host's address, once it sends")
-                                        .c_str(),
+                host_adapter->receive_buffer_bytes() / 1024, reply_to.c_str(),
                 h.byte_order == fovea::HostByteOrder::network ? "network" : "native");
             loop_options.frame_starts = frame_starts.get();
             loop_options.rig = &rig;
