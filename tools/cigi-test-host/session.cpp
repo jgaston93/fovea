@@ -4,6 +4,8 @@
 #include <chrono>
 #include <thread>
 
+#include "fovea/core/scene.hpp"
+
 namespace fovea::test_host {
 
 Session::Session(const UdpEndpoint& ig, std::uint16_t local_port, std::uint32_t local_address,
@@ -84,7 +86,7 @@ void Session::send_frame(const FlightState& state, LocalTime t) {
     // celestial sphere, the atmosphere and six weather layers.
     std::array<std::uint8_t, cigi::kIgControlSize + cigi::kEntityControlSize +
                                  cigi::kCelestialSphereControlSize + cigi::kAtmosphereControlSize +
-                                 6 * cigi::kWeatherControlSize>
+                                 kMaxWeatherLayers * cigi::kWeatherControlSize>
         out{};
     std::size_t n = cigi::encode(ig, out);
     // Until the IG reports Operate, IG Control alone (ICD 2.8).
@@ -125,13 +127,13 @@ void Session::queue_environment(const EnvironmentChange& change) {
         pending_.atmosphere = change.atmosphere;
     }
     for (const cigi::WeatherControl& w : change.weather) {
-        // The newest for each layer; six at most, as the message has room for.
+        // The newest for each layer; as many as the message has room for.
         auto same =
             std::find_if(pending_.weather.begin(), pending_.weather.end(),
                          [&](const cigi::WeatherControl& p) { return p.layer_id == w.layer_id; });
         if (same != pending_.weather.end()) {
             *same = w;
-        } else if (pending_.weather.size() < 6) {
+        } else if (pending_.weather.size() < kMaxWeatherLayers) {
             pending_.weather.push_back(w);
         }
     }

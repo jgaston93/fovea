@@ -484,13 +484,9 @@ TEST(Cigi, UndefinedValuesRejectThePacket) {
     Bytes clamp = entity_control([](auto v) { return be(v); });
     clamp[4] = static_cast<std::uint8_t>(clamp[4] | 0x60);
     EXPECT_FALSE(decode_entity_control(clamp, needs_swap_from_big_endian()).has_value());
-    // Hour 24 and Minute 60 (p. 83); Weather Control Scope 3 and Severity 6
-    // (p. 104).
-    for (const std::size_t at : {std::size_t{2}, std::size_t{3}}) {
-        Bytes c = celestial_sphere_control([](auto v) { return be(v); });
-        c[at] = at == 2 ? 24 : 60;
-        EXPECT_FALSE(decode_celestial_sphere_control(c, needs_swap_from_big_endian()).has_value());
-    }
+    // Weather Control Scope 3 and Severity 6 (p. 104). (Hour and Minute out
+    // of range are the adapter's to refuse: without Date/Time Valid they
+    // mean nothing.)
     Bytes scope = weather_control([](auto v) { return be(v); });
     scope[7] = static_cast<std::uint8_t>(scope[7] | 0x03);
     EXPECT_FALSE(decode_weather_control(scope, needs_swap_from_big_endian()).has_value());

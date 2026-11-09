@@ -46,24 +46,16 @@ unsigned days_in_month(std::uint32_t year, std::uint32_t month) {
     return month == 2 && leap ? 29U : kDays.at(month - 1);
 }
 
-// Weather Control's standard layers that are drawn (or, clouds, kept for
-// when they are: #73), by Layer ID (ICD p. 102); WeatherLayer::id is the
-// same number.
-std::optional<WeatherKind> weather_kind(std::uint8_t layer_id) {
-    switch (static_cast<cigi::WeatherLayerId>(layer_id)) {
-        case cigi::WeatherLayerId::ground_fog:
-            return WeatherKind::fog;
-        case cigi::WeatherLayerId::cloud_1:
-        case cigi::WeatherLayerId::cloud_2:
-        case cigi::WeatherLayerId::cloud_3:
-            return WeatherKind::cloud;
-        case cigi::WeatherLayerId::rain:
-            return WeatherKind::rain;
-        case cigi::WeatherLayerId::snow:
-            return WeatherKind::snow;
-        default:
-            return std::nullopt;
-    }
+// Weather Control's standard Layer IDs 0 to 5 (ICD p. 102) are
+// WeatherLayer's ids: fog, three clouds, rain, snow.
+static_assert(static_cast<std::uint8_t>(cigi::WeatherLayerId::ground_fog) == 0 &&
+              static_cast<std::uint8_t>(cigi::WeatherLayerId::cloud_1) == 1 &&
+              static_cast<std::uint8_t>(cigi::WeatherLayerId::rain) == 4 &&
+              static_cast<std::uint8_t>(cigi::WeatherLayerId::snow) == 5 && kMaxWeatherLayers == 6);
+
+// The Julian date at the start of its minute.
+double to_the_minute(double jd) {
+    return (std::floor((jd + 0.5) * 1440.0)) / 1440.0 - 0.5;
 }
 
 }  // namespace
@@ -192,7 +184,9 @@ bool CigiAdapter::apply(std::span<const std::uint8_t> message, SceneSnapshot& sc
     last_host_frame_ = ig->host_frame_number;
     if (ig->ig_mode == cigi::IgMode::reset_standby) {
         if (mode_ != cigi::IgMode::reset_standby) {
-            scene.entities.clear();    // entering Reset/Standby destroys every entity
+            scene.entities.clear();  // entering Reset/Standby destroys every entity,
+            // and puts the environment back as it started (ICD 2.7.3, p. 13)
+            scene.environment = options_.environment;
             last_host_ticks_.reset();  // a new session may start its clock afresh,
             host_epoch_.reset();       // and its zero is placed afresh
         }
@@ -299,27 +293,44 @@ void CigiAdapter::apply_celestial(const cigi::CelestialSphereControl& c, Environ
     // The time now, carried on from the last setting, unless the packet
     // sets it.
     double jd = julian_date_at(e, received);
+    bool set = false;
     if (c.date_time_valid) {
+        if (c.hour > 23 || c.minute > 59) {
+            ++stats_.rejected_packets;  // 0-23, 0-59 (p. 83)
+            return;
+        }
         // MMDDYYYY (p. 84).
         const std::uint32_t month = c.date / 1000000U;
         const std::uint32_t day = c.date / 10000U % 100U;
         const std::uint32_t year = c.date % 10000U;
-        if (year < 1950 || year > 2050 || month < 1 || month > 12 || day < 1 ||
+        if (year < kFirstSkyYear || year > kLastSkyYear || month < 1 || month > 12 || day < 1 ||
             day > days_in_month(year, month)) {
             ++stats_.rejected_packets;
             return;
         }
-        jd = julian_date(year, month, day, c.hour * 3600.0 + c.minute * 60.0);
+        const double sent = julian_date(year, month, day, c.hour * 3600.0 + c.minute * 60.0);
+        // A host may send its time with every frame: within the minute it
+        // names, the clock keeps its seconds, so a running one isn't held
+        // to the minute.
+        if (std::abs(to_the_minute(jd) - sent) > 0.5 / 86400.0) {
+            jd = sent;
+            set = true;
+        }
     }
-    e.julian_date = jd;
-    e.set_at = received;
-    e.time_runs = c.ephemeris_enable;
+    // Rebased only when something changes: every packet adding a rounding
+    // to the date would wear it.
+    if (set || c.ephemeris_enable != e.time_runs) {
+        e.julian_date = jd;
+        e.set_at = received;
+        e.time_runs = c.ephemeris_enable;
+    }
     ++stats_.environment_updates;
 }
 
 void CigiAdapter::apply_atmosphere(const cigi::AtmosphereControl& a, EnvironmentState& e) {
-    if (!std::isfinite(a.visibility_range_m) || a.visibility_range_m < 0.0F) {
-        ++stats_.rejected_packets;  // >= 0 (p. 86)
+    // >= 0 (p. 86), but none at all can't be drawn (nor set in config).
+    if (!std::isfinite(a.visibility_range_m) || a.visibility_range_m <= 0.0F) {
+        ++stats_.rejected_packets;
         return;
     }
     e.visibility_m = static_cast<double>(a.visibility_range_m);
@@ -327,7 +338,7 @@ void CigiAdapter::apply_atmosphere(const cigi::AtmosphereControl& a, Environment
 }
 
 void CigiAdapter::apply_weather(const cigi::WeatherControl& w, EnvironmentState& e) {
-    const std::optional<WeatherKind> kind = weather_kind(w.layer_id);
+    const std::optional<WeatherKind> kind = weather_kind_of(w.layer_id);
     if (w.scope != cigi::WeatherScope::global || !kind) {
         ++stats_.weather_ignored;
         return;

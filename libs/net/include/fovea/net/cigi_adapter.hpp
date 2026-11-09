@@ -15,7 +15,8 @@
 //   sends, including the rest of the message that asks for Operate (ICD 2.8,
 //   p. 13: the host waits for a Start of Frame showing Operate before
 //   sending other data). Entering Reset/Standby destroys every entity
-//   (Start of Frame IG Mode, p. 214).
+//   (Start of Frame IG Mode, p. 214), and puts config's environment back
+//   (2.7.3, p. 13).
 // - Entity Control (4.1.2) for a top-level entity sets its geodetic
 //   position (altitude above mean sea level) and yaw, pitch, roll. An entity
 //   is created by its first Entity Control and destroyed by Entity State
@@ -34,7 +35,9 @@
 //   until then:
 //   - Celestial Sphere Control (4.1.9) sets the date and time when its
 //     Date/Time Valid flag is set, and whether time runs (Ephemeris Model
-//     Enable) always. Sun, moon and star enables and star intensity aren't
+//     Enable) always; a time within the minute the IG's clock is already
+//     in leaves it running, so a host may send its time every frame. Sun,
+//     moon and star enables and star intensity aren't
 //     taken: the sky draws them all. A date the sky isn't computed for
 //     (outside 1950 to 2050), or no date at all, rejects the packet.
 //   - Atmosphere Control (4.1.10) sets the global visibility. Humidity,
@@ -76,6 +79,9 @@ struct CigiAdapterOptions {
     // (milestone 3); 0 puts sea level on the ellipsoid, which is off by the
     // local geoid height (tens of metres).
     double geoid_height_m = 0.0;
+    // The environment as it starts (config's): what Reset/Standby puts back
+    // (ICD 2.7.3, p. 13).
+    EnvironmentState environment;
     // How long poll() waits for a message: also how late a Start of Frame
     // can leave after its frame starts.
     int wait_ms = 1;

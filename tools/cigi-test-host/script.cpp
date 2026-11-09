@@ -11,7 +11,9 @@
 
 #include <toml++/toml.hpp>
 
+#include "fovea/core/celestial.hpp"
 #include "fovea/core/ipv4.hpp"
+#include "fovea/core/scene.hpp"
 
 namespace fovea::test_host {
 
@@ -155,9 +157,10 @@ void read_environment(Reader& r, const toml::table& t, const std::string& where,
         if (date != nullptr) {
             const auto* d = date->as_date();
             const auto* tm = time->as_time();
-            if (d == nullptr || d->get().year < 1950 || d->get().year > 2050) {
-                r.error(date->source(), "'date' in " + where +
-                                            " must be a date from 1950 to 2050, like 2026-03-20");
+            if (d == nullptr || d->get().year < kFirstSkyYear || d->get().year > kLastSkyYear) {
+                r.error(date->source(), "'date' in " + where + " must be a date from " +
+                                            std::to_string(kFirstSkyYear) + " to " +
+                                            std::to_string(kLastSkyYear) + ", like 2026-03-20");
             } else if (tm == nullptr || tm->get().second != 0 || tm->get().nanosecond != 0) {
                 r.error(time->source(), "'time' in " + where +
                                             " must be a time of day in whole minutes, like "
@@ -183,9 +186,10 @@ void read_environment(Reader& r, const toml::table& t, const std::string& where,
         return;
     }
     const auto* list = n->as_array();
-    if (list == nullptr || !list->is_array_of_tables() || list->size() > 6) {
-        r.error(n->source(),
-                "'layer' in " + where + " must be up to 6 tables: write each as [[segment.layer]]");
+    if (list == nullptr || !list->is_array_of_tables() || list->size() > kMaxWeatherLayers) {
+        r.error(n->source(), "'layer' in " + where + " must be up to " +
+                                 std::to_string(kMaxWeatherLayers) +
+                                 " tables: write each as [[segment.layer]]");
         return;
     }
     for (std::size_t i = 0; i < list->size(); ++i) {
@@ -193,8 +197,11 @@ void read_environment(Reader& r, const toml::table& t, const std::string& where,
         const std::string at = where + " layer " + std::to_string(i + 1);
         r.check_keys(l, {"id", "base", "thickness", "visibility", "coverage", "enable"}, at);
         cigi::WeatherControl w;
-        w.layer_id = static_cast<std::uint8_t>(
-            r.number(l, "id", at, 0.0, 255.0, std::nullopt).value_or(0.0));
+        const double id = r.number(l, "id", at, 0.0, 255.0, std::nullopt).value_or(0.0);
+        if (id != std::floor(id)) {
+            r.error(l.get("id")->source(), "'id' in " + at + " must be a whole number");
+        }
+        w.layer_id = static_cast<std::uint8_t>(id);
         w.weather_enable = true;
         if (const auto* e = l.get("enable")) {
             if (const auto* b = e->as_boolean()) {
