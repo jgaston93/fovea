@@ -119,7 +119,11 @@ The compiler converts positions and ellipsoidal heights from NAD83(2011) to WGS-
   - no database;
   - the query thread through 3,000 requests (more than its rings hold), in order.
 - **Load:** 100 requests in one message, 20 times over, every one answered in the IG's next message (median 2.8 ms from sending, mostly the test's own waits), with the network thread allocating nothing (`AllocationCounter` around `poll()`). The render thread sees no requests at all.
-- **Checks:** TSan and ASan are clean on the threaded tests, and 393 tests pass on lavapipe.
+- **Review fixes:**
+  - The query thread checks for a stop after reading the posted count, so a stop that lands between its loop check and the read can't leave it asleep.
+  - Answers are taken from the ring only while there's room in the datagram, so a backlog leaves over several frames. A test queues 2,000 requests with no frames running and loses none, though it couldn't make the old code overflow: the query thread's 1 ms retry refills the ring too slowly.
+  - The periodic test waits for answers in flight before counting. The reviewer saw it fail 4 times in 60; 300 repeats here, some under load, didn't fail.
+- **Checks:** TSan and ASan are clean on the threaded tests, and 394 tests pass on lavapipe.
 - **Not yet:** the desk run with the test host and Aerie's pattern (step 4). `DatabaseTerrain` keeps every tile it reads (about 260 KB each at 257 samples), so a long flight over new ground grows it; that gets an issue if step 4 shows it matters.
 
 ## Step 4: The test host and the real simulator

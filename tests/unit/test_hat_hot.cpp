@@ -340,10 +340,16 @@ TEST(HatHot, PeriodicRequestsKeepTheirPeriodAndStopOnZero) {
         EXPECT_TRUE(r.valid);
         EXPECT_EQ(r.host_frame_number_lsn, asked & 0xFU);
     }
-    // Period 0 with the same ID: one more answer, then none.
+    // Period 0 with the same ID: one more answer (after any periodic one
+    // still on its way), then none.
     rig.send({geodetic(5, cigi::HatHotRequestType::hat, 34.63, -86.77, 400.0, 0)});
     ASSERT_TRUE(rig.frames_until(periodic + 1));
+    for (int i = 0; i < 6; ++i) {
+        rig.step_frame();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
     const std::size_t stopped = rig.answers.count();
+    EXPECT_LE(stopped, periodic + 2);
     for (int i = 0; i < 12; ++i) {
         rig.step_frame();
     }
@@ -404,6 +410,27 @@ TEST(HatHot, AnEntityPointFollowsItsEntityAndEndsWithIt) {
                             [](const auto& x) { return !x.valid; }),
               1);
     EXPECT_LE(rig.answers.extended.size(), 2U);
+}
+
+// A backlog (no frames while 2,000 requests arrive: both rings full, the
+// query thread waiting on the answers') leaves over several frames, none
+// lost, however fast the query thread refills the ring as it drains.
+TEST(HatHot, ABacklogLeavesOverSeveralFramesWithNoneLost) {
+    Rig rig;
+    std::vector<cigi::HatHotRequest> requests;
+    for (std::uint16_t i = 0; i < 100; ++i) {
+        requests.push_back(geodetic(i, cigi::HatHotRequestType::extended, 34.63, -86.77, 500.0));
+    }
+    for (int m = 0; m < 20; ++m) {
+        rig.send(requests);
+        rig.poll_for(std::chrono::milliseconds(5));
+    }
+    rig.poll_for(std::chrono::milliseconds(50));
+    ASSERT_EQ(rig.adapter->stats().hat_hot_requests, 2000U);
+    ASSERT_EQ(rig.adapter->stats().hat_hot_dropped, 0U);
+    ASSERT_TRUE(rig.frames_until(2000));
+    EXPECT_EQ(rig.answers.count(), 2000U);
+    EXPECT_EQ(rig.adapter->stats().hat_hot_dropped, 0U);
 }
 
 // The plan's load: 100 requests in one host message, answered in the IG's
