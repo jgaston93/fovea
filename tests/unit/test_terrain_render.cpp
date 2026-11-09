@@ -729,58 +729,83 @@ TEST(TerrainRender, TheSunLightsTheWallsThatFaceItAndNoneFromUnderTheHorizon) {
 }
 
 // Lit windows (milestone 6 step 8, D-033): a dark box whose walls give off
-// 40 cd/m² of warm light, beside the same box without, seen from the east.
-// At midnight its wall shows bright and warm where the other's is near
-// black; at noon the exposure hides the glow: the two differ by at most a
-// level.
+// 40 cd/m² of warm light through an emissive texture lit over its upper
+// half, beside the same box without, and a third far past the HDR target's
+// range, seen from the east. At midnight the lit box's upper wall shows
+// bright and warm, its lower wall as dark as the plain box's, and the third
+// at its brightest, not a NaN's black; at noon the exposure hides the glow:
+// the lit box's upper wall is within two levels of its lower.
 TEST(TerrainRender, EmissiveMaterialsGlowAtNightAndNotByDay) {
     double lat0 = 0.0;
     double lon0 = 0.0;
     Spec s = flat_grey(&lat0, &lon0);
     const double m_lat = 1.0 / 111000.0;
     const double m_lon = m_lat / std::cos(glm::radians(lat0));
-    s.placements = {{"lit", lat0 + 15.0 * m_lat, lon0, 120.0, 0.0F},
-                    {"dark", lat0 - 15.0 * m_lat, lon0, 120.0, 0.0F}};
-    test::GlbSpec lit = test::glb_box(10.0F, 8.0F, 10.0F);
-    lit.base_colour = {0.1F, 0.1F, 0.1F, 1.0F};
-    lit.extras = R"({"fovea_material": 1})";
-    lit.material = R"("emissiveFactor":[1,0.8,0.5],)"
-                   R"("extensions":{"KHR_materials_emissive_strength":{"emissiveStrength":40}},)";
-    lit.top = R"("extensionsUsed":["KHR_materials_emissive_strength"],)";
-    s.models = {{"lit", test::make_glb(lit)},
-                {"dark", box_glb(10.0F, 8.0F, 10.0F, {0.1F, 0.1F, 0.1F, 1.0F}, "")}};
+    s.placements = {{"lit", lat0, lon0, 120.0, 0.0F},
+                    {"dark", lat0 - 30.0 * m_lat, lon0, 120.0, 0.0F},
+                    {"blazing", lat0 + 30.0 * m_lat, lon0, 120.0, 0.0F}};
+    const auto glowing_box = [](const char* strength, bool textured) {
+        test::GlbSpec g = test::glb_box(10.0F, 8.0F, 10.0F);
+        g.base_colour = {0.1F, 0.1F, 0.1F, 1.0F};
+        g.extras = R"({"fovea_material": 1})";
+        g.material = std::string(R"("emissiveFactor":[1,0.8,0.5],)") +
+                     (textured ? R"("emissiveTexture":{"index":0},)" : "") +
+                     R"("extensions":{"KHR_materials_emissive_strength":{"emissiveStrength":)" +
+                     strength + "}},";
+        g.top = R"("extensionsUsed":["KHR_materials_emissive_strength"],)";
+        if (textured) {
+            // White over its upper half, black below (row 0 at the top).
+            RgbaImage half{4, 4, std::vector<std::uint8_t>(64, 255)};
+            std::fill(half.pixels.begin() + 32, half.pixels.end(), std::uint8_t{0});
+            for (std::size_t i = 3; i < half.pixels.size(); i += 4) {
+                half.pixels[i] = 255;
+            }
+            g.image = encode_png(half);
+            g.image_is_base_colour = false;
+        }
+        return test::make_glb(g);
+    };
+    s.models = {{"lit", glowing_box("40", true)},
+                {"dark", box_glb(10.0F, 8.0F, 10.0F, {0.1F, 0.1F, 0.1F, 1.0F}, "")},
+                {"blazing", glowing_box("1e9", false)}};
     const fs::path dir = write_db("emissive", s);
     constexpr std::uint32_t kSize = 128;
-    const SceneView v = view_at({lat0, lon0 + 60.0 * m_lon, 120.0}, 4.0, 0.0, 270.0);
-    const auto wall = [&](const std::vector<std::uint8_t>& px, double north_m) {
+    const SceneView v = view_at({lat0, lon0 + 100.0 * m_lon, 120.0}, 4.0, 0.0, 270.0);
+    const auto wall = [&](const std::vector<std::uint8_t>& px, double north_m, double up_m) {
         const glm::dvec2 at =
-            project(v, {lat0 + north_m * m_lat, lon0 + 10.0 * m_lon, 124.0}, kSize, kSize);
+            project(v, {lat0 + north_m * m_lat, lon0 + 10.0 * m_lon, 120.0 + up_m}, kSize, kSize);
         return colour_at(px, kSize, static_cast<int>(at.x), static_cast<int>(at.y));
     };
     // 05:00 UTC on 2026-06-21 is midnight at KHSV; 17:00 UTC noon.
     const SkyBodies night = sky_bodies(julian_date(2026, 6, 21, 5.0 * 3600.0));
-    const auto dark_px = draw_settled(dir, v, kSize, 1, &night, 2);
+    const auto dark_px = draw_settled(dir, v, kSize, 1, &night, 3);
     if (dark_px.empty()) {
         GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
     }
-    const auto glowing = wall(dark_px, 15.0);
-    const auto unlit = wall(dark_px, -15.0);
-    std::printf("midnight: lit wall %.0f %.0f %.0f, plain %.0f %.0f %.0f\n", glowing[0],
-                glowing[1], glowing[2], unlit[0], unlit[1], unlit[2]);
+    const auto glowing = wall(dark_px, 0.0, 6.0);
+    const auto below = wall(dark_px, 0.0, 2.0);
+    const auto unlit = wall(dark_px, -30.0, 6.0);
+    const auto blazing = wall(dark_px, 30.0, 4.0);
+    std::printf(
+        "midnight: lit wall %.0f %.0f %.0f, under it %.0f, plain %.0f, blazing %.0f %.0f "
+        "%.0f\n",
+        glowing[0], glowing[1], glowing[2], below[0], unlit[0], blazing[0], blazing[1], blazing[2]);
     // Bright and warm: the tone map keeps its colour (not clipped white).
     EXPECT_GT(glowing[0], 240.0);
     EXPECT_GT(glowing[0], glowing[2] + 30.0);
     EXPECT_GT(glowing[2], 120.0);
+    EXPECT_NEAR(below[0], unlit[0], 2.0) << "the texture's dark half glows";
     EXPECT_LT(unlit[0], 60.0);
+    EXPECT_GT(blazing[0], 250.0) << "overflow";
 
     const SkyBodies noon = sky_bodies(julian_date(2026, 6, 21, 17.0 * 3600.0));
-    const auto day_px = draw_settled(dir, v, kSize, 1, &noon, 2);
-    const auto lit_day = wall(day_px, 15.0);
-    const auto plain_day = wall(day_px, -15.0);
-    std::printf("noon: lit wall %.0f %.0f %.0f, plain %.0f %.0f %.0f\n", lit_day[0], lit_day[1],
-                lit_day[2], plain_day[0], plain_day[1], plain_day[2]);
+    const auto day_px = draw_settled(dir, v, kSize, 1, &noon, 3);
+    const auto lit_day = wall(day_px, 0.0, 6.0);
+    const auto under_day = wall(day_px, 0.0, 2.0);
+    std::printf("noon: lit wall %.0f %.0f %.0f, under it %.0f %.0f %.0f\n", lit_day[0], lit_day[1],
+                lit_day[2], under_day[0], under_day[1], under_day[2]);
     for (std::size_t c = 0; c < 3; ++c) {
-        EXPECT_NEAR(lit_day[c], plain_day[c], 1.0) << "channel " << c;
+        EXPECT_NEAR(lit_day[c], under_day[c], 2.0) << "channel " << c;
     }
 }
 

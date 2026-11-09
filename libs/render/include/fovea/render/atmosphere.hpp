@@ -28,6 +28,8 @@ struct Atmosphere {
     // The sun's illuminance at the top of the atmosphere, in the renderer's
     // light units. Only ratios show (exposure follows the light, D-031);
     // the scale keeps the tables' half floats away from both their ends.
+    // Lights of fixed brightness assume it (10 lux a unit): the airglow
+    // (frame.slang) and models' emission (models.cpp, kNitsPerUnit).
     std::array<double, 3> sun_illuminance{10000.0, 10000.0, 10000.0};
     double sun_angular_radius_deg = 0.267;
 };

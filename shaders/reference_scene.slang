@@ -222,6 +222,9 @@ float3 encode_srgb(float3 c) {
 [shader("fragment")]
 float4 fs_tonemap(Fullscreen i) : SV_Target {
     const float2 uv = i.ndc * 0.5 + 0.5;
-    const float3 mapped = tone_map(max(hdr_scene.Sample(uv).rgb * tonemap.exposure, 0.0));
+    // Finite: past 65504 the HDR target holds infinity (single-sampled, no
+    // resolve clamps it), and infinity over infinity is a NaN.
+    const float3 hdr = clamp(hdr_scene.Sample(uv).rgb, 0.0, 65504.0);
+    const float3 mapped = tone_map(hdr * tonemap.exposure);
     return float4(tonemap.encode_srgb != 0 ? encode_srgb(mapped) : mapped, 1.0);
 }
