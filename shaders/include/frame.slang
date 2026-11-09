@@ -36,7 +36,7 @@ struct ViewLighting {
     // (#73).
     float eye_height_m;
     uint layer_count;
-    float unused2;
+    float ground_radius_m;  // the atmosphere's bottom radius: weather heights are above it
     float3 up;
     float unused3;
     float4 layer[6];
@@ -183,10 +183,9 @@ float3 irradiance_on(float3 n, ViewSky s, float2 lit) {
 
 #include "weather.slang"
 
-// The same, at a point relative to the eye: under rain or snow, only their
-// overcast's light (step 6).
-float3 irradiance_at(float3 rel, float3 n, ViewSky s, float2 lit) {
-    const float kind = precipitation_over(rel);
+// The same, under rain or snow of kind `kind` (precipitation_over): only
+// their overcast's light (step 6).
+float3 irradiance_at(float kind, float3 n, ViewSky s, float2 lit) {
     return kind > 0.5 ? overcast_light(s, kind) : irradiance_on(n, s, lit);
 }
 

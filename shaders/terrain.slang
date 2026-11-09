@@ -190,7 +190,7 @@ float4 fs_terrain(TerrainVertex i) : SV_Target {
                                s.moon_irradiance * lerp(moon_level, moon_slope, 0.25) * shade.y +
                                s.sky_irradiance;
     // Through the air, then the fog, rain and snow (step 6, D-034).
-    const float3 lit = albedo * e * kInvPi * i.air.a + i.air.rgb;
+    const float3 lit = albedo * e * kInvPi * i.air.a + air_under(i.air.rgb, s, kind);
     const float dist = length(i.rel);
     const float mu = dot(i.rel, lighting.up) / max(dist, 1e-3);
     return float4(through_bands(lit, mu, dist, s, 1.0) * s.exposure, 1.0);

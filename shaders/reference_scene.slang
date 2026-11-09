@@ -150,18 +150,24 @@ float4 fs_scene(Fullscreen i) : SV_Target {
     const float sun_width = max(fwidth(sun_angle), 1e-6);
 
     const ViewSky s = view_sky[lighting.view];
+    // Under rain or snow (step 6): the eye sees their overcast's base above,
+    // and the ground plane has only its light.
+    const float overcast = precipitation_above(lighting.eye_height_m);
+    const float ground_kind = precipitation_above(lighting.eye_height_m - scene.eye_height_m);
     float3 colour;
     if (ray.z > 0.0 && scene.grid == 0) {
         colour = sky_radiance(ray) * s.exposure;
     } else if (ray.z > 0.0) {
         // Below the horizon: the ground plane, eye_height_m below the eye,
         // lit as level ground.
-        const float3 e = s.sun_irradiance * saturate(-lighting.sun_local.z) +
-                         s.moon_irradiance * saturate(-lighting.moon_local.z) + s.sky_irradiance;
+        const float3 e = ground_kind > 0.5 ? overcast_light(s, ground_kind) : level_light(s);
         const float3 lit = lerp(kGround, kGridLine, grid_lines(g, g_width)) * e * kInvPi;
         // Through the air to the eye (step 3): t is the distance, metres.
         const float4 air = aerial_perspective(i.position.xy, t * 0.001);
-        colour = (lit * air.a + air.rgb) * s.exposure;
+        colour = (lit * air.a + air_under(air.rgb, s, ground_kind)) * s.exposure;
+    } else if (overcast > 0.5) {
+        // The overcast's base, lit from above: its light, diffused.
+        colour = overcast_light(s, overcast) * kInvPi * s.exposure;
     } else {
         colour = sky_radiance(ray) * s.exposure;
         const float r = atmosphere.sun_angular_radius;

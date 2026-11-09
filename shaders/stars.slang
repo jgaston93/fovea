@@ -83,8 +83,10 @@ StarVertex vs_stars(uint id: SV_VulkanVertexID) {
     // it, which w is for a unit direction): its star is brighter there, so
     // the star shows the same on either side of a seam between displays.
     const float w = max(o.position.w, 1e-3);
-    // Through the fog, rain and snow too (step 6).
-    o.colour = star_colour(s.w) * e * through * band_transmittance(mu, 1e9) *
+    // Through the fog, rain and snow too (step 6); none under rain's or
+    // snow's overcast.
+    const float clear = precipitation_above(lighting.eye_height_m) > 0.5 ? 0.0 : 1.0;
+    o.colour = star_colour(s.w) * e * through * band_transmittance(mu, 1e9) * clear *
                push.inv_pixel_solid_angle / (w * w * w);
     return o;
 }
