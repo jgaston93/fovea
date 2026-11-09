@@ -63,7 +63,7 @@ struct ViewLighting {
     // The weather (step 6, D-034; see frame.slang).
     float eye_height_m = 0.0F;
     std::uint32_t layer_count = 0;
-    float unused2 = 0.0F;
+    float ground_radius_m = 0.0F;  // the atmosphere's bottom radius: weather heights are above it
     std::array<float, 3> up{0.0F, 0.0F, 1.0F};
     float unused3 = 0.0F;
     std::array<std::array<float, 4>, kMaxWeatherLayers> layer{};

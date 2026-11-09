@@ -170,6 +170,11 @@ TEST(Config, EnvironmentLayersAreReadAndChecked) {
         const auto e = parse("[[environment.layer]]\n" + bad + kMinimal);
         EXPECT_FALSE(e.ok()) << bad;
     }
+    // A bad kind is the one error: visibility_m isn't then taken as a cloud's.
+    EXPECT_EQ(
+        parse("[[environment.layer]]\nkind = \"hail\"\n" + base + "visibility_m = 500\n" + kMinimal)
+            .errors.size(),
+        1U);
     std::string seven;
     for (int i = 0; i < 7; ++i) {
         seven += "[[environment.layer]]\nkind = \"cloud\"\n" + base;

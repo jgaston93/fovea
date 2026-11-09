@@ -345,7 +345,11 @@ void parse_weather_layer(Parser& p, const toml::table& t, const std::string& pat
     const auto* kind = t.get("kind");
     const auto* name = kind != nullptr ? kind->as_string() : nullptr;
     const std::string kinds = R"(must be "cloud", "fog", "rain" or "snow")";
+    // Without a kind, which of coverage and visibility_m belong is unknown:
+    // they aren't checked against it.
+    bool known = true;
     if (name == nullptr) {
+        known = false;
         p.error(kind != nullptr ? kind->source() : t.source(), "'" + path + ".kind' " + kinds);
     } else if (name->get() == "cloud") {
         out.kind = WeatherKind::cloud;
@@ -356,6 +360,7 @@ void parse_weather_layer(Parser& p, const toml::table& t, const std::string& pat
     } else if (name->get() == "snow") {
         out.kind = WeatherKind::snow;
     } else {
+        known = false;
         p.error(kind->source(),
                 "'" + path + ".kind' " + kinds + R"( (got ")" + name->get() + R"("))");
     }
@@ -391,7 +396,7 @@ void parse_weather_layer(Parser& p, const toml::table& t, const std::string& pat
         p.error(t.source(), "'" + path + "' needs thickness_m");
     }
     if (const auto* n = t.get("coverage")) {
-        if (out.kind != WeatherKind::cloud) {
+        if (known && out.kind != WeatherKind::cloud) {
             p.error(n->source(), "'" + path + ".coverage' is for clouds only");
         } else if (auto v = p.number(*n, path + ".coverage")) {
             check_range(p, *n, path + ".coverage", *v, 0.0, 1.0, false);
@@ -399,7 +404,7 @@ void parse_weather_layer(Parser& p, const toml::table& t, const std::string& pat
         }
     }
     if (const auto* n = t.get("visibility_m")) {
-        if (out.kind == WeatherKind::cloud) {
+        if (known && out.kind == WeatherKind::cloud) {
             p.error(n->source(), "'" + path + ".visibility_m' is for fog, rain and snow only");
         } else if (auto v = p.number(*n, path + ".visibility_m")) {
             check_range(p, *n, path + ".visibility_m", *v, 0.0, 1e7, true);

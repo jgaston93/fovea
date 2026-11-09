@@ -73,6 +73,15 @@ float band_kind(WeatherKind k) {
     }
 }
 
+// Whether a height is below the top of a band of rain or snow, so under its
+// overcast (weather.slang's precipitation_above).
+bool under_precipitation(std::span<const WeatherLayer> weather, double height_m) {
+    return std::any_of(weather.begin(), weather.end(), [&](const WeatherLayer& w) {
+        return (w.kind == WeatherKind::rain || w.kind == WeatherKind::snow) &&
+               w.thickness_m > 0.0 && height_m < w.base_m + w.thickness_m;
+    });
+}
+
 // A view's weather into its lighting block (step 6, D-034): the eye's
 // height and up, and the fog, rain and snow, lowest first, each as its base,
 // top, extinction (Koschmieder's 3.912 over its visibility) and kind (0
@@ -1451,9 +1460,11 @@ void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
         l.moon_up = static_cast<float>(moon_up);
         // The shadows' light (step 5): the sun while any of it is up, else
         // the moon, else none; their cascades for this view.
-        // A moon all but new lights nothing worth a shadow.
-        const bool by_sun = sun_up > 0.0;
-        const bool by_moon = !by_sun && moon_up > 0.0 && sky.moon_lit > 0.1;
+        // A moon all but new lights nothing worth a shadow, and under rain or
+        // snow neither casts one (step 6): what the eye sees is under it too.
+        const bool overcast = under_precipitation(weather, eye.alt_m);
+        const bool by_sun = !overcast && sun_up > 0.0;
+        const bool by_moon = !overcast && !by_sun && moon_up > 0.0 && sky.moon_lit > 0.1;
         shadows_lit[i] = by_sun || by_moon;
         if (by_sun || by_moon) {
             const DVec3 towards = by_sun ? sky.sun : moon;
@@ -1470,6 +1481,7 @@ void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
             terrain_casts[i] = false;
             l.shadow_light = 0;
         }
+        l.ground_radius_m = static_cast<float>(sky_tables->atmosphere().bottom_radius_km * 1000.0);
         fill_weather(l, weather, eye.alt_m, up);
         const std::uint32_t at = lighting_offset(slot, i);
         std::memcpy(static_cast<std::uint8_t*>(lighting_mapped) + at, &l, sizeof(l));

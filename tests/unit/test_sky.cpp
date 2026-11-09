@@ -16,6 +16,7 @@
 
 #include "fovea/core/celestial.hpp"
 #include "fovea/core/geodesy.hpp"
+#include "fovea/core/scene.hpp"
 #include "fovea/render/renderer.hpp"
 #include "fovea/render/view.hpp"
 #include "support/atmosphere_reference.hpp"
@@ -222,6 +223,34 @@ TEST(Sky, TheSunsDiscIsWhereTheSunIs) {
     EXPECT_NEAR(sx / n, want_x, 1.0);
     EXPECT_NEAR(sy / n, want_y, 1.0);
     EXPECT_LT(n, 200);  // a disc, not a glow
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
+// Under rain the sky is its overcast's grey base (step 6; clouds aren't
+// drawn yet, #73): no sun's disc, though the rain itself is thin enough to
+// show it.
+TEST(Sky, UnderRainTheSunIsHidden) {
+    constexpr std::uint32_t kSize = 64;
+    auto r = make_offscreen({{kSize, kSize}});
+    FOVEA_NEED_VULKAN(r);
+    const SkyBodies sky = at_utc(3, 20, 15.5);
+    const SunAt sun = sun_at(view_towards(0.0, 0.0, kSize, kSize), sky);
+    const SceneView v = view_towards(sun.azimuth_deg, sun.elevation_deg, kSize, kSize, 10.0);
+    const std::array<WeatherLayer, 1> rain = {
+        WeatherLayer{WeatherKind::rain, -1000.0, 3000.0, 1.0, 100000.0}};
+    r->set_sky(sky);
+    r->set_weather(rain);
+    r->draw_scene_frame(std::vector<SceneView>{v});
+    const auto px = r->read_back_rgba(0);
+    int bright = 0;
+    int colour = 0;
+    for (std::size_t i = 0; i < px.size(); i += 4) {
+        bright += px[i] >= 250 && px[i + 1] >= 250 && px[i + 2] >= 240 ? 1 : 0;
+        colour = std::max({colour, std::abs(px[i] - px[i + 2]), std::abs(px[i + 1] - px[i + 2])});
+    }
+    std::printf("under rain: %d sun pixels, colour within %d levels of grey\n", bright, colour);
+    EXPECT_EQ(bright, 0) << "the sun's disc through the overcast";
+    EXPECT_LE(colour, 25) << "not the overcast's blue-grey";
     EXPECT_EQ(r->validation_messages(), 0U);
 }
 
