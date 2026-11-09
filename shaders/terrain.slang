@@ -182,9 +182,10 @@ float4 fs_terrain(TerrainVertex i) : SV_Target {
     const float2 shade = shadowed(
         shadow_lit(terrain_shadow_maps, terrain_shadow_sampler, i.rel, normalize(i.normal),
                    ddx(i.rel), ddy(i.rel)));
-    // Under rain or snow, their overcast's grey light alone (step 6).
-    const float3 e = under_precipitation(i.rel)
-                         ? overcast_light(s)
+    // Under rain or snow, their overcast's light alone (step 6).
+    const float kind = precipitation_over(i.rel);
+    const float3 e = kind > 0.5
+                         ? overcast_light(s, kind)
                          : s.sun_irradiance * lerp(level, slope, 0.25) * shade.x +
                                s.moon_irradiance * lerp(moon_level, moon_slope, 0.25) * shade.y +
                                s.sky_irradiance;

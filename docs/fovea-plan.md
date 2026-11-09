@@ -123,7 +123,7 @@ Added 2026-11-07, at the owner's asking: the sky, the light and the weather, whi
 - Atmosphere and aerial perspective: a physically based sky (atmospheric scattering), and distant terrain and models fading into haze with distance, which also softens where terrain levels of detail change.
 - Time of day: the sun and moon placed from the date, time and location; the sky and the lighting following them through dawn, dusk and night; stars.
 - Night lighting: airport and approach lights, their points drawn after the resolve (D-028, D-033) and the light they cast with the clustered lighting reserved for them (foundational decision 4), from a lights layer in the tiles (D-018 names it) that the compiler builds from the runways' FAA geometry and a placement file of lights; lit windows, which need emissive materials in `libs/models` and the model scripts.
-- Weather: visibility (the haze above, set by the host or config) and fog, cloud layers (2D layers first; volumetric clouds if the frame allows), precipitation; wet or snow-covered ground later.
+- Weather: visibility (the haze above, set by the host or config) and fog, cloud layers (2D layers first; volumetric clouds if the frame allows), precipitation (milestone 6 draws it as haze under an overcast; its falling streaks and flakes are particles, milestone 10); wet or snow-covered ground later (milestone 14, with the material maps).
 - Host control: the environment set over CIGI (time of day, atmosphere, weather), from the ICD, as every packet: milestone 6's plan extends D-014's packets to them. And in config without a host.
 
 ## Image quality
@@ -137,7 +137,7 @@ Added 2026-11-07, at the owner's asking: the sky, the light and the weather, whi
 
 ## Effects
 
-- A particle system (core): smoke, dust, fire, explosions, spray; driven over CIGI as the ICD has it (CIGI 3.3 has no effect packets of its own: effects are entities of effect types, under Entity Control), or by modules (rotor downwash, brownout).
+- A particle system (core): smoke, dust, fire, explosions, spray, and falling rain and snow (around the eye, from the weather layers); driven over CIGI as the ICD has it (CIGI 3.3 has no effect packets of its own: effects are entities of effect types, under Entity Control), or by modules (rotor downwash, brownout).
 
 ## Wide-area coverage
 
@@ -181,11 +181,11 @@ As chosen (`docs/decisions.md` has each choice and why):
 7. Close-range detail: procedural detail textures, scattered vegetation with instancing and impostors, for any viewer near the ground.
 8. Cultural features: roads, buildings from footprints, water.
 9. Entities: CIGI entity control, interpolation, articulated parts, entity lights, height-of-terrain queries, and terrain queries answered over CIGI.
-10. Effects: the particle system, set over CIGI or by modules.
+10. Effects: the particle system, set over CIGI or by modules; falling rain and snow from the weather layers.
 11. Wide-area coverage: global coarse sources, several databases or areas, regional scale.
 12. Control plane: start, stop, database selection, module toggles, health and stats, a minimal UI.
 13. Evaluation: scripted routes for each kind of use (low and high flight, hover, ground vehicles, a viewer on foot), frame timing and visual cues against written acceptance criteria.
-14. Later: material maps and IR, lidar, the sea, projector warping and edge blending, DIS bridge, multi-machine channels.
+14. Later: material maps and IR, wet and snow-covered ground, lidar, the sea, projector warping and edge blending, DIS bridge, multi-machine channels.
 
 ## First Claude Code session tasks
 
