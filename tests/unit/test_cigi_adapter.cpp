@@ -1,4 +1,5 @@
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -489,11 +490,80 @@ TEST(CigiAdapter, StartOfFrameAnswersTheLastSenderOtherwise) {
     std::array<std::uint8_t, 64> buffer{};
     const auto r = host.socket.receive(buffer);
     ASSERT_TRUE(r.has_value());
-    const auto sof = cigi::decode_start_of_frame(std::span(buffer).first(r->size), false);
+    const auto sof = cigi::decode_start_of_frame(
+        std::span(buffer).first(r->size),
+        cigi::MessageReader(std::span(buffer).first(r->size), cigi::kStartOfFrameId).swapped());
     ASSERT_TRUE(sof.has_value());
     EXPECT_EQ(sof->ig_frame_number, 2U);
     EXPECT_EQ(sof->ig_mode, cigi::IgMode::operate);
     EXPECT_EQ(sof->last_host_frame_number, 77U);  // acknowledges the host's frame
+}
+
+// Integration 1 step 2: Start of Frame in network order (big-endian) unless
+// asked for this computer's, to a big-endian host or any other.
+TEST(CigiAdapter, StartOfFrameInEitherByteOrder) {
+    for (const cigi::ByteOrder order : {cigi::ByteOrder::network, cigi::ByteOrder::native}) {
+        SCOPED_TRACE(order == cigi::ByteOrder::network ? "network" : "native");
+        auto scene = std::make_unique<SceneState>();
+        FrameStartRing frames;
+        UdpSocket host_socket(0, kLoopback);
+        CigiAdapterOptions options;
+        options.host = UdpEndpoint{kLoopback, host_socket.local_port()};
+        options.byte_order = order;
+        CigiAdapter adapter(options, &frames);
+        Host host(adapter.port());
+        // A big-endian host's IG Control, as Aerie sends it.
+        Bytes ig(cigi::kIgControlSize);
+        ASSERT_EQ(cigi::encode(operate(0x01020304), ig, cigi::swaps(cigi::ByteOrder::network)),
+                  ig.size());
+        host.send(ig);
+        ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 1; }));
+        ASSERT_TRUE(frames.try_push({0x0A0B0C0D, now()}));
+        (void)adapter.poll(*scene);
+        ASSERT_TRUE(host_socket.wait_readable(1000));
+        std::array<std::uint8_t, 64> buffer{};
+        const auto r = host_socket.receive(buffer);
+        ASSERT_TRUE(r.has_value());
+        ASSERT_EQ(r->size, cigi::kStartOfFrameSize);
+        // Figure 109's Byte Swap Magic Number (bytes 6-7), IG Frame Number
+        // (8-11) and Last Host Frame Number (16-19).
+        const bool big =
+            order == cigi::ByteOrder::network || std::endian::native == std::endian::big;
+        const Bytes magic = big ? Bytes{0x80, 0x00} : Bytes{0x00, 0x80};
+        const Bytes frame = big ? Bytes{0x0A, 0x0B, 0x0C, 0x0D} : Bytes{0x0D, 0x0C, 0x0B, 0x0A};
+        const Bytes host_frame =
+            big ? Bytes{0x01, 0x02, 0x03, 0x04} : Bytes{0x04, 0x03, 0x02, 0x01};
+        EXPECT_EQ(Bytes(buffer.begin() + 6, buffer.begin() + 8), magic);
+        EXPECT_EQ(Bytes(buffer.begin() + 8, buffer.begin() + 12), frame);
+        EXPECT_EQ(Bytes(buffer.begin() + 16, buffer.begin() + 20), host_frame);
+    }
+}
+
+// Without a host address, answers go to the address the host sends from, at
+// host_port when it's set (config's 8005), and not the port it sent from.
+TEST(CigiAdapter, StartOfFrameGoesToTheHostPortAtTheSendersAddress) {
+    auto scene = std::make_unique<SceneState>();
+    FrameStartRing frames;
+    UdpSocket listener(0, kLoopback);
+    CigiAdapterOptions options;
+    options.host_port = listener.local_port();
+    CigiAdapter adapter(options, &frames);
+    Host host(adapter.port());
+    host.send(host_message(operate(5), {}));
+    ASSERT_TRUE(poll_until(adapter, *scene, [&] { return adapter.stats().messages == 1; }));
+    ASSERT_TRUE(frames.try_push({3, now()}));
+    (void)adapter.poll(*scene);
+    ASSERT_TRUE(listener.wait_readable(1000));
+    std::array<std::uint8_t, 64> buffer{};
+    const auto r = listener.receive(buffer);
+    ASSERT_TRUE(r.has_value());
+    cigi::MessageReader reader{std::span(buffer).first(r->size), cigi::kStartOfFrameId};
+    cigi::MessageReader::Packet p;
+    ASSERT_TRUE(reader.next(p));
+    const auto sof = cigi::decode_start_of_frame(p.bytes, reader.swapped());
+    ASSERT_TRUE(sof.has_value());
+    EXPECT_EQ(sof->last_host_frame_number, 5U);
+    EXPECT_FALSE(host.socket.wait_readable(50));  // nothing to the port it sent from
 }
 
 TEST(CigiAdapter, GarbageIsCountedNotFatal) {
@@ -631,7 +701,9 @@ TEST(CigiAdapter, AfterAStallOnlyTheNewestFrameIsReported) {
     std::array<std::uint8_t, 64> buffer{};
     const auto r = host_socket.receive(buffer);
     ASSERT_TRUE(r.has_value());
-    const auto sof = cigi::decode_start_of_frame(std::span(buffer).first(r->size), false);
+    const auto sof = cigi::decode_start_of_frame(
+        std::span(buffer).first(r->size),
+        cigi::MessageReader(std::span(buffer).first(r->size), cigi::kStartOfFrameId).swapped());
     ASSERT_TRUE(sof.has_value());
     EXPECT_EQ(sof->ig_frame_number, 39U);
     EXPECT_FALSE(host_socket.wait_readable(50));  // just the one

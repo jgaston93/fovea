@@ -85,7 +85,7 @@ int main(int argc, char** argv) {
     const fovea::test_host::Script& script = *loaded.script;
     try {
         const fovea::UdpEndpoint ig{script.ig_address, script.ig_port};
-        fovea::test_host::Session session(ig, script.host_port, 0, smoothing);
+        fovea::test_host::Session session(ig, script.host_port, 0, smoothing, script.byte_order);
         fovea::test_host::Flight flight(script.start, script.segments, script.loop);
         std::printf("cigi-test-host: CIGI 3.3 to %s from port %u, %s, %zu segments%s, for %.0f s\n",
                     fovea::format_endpoint(ig).c_str(), unsigned{session.local_port()},

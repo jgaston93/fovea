@@ -10,7 +10,8 @@
 // Byte order (ICD 2.5, p. 7-8): the sender writes in its native order and
 // sets the IG Control or Start of Frame Byte Swap Magic Number to 8000h; the
 // receiver swaps every multi-byte field when it reads 80h instead. Encoding
-// here writes native order.
+// here writes native order, or the other (`swap`), magic number included: a
+// little-endian computer sends in network order (big-endian) by swapping.
 //
 // Message structure (ICD 2.6, p. 8): a message is one or more packets, each
 // starting with an opcode byte and a size byte. A host-to-IG message starts
@@ -20,6 +21,7 @@
 // bit, reserved bits are sent as zero, packets with unknown IDs are ignored,
 // and bytes beyond a known packet's expected size are ignored.
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -46,8 +48,23 @@ inline constexpr std::uint8_t kAtmosphereControlSize = 32;
 inline constexpr std::uint8_t kEnvironmentalRegionControlId = 11;  // ICD 4.1.11, p. 88
 inline constexpr std::uint8_t kWeatherControlId = 12;              // ICD 4.1.12, p. 100
 inline constexpr std::uint8_t kWeatherControlSize = 56;
+inline constexpr std::uint8_t kHatHotRequestId = 24;  // ICD 4.1.24, p. 152
+inline constexpr std::uint8_t kHatHotRequestSize = 32;
 inline constexpr std::uint8_t kStartOfFrameId = 101;  // ICD 4.2.1, p. 212
 inline constexpr std::uint8_t kStartOfFrameSize = 24;
+inline constexpr std::uint8_t kHatHotResponseId = 102;  // ICD 4.2.2, p. 217
+inline constexpr std::uint8_t kHatHotResponseSize = 16;
+inline constexpr std::uint8_t kHatHotExtendedResponseId = 103;  // ICD 4.2.3, p. 219
+inline constexpr std::uint8_t kHatHotExtendedResponseSize = 40;
+
+// The order multi-byte fields are sent in: this computer's, or network order
+// (big-endian), which many hosts expect.
+enum class ByteOrder : std::uint8_t { native, network };
+
+// Whether sending in `order` swaps this computer's fields (encode's `swap`).
+constexpr bool swaps(ByteOrder order) {
+    return order == ByteOrder::network && std::endian::native != std::endian::big;
+}
 
 // IG Mode (IG Control, p. 43; Start of Frame, p. 214). Offline Maintenance is
 // only reported by the IG.
@@ -175,6 +192,26 @@ struct WeatherControl {
     float aerosol_concentration = 0.0F;  // g/m^3
 };
 
+// HAT/HOT Request's Request Type (p. 153). 3 is undefined: a packet holding
+// it is rejected.
+enum class HatHotRequestType : std::uint8_t { hat = 0, hot = 1, extended = 2 };
+
+// ICD 4.1.24 HAT/HOT Request (p. 152-154): the height above terrain (HAT)
+// of a point, or of the terrain (HOT) below it. Geodetic points give
+// latitude, longitude (degrees) and altitude (metres above mean sea level,
+// ignored for HOT); entity points give X, Y, Z offsets in metres from the
+// entity's reference point, in its body axes, in the same three fields.
+struct HatHotRequest {
+    std::uint16_t hat_hot_id = 0;  // copied into the response
+    HatHotRequestType request_type = HatHotRequestType::hat;
+    bool entity_coordinates = false;  // Coordinate System: false is Geodetic
+    std::uint8_t update_period = 0;   // 0: one response; n: one every nth frame
+    std::uint16_t entity_id = 0;      // with entity coordinates
+    double lat_or_x = 0.0;
+    double lon_or_y = 0.0;
+    double alt_or_z = 0.0;
+};
+
 // ICD 4.2.1 Start of Frame (p. 212-216): IG to host, first packet of each
 // message.
 struct StartOfFrame {
@@ -189,14 +226,42 @@ struct StartOfFrame {
     std::uint32_t last_host_frame_number = 0;
 };
 
-// Encoding: writes the packet at the start of `out` in native byte order and
-// returns its size, or 0 if `out` is too small.
-std::size_t encode(const IgControl& p, std::span<std::uint8_t> out);
-std::size_t encode(const EntityControl& p, std::span<std::uint8_t> out);
-std::size_t encode(const CelestialSphereControl& p, std::span<std::uint8_t> out);
-std::size_t encode(const AtmosphereControl& p, std::span<std::uint8_t> out);
-std::size_t encode(const WeatherControl& p, std::span<std::uint8_t> out);
-std::size_t encode(const StartOfFrame& p, std::span<std::uint8_t> out);
+// ICD 4.2.2 HAT/HOT Response (p. 217-218): a HAT or HOT Request's answer.
+struct HatHotResponse {
+    std::uint16_t hat_hot_id = 0;
+    bool valid = false;  // false: outside the database, or not computed
+    bool hot = false;    // Response Type: false is HAT
+    // The last IG Control's Host Frame Number's low 4 bits, for periodic
+    // requests (ignored for one-shot ones).
+    std::uint8_t host_frame_number_lsn = 0;
+    double height_m = 0.0;  // HAT: above the terrain; HOT: above mean sea level
+};
+
+// ICD 4.2.3 HAT/HOT Extended Response (p. 219-221): an Extended Request's
+// answer.
+struct HatHotExtendedResponse {
+    std::uint16_t hat_hot_id = 0;
+    bool valid = false;
+    std::uint8_t host_frame_number_lsn = 0;  // as HatHotResponse's
+    double hat_m = 0.0;                      // negative: the point is below the terrain
+    double hot_m = 0.0;                      // above mean sea level
+    std::uint32_t material_code = 0;
+    float normal_azimuth_deg = 0.0F;    // -180 to 180, from true north
+    float normal_elevation_deg = 0.0F;  // -90 to 90, from the local level
+};
+
+// Encoding: writes the packet at the start of `out` and returns its size, or
+// 0 if `out` is too small. `swap`: in the byte order other than this
+// computer's (swaps()).
+std::size_t encode(const IgControl& p, std::span<std::uint8_t> out, bool swap = false);
+std::size_t encode(const EntityControl& p, std::span<std::uint8_t> out, bool swap = false);
+std::size_t encode(const CelestialSphereControl& p, std::span<std::uint8_t> out, bool swap = false);
+std::size_t encode(const AtmosphereControl& p, std::span<std::uint8_t> out, bool swap = false);
+std::size_t encode(const WeatherControl& p, std::span<std::uint8_t> out, bool swap = false);
+std::size_t encode(const HatHotRequest& p, std::span<std::uint8_t> out, bool swap = false);
+std::size_t encode(const StartOfFrame& p, std::span<std::uint8_t> out, bool swap = false);
+std::size_t encode(const HatHotResponse& p, std::span<std::uint8_t> out, bool swap = false);
+std::size_t encode(const HatHotExtendedResponse& p, std::span<std::uint8_t> out, bool swap = false);
 
 // Decoding a whole message.
 enum class MessageError : std::uint8_t {
@@ -240,8 +305,9 @@ private:
 // packet is shorter than the ICD's size, or a field holds a value the ICD
 // leaves undefined (Entity State or Ground/Ocean Clamp 3; IG Mode 3 in IG
 // Control, which only the IG may report; Weather Control Scope 3 or
-// Severity over 5). Longer packets are accepted (ICD
-// 2.11, rule 4). `swap`: MessageReader::swapped().
+// Severity over 5; HAT/HOT Request Type 3). Reserved bits are ignored, and
+// longer packets accepted (ICD 2.11, rule 4: later versions may use both).
+// `swap`: MessageReader::swapped().
 std::optional<IgControl> decode_ig_control(std::span<const std::uint8_t> in, bool swap);
 std::optional<EntityControl> decode_entity_control(std::span<const std::uint8_t> in, bool swap);
 std::optional<CelestialSphereControl> decode_celestial_sphere_control(
@@ -249,6 +315,10 @@ std::optional<CelestialSphereControl> decode_celestial_sphere_control(
 std::optional<AtmosphereControl> decode_atmosphere_control(std::span<const std::uint8_t> in,
                                                            bool swap);
 std::optional<WeatherControl> decode_weather_control(std::span<const std::uint8_t> in, bool swap);
+std::optional<HatHotRequest> decode_hat_hot_request(std::span<const std::uint8_t> in, bool swap);
 std::optional<StartOfFrame> decode_start_of_frame(std::span<const std::uint8_t> in, bool swap);
+std::optional<HatHotResponse> decode_hat_hot_response(std::span<const std::uint8_t> in, bool swap);
+std::optional<HatHotExtendedResponse> decode_hat_hot_extended_response(
+    std::span<const std::uint8_t> in, bool swap);
 
 }  // namespace fovea::cigi

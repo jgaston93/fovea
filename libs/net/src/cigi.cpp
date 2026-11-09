@@ -13,9 +13,13 @@ namespace {
 // Multi-byte fields are copied byte for byte (no alignment assumed) and, when
 // the sender's byte order differs, reversed.
 template <typename T>
-void put(std::span<std::uint8_t> out, std::size_t at, T value) {
+void put(std::span<std::uint8_t> out, std::size_t at, T value, bool swap) {
     static_assert(std::is_trivially_copyable_v<T>);
-    std::memcpy(out.data() + at, &value, sizeof(T));
+    auto bytes = std::bit_cast<std::array<std::uint8_t, sizeof(T)>>(value);
+    if (swap) {
+        std::reverse(bytes.begin(), bytes.end());
+    }
+    std::memcpy(out.data() + at, bytes.data(), sizeof(T));
 }
 
 template <typename T>
@@ -60,7 +64,7 @@ void clear(std::span<std::uint8_t> out, std::size_t size) {
 //     Timestamp Valid (2), IG Mode (1-0) | 5 Reserved | 6-7 Byte Swap Magic Number
 //   8-11 Host Frame Number | 12-15 Timestamp | 16-19 Last IG Frame Number
 //   20-23 Reserved
-std::size_t encode(const IgControl& p, std::span<std::uint8_t> out) {
+std::size_t encode(const IgControl& p, std::span<std::uint8_t> out, bool swap) {
     if (out.size() < kIgControlSize) {
         return 0;
     }
@@ -68,14 +72,14 @@ std::size_t encode(const IgControl& p, std::span<std::uint8_t> out) {
     out[0] = kIgControlId;
     out[1] = kIgControlSize;
     out[2] = kMajorVersion;
-    put(out, 3, p.database_number);
+    put(out, 3, p.database_number, swap);
     out[4] = static_cast<std::uint8_t>(
         field(p.minor_version, 4, 4) | field(flag(p.extrapolation_enable), 3, 1) |
         field(flag(p.timestamp_valid), 2, 1) | field(static_cast<unsigned>(p.ig_mode), 0, 2));
-    put(out, 6, kMagicNoSwap);
-    put(out, 8, p.host_frame_number);
-    put(out, 12, p.timestamp);
-    put(out, 16, p.last_ig_frame_number);
+    put(out, 6, kMagicNoSwap, swap);
+    put(out, 8, p.host_frame_number, swap);
+    put(out, 12, p.timestamp, swap);
+    put(out, 16, p.last_ig_frame_number, swap);
     return kIgControlSize;
 }
 
@@ -104,14 +108,14 @@ std::optional<IgControl> decode_ig_control(std::span<const std::uint8_t> in, boo
 //   6 Alpha | 7 Reserved | 8-9 Entity Type | 10-11 Parent ID
 //   12-15 Roll | 16-19 Pitch | 20-23 Yaw (single floats)
 //   24-31 Latitude/X Offset | 32-39 Longitude/Y Offset | 40-47 Altitude/Z Offset
-std::size_t encode(const EntityControl& p, std::span<std::uint8_t> out) {
+std::size_t encode(const EntityControl& p, std::span<std::uint8_t> out, bool swap) {
     if (out.size() < kEntityControlSize) {
         return 0;
     }
     clear(out, kEntityControlSize);
     out[0] = kEntityControlId;
     out[1] = kEntityControlSize;
-    put(out, 2, p.entity_id);
+    put(out, 2, p.entity_id, swap);
     out[4] = static_cast<std::uint8_t>(
         field(static_cast<unsigned>(p.ground_ocean_clamp), 5, 2) |
         field(flag(p.inherit_alpha), 4, 1) | field(flag(p.collision_detection), 3, 1) |
@@ -121,14 +125,14 @@ std::size_t encode(const EntityControl& p, std::span<std::uint8_t> out) {
                                        field(flag(p.animation_loop), 1, 1) |
                                        field(flag(p.animation_backward), 0, 1));
     out[6] = p.alpha;
-    put(out, 8, p.entity_type);
-    put(out, 10, p.parent_id);
-    put(out, 12, p.roll_deg);
-    put(out, 16, p.pitch_deg);
-    put(out, 20, p.yaw_deg);
-    put(out, 24, p.lat_or_x);
-    put(out, 32, p.lon_or_y);
-    put(out, 40, p.alt_or_z);
+    put(out, 8, p.entity_type, swap);
+    put(out, 10, p.parent_id, swap);
+    put(out, 12, p.roll_deg, swap);
+    put(out, 16, p.pitch_deg, swap);
+    put(out, 20, p.yaw_deg, swap);
+    put(out, 24, p.lat_or_x, swap);
+    put(out, 32, p.lon_or_y, swap);
+    put(out, 40, p.alt_or_z, swap);
     return kEntityControlSize;
 }
 
@@ -165,7 +169,7 @@ std::optional<EntityControl> decode_entity_control(std::span<const std::uint8_t>
 //   4 Reserved (7-5), Date/Time Valid (4), Star Field Enable (3),
 //     Moon Enable (2), Sun Enable (1), Ephemeris Model Enable (0)
 //   5-7 Reserved | 8-11 Date | 12-15 Star Field Intensity
-std::size_t encode(const CelestialSphereControl& p, std::span<std::uint8_t> out) {
+std::size_t encode(const CelestialSphereControl& p, std::span<std::uint8_t> out, bool swap) {
     if (out.size() < kCelestialSphereControlSize) {
         return 0;
     }
@@ -178,8 +182,8 @@ std::size_t encode(const CelestialSphereControl& p, std::span<std::uint8_t> out)
         field(flag(p.date_time_valid), 4, 1) | field(flag(p.star_field_enable), 3, 1) |
         field(flag(p.moon_enable), 2, 1) | field(flag(p.sun_enable), 1, 1) |
         field(flag(p.ephemeris_enable), 0, 1));
-    put(out, 8, p.date);
-    put(out, 12, p.star_field_intensity);
+    put(out, 8, p.date, swap);
+    put(out, 12, p.star_field_intensity, swap);
     return kCelestialSphereControlSize;
 }
 
@@ -210,7 +214,7 @@ std::optional<CelestialSphereControl> decode_celestial_sphere_control(
 //   12-15 Global Horizontal Wind Speed | 16-19 Global Vertical Wind Speed
 //   20-23 Global Wind Direction | 24-27 Global Barometric Pressure
 //   28-31 Reserved
-std::size_t encode(const AtmosphereControl& p, std::span<std::uint8_t> out) {
+std::size_t encode(const AtmosphereControl& p, std::span<std::uint8_t> out, bool swap) {
     if (out.size() < kAtmosphereControlSize) {
         return 0;
     }
@@ -219,12 +223,12 @@ std::size_t encode(const AtmosphereControl& p, std::span<std::uint8_t> out) {
     out[1] = kAtmosphereControlSize;
     out[2] = field(flag(p.atmospheric_model_enable), 0, 1);
     out[3] = p.humidity;
-    put(out, 4, p.air_temperature_c);
-    put(out, 8, p.visibility_range_m);
-    put(out, 12, p.horizontal_wind_mps);
-    put(out, 16, p.vertical_wind_mps);
-    put(out, 20, p.wind_direction_deg);
-    put(out, 24, p.barometric_pressure_mb);
+    put(out, 4, p.air_temperature_c, swap);
+    put(out, 8, p.visibility_range_m, swap);
+    put(out, 12, p.horizontal_wind_mps, swap);
+    put(out, 16, p.vertical_wind_mps, swap);
+    put(out, 20, p.wind_direction_deg, swap);
+    put(out, 24, p.barometric_pressure_mb, swap);
     return kAtmosphereControlSize;
 }
 
@@ -256,14 +260,14 @@ std::optional<AtmosphereControl> decode_atmosphere_control(std::span<const std::
 //   32-35 Transition Band | 36-39 Horizontal Wind Speed
 //   40-43 Vertical Wind Speed | 44-47 Wind Direction
 //   48-51 Barometric Pressure | 52-55 Aerosol Concentration
-std::size_t encode(const WeatherControl& p, std::span<std::uint8_t> out) {
+std::size_t encode(const WeatherControl& p, std::span<std::uint8_t> out, bool swap) {
     if (out.size() < kWeatherControlSize) {
         return 0;
     }
     clear(out, kWeatherControlSize);
     out[0] = kWeatherControlId;
     out[1] = kWeatherControlSize;
-    put(out, 2, p.entity_or_region_id);
+    put(out, 2, p.entity_or_region_id, swap);
     out[4] = p.layer_id;
     out[5] = p.humidity;
     out[6] = static_cast<std::uint8_t>(
@@ -272,18 +276,18 @@ std::size_t encode(const WeatherControl& p, std::span<std::uint8_t> out) {
         field(flag(p.weather_enable), 0, 1));
     out[7] = static_cast<std::uint8_t>(field(p.severity, 2, 3) |
                                        field(static_cast<unsigned>(p.scope), 0, 2));
-    put(out, 8, p.air_temperature_c);
-    put(out, 12, p.visibility_range_m);
-    put(out, 16, p.scud_frequency);
-    put(out, 20, p.coverage);
-    put(out, 24, p.base_elevation_m);
-    put(out, 28, p.thickness_m);
-    put(out, 32, p.transition_band_m);
-    put(out, 36, p.horizontal_wind_mps);
-    put(out, 40, p.vertical_wind_mps);
-    put(out, 44, p.wind_direction_deg);
-    put(out, 48, p.barometric_pressure_mb);
-    put(out, 52, p.aerosol_concentration);
+    put(out, 8, p.air_temperature_c, swap);
+    put(out, 12, p.visibility_range_m, swap);
+    put(out, 16, p.scud_frequency, swap);
+    put(out, 20, p.coverage, swap);
+    put(out, 24, p.base_elevation_m, swap);
+    put(out, 28, p.thickness_m, swap);
+    put(out, 32, p.transition_band_m, swap);
+    put(out, 36, p.horizontal_wind_mps, swap);
+    put(out, 40, p.vertical_wind_mps, swap);
+    put(out, 44, p.wind_direction_deg, swap);
+    put(out, 48, p.barometric_pressure_mb, swap);
+    put(out, 52, p.aerosol_concentration, swap);
     return kWeatherControlSize;
 }
 
@@ -318,13 +322,52 @@ std::optional<WeatherControl> decode_weather_control(std::span<const std::uint8_
     return p;
 }
 
+// ICD 4.1.24, Figure 86 (p. 152); the errata leave it as it is:
+//   0 Packet ID = 24 | 1 Packet Size = 32 | 2-3 HAT/HOT ID
+//   4 Reserved (7-3), Coordinate System (2), Request Type (1-0)
+//   5 Update Period | 6-7 Entity ID
+//   8-15 Latitude/X Offset | 16-23 Longitude/Y Offset | 24-31 Altitude/Z Offset
+std::size_t encode(const HatHotRequest& p, std::span<std::uint8_t> out, bool swap) {
+    if (out.size() < kHatHotRequestSize) {
+        return 0;
+    }
+    clear(out, kHatHotRequestSize);
+    out[0] = kHatHotRequestId;
+    out[1] = kHatHotRequestSize;
+    put(out, 2, p.hat_hot_id, swap);
+    out[4] = static_cast<std::uint8_t>(field(flag(p.entity_coordinates), 2, 1) |
+                                       field(static_cast<unsigned>(p.request_type), 0, 2));
+    out[5] = p.update_period;
+    put(out, 6, p.entity_id, swap);
+    put(out, 8, p.lat_or_x, swap);
+    put(out, 16, p.lon_or_y, swap);
+    put(out, 24, p.alt_or_z, swap);
+    return kHatHotRequestSize;
+}
+
+std::optional<HatHotRequest> decode_hat_hot_request(std::span<const std::uint8_t> in, bool swap) {
+    if (!has_packet(in, kHatHotRequestId, kHatHotRequestSize) || bits(in[4], 0, 2) == 3) {
+        return std::nullopt;  // Request Type 3: undefined
+    }
+    HatHotRequest p;
+    p.hat_hot_id = get<std::uint16_t>(in, 2, swap);
+    p.entity_coordinates = bits(in[4], 2, 1) != 0;
+    p.request_type = static_cast<HatHotRequestType>(bits(in[4], 0, 2));
+    p.update_period = in[5];
+    p.entity_id = get<std::uint16_t>(in, 6, swap);
+    p.lat_or_x = get<double>(in, 8, swap);
+    p.lon_or_y = get<double>(in, 16, swap);
+    p.alt_or_z = get<double>(in, 24, swap);
+    return p;
+}
+
 // ICD 4.2.1, Figure 109 (p. 212):
 //   0 Packet ID = 101 | 1 Packet Size = 24 | 2 Major Version = 3 | 3 Database Number
 //   4 IG Status Code | 5 Minor Version (7-4), Earth Reference Model (3),
 //     Timestamp Valid (2), IG Mode (1-0) | 6-7 Byte Swap Magic Number
 //   8-11 IG Frame Number | 12-15 Timestamp | 16-19 Last Host Frame Number
 //   20-23 Reserved
-std::size_t encode(const StartOfFrame& p, std::span<std::uint8_t> out) {
+std::size_t encode(const StartOfFrame& p, std::span<std::uint8_t> out, bool swap) {
     if (out.size() < kStartOfFrameSize) {
         return 0;
     }
@@ -332,15 +375,15 @@ std::size_t encode(const StartOfFrame& p, std::span<std::uint8_t> out) {
     out[0] = kStartOfFrameId;
     out[1] = kStartOfFrameSize;
     out[2] = kMajorVersion;
-    put(out, 3, p.database_number);
+    put(out, 3, p.database_number, swap);
     out[4] = p.ig_status;
     out[5] = static_cast<std::uint8_t>(
         field(p.minor_version, 4, 4) | field(flag(p.host_defined_earth_model), 3, 1) |
         field(flag(p.timestamp_valid), 2, 1) | field(static_cast<unsigned>(p.ig_mode), 0, 2));
-    put(out, 6, kMagicNoSwap);
-    put(out, 8, p.ig_frame_number);
-    put(out, 12, p.timestamp);
-    put(out, 16, p.last_host_frame_number);
+    put(out, 6, kMagicNoSwap, swap);
+    put(out, 8, p.ig_frame_number, swap);
+    put(out, 12, p.timestamp, swap);
+    put(out, 16, p.last_host_frame_number, swap);
     return kStartOfFrameSize;
 }
 
@@ -358,6 +401,77 @@ std::optional<StartOfFrame> decode_start_of_frame(std::span<const std::uint8_t> 
     p.ig_frame_number = get<std::uint32_t>(in, 8, swap);
     p.timestamp = get<std::uint32_t>(in, 12, swap);
     p.last_host_frame_number = get<std::uint32_t>(in, 16, swap);
+    return p;
+}
+
+// ICD 4.2.2, Figure 110 (p. 217); the errata leave it as it is:
+//   0 Packet ID = 102 | 1 Packet Size = 16 | 2-3 HAT/HOT ID
+//   4 Host Frame Number LSN (7-4), Reserved (3-2), Response Type (1),
+//     Valid (0) | 5-7 Reserved | 8-15 Height
+std::size_t encode(const HatHotResponse& p, std::span<std::uint8_t> out, bool swap) {
+    if (out.size() < kHatHotResponseSize) {
+        return 0;
+    }
+    clear(out, kHatHotResponseSize);
+    out[0] = kHatHotResponseId;
+    out[1] = kHatHotResponseSize;
+    put(out, 2, p.hat_hot_id, swap);
+    out[4] = static_cast<std::uint8_t>(field(p.host_frame_number_lsn, 4, 4) |
+                                       field(flag(p.hot), 1, 1) | field(flag(p.valid), 0, 1));
+    put(out, 8, p.height_m, swap);
+    return kHatHotResponseSize;
+}
+
+std::optional<HatHotResponse> decode_hat_hot_response(std::span<const std::uint8_t> in, bool swap) {
+    if (!has_packet(in, kHatHotResponseId, kHatHotResponseSize)) {
+        return std::nullopt;
+    }
+    HatHotResponse p;
+    p.hat_hot_id = get<std::uint16_t>(in, 2, swap);
+    p.host_frame_number_lsn = bits(in[4], 4, 4);
+    p.hot = bits(in[4], 1, 1) != 0;
+    p.valid = bits(in[4], 0, 1) != 0;
+    p.height_m = get<double>(in, 8, swap);
+    return p;
+}
+
+// ICD 4.2.3, Figure 112 (p. 220); the errata leave it as it is:
+//   0 Packet ID = 103 | 1 Packet Size = 40 | 2-3 HAT/HOT ID
+//   4 Host Frame Number LSN (7-4), Reserved (3-1), Valid (0) | 5-7 Reserved
+//   8-15 HAT | 16-23 HOT | 24-27 Material Code
+//   28-31 Normal Vector Azimuth | 32-35 Normal Vector Elevation | 36-39 Reserved
+std::size_t encode(const HatHotExtendedResponse& p, std::span<std::uint8_t> out, bool swap) {
+    if (out.size() < kHatHotExtendedResponseSize) {
+        return 0;
+    }
+    clear(out, kHatHotExtendedResponseSize);
+    out[0] = kHatHotExtendedResponseId;
+    out[1] = kHatHotExtendedResponseSize;
+    put(out, 2, p.hat_hot_id, swap);
+    out[4] = static_cast<std::uint8_t>(field(p.host_frame_number_lsn, 4, 4) |
+                                       field(flag(p.valid), 0, 1));
+    put(out, 8, p.hat_m, swap);
+    put(out, 16, p.hot_m, swap);
+    put(out, 24, p.material_code, swap);
+    put(out, 28, p.normal_azimuth_deg, swap);
+    put(out, 32, p.normal_elevation_deg, swap);
+    return kHatHotExtendedResponseSize;
+}
+
+std::optional<HatHotExtendedResponse> decode_hat_hot_extended_response(
+    std::span<const std::uint8_t> in, bool swap) {
+    if (!has_packet(in, kHatHotExtendedResponseId, kHatHotExtendedResponseSize)) {
+        return std::nullopt;
+    }
+    HatHotExtendedResponse p;
+    p.hat_hot_id = get<std::uint16_t>(in, 2, swap);
+    p.host_frame_number_lsn = bits(in[4], 4, 4);
+    p.valid = bits(in[4], 0, 1) != 0;
+    p.hat_m = get<double>(in, 8, swap);
+    p.hot_m = get<double>(in, 16, swap);
+    p.material_code = get<std::uint32_t>(in, 24, swap);
+    p.normal_azimuth_deg = get<float>(in, 28, swap);
+    p.normal_elevation_deg = get<float>(in, 32, swap);
     return p;
 }
 

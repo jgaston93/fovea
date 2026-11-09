@@ -73,20 +73,27 @@ struct TerrainConfig {
 // listens and the views stay where the config puts them.
 enum class HostProtocol : std::uint8_t { cigi };
 
+// The byte order the IG sends in (ICD 2.5): network (big-endian), which
+// many hosts expect, or this computer's. Either is read.
+enum class HostByteOrder : std::uint8_t { network, native };
+
 struct HostConfig {
     HostProtocol protocol = HostProtocol::cigi;
-    std::uint16_t port = 0;  // UDP port host messages arrive on
+    // UDP port host messages arrive on. The ICD names none; 8004 and 8005
+    // are the usual pair.
+    std::uint16_t port = 8004;
     // The local address to listen on: all interfaces when unset. 127.0.0.1
     // takes messages from this computer only (a host running beside Fovea),
     // which also keeps Windows Firewall from asking.
     std::optional<std::uint32_t> listen_address;
-    // Where Start of Frame goes: both set, or neither (then the address the
-    // host's messages come from). A host that waits for Start of Frame before
-    // sending needs them.
+    // Where Start of Frame and answers go: `host_port` at `host_address`,
+    // or, without it, at the address the host's messages come from. A host
+    // that waits for Start of Frame before sending needs the address set.
     std::optional<std::uint32_t> host_address;  // IPv4, host byte order
-    std::uint16_t host_port = 0;
+    std::uint16_t host_port = 8005;
+    HostByteOrder byte_order = HostByteOrder::network;
     // The geoid (mean sea level) above the WGS-84 ellipsoid, added to the
-    // host's sea-level altitudes; a constant until a geoid model arrives.
+    // host's sea-level altitudes: the host's own constant (D-035).
     double geoid_height_m = 0.0;
 };
 
