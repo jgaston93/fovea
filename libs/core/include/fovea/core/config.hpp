@@ -89,6 +89,7 @@ struct HostConfig {
     // Where Start of Frame and answers go: `host_port` at `host_address`,
     // or, without it, at the address the host's messages come from. A host
     // that waits for Start of Frame before sending needs the address set.
+    // Without one, `host_port` 0 answers the port the host sends from.
     std::optional<std::uint32_t> host_address;  // IPv4, host byte order
     std::uint16_t host_port = 8005;
     HostByteOrder byte_order = HostByteOrder::network;

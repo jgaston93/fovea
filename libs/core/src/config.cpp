@@ -262,8 +262,13 @@ void parse_host(Parser& p, const toml::table& t, HostConfig& out) {
         }
     }
     if (port != nullptr) {
-        if (auto v = p.integer(*port, "host.host_port", 1, 65535)) {
+        if (auto v = p.integer(*port, "host.host_port", 0, 65535)) {
             out.host_port = static_cast<std::uint16_t>(*v);
+            if (*v == 0 && address != nullptr) {
+                p.error(port->source(),
+                        "'host.host_port' 0 (the port the host sends from) needs no "
+                        "'host.host_address': leave the address out, or give a port");
+            }
         }
     }
     // A socket bound to this computer's loopback can only reach this

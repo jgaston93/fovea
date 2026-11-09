@@ -85,6 +85,6 @@ frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
 # protocol = "cigi"
 # port = 8004                  # where the host's messages arrive (8004 if left out)
 # host_address = "127.0.0.1"   # where Start of Frame goes (left out: wherever the host sends from)
-# host_port = 8005             #   and at which port (8005 if left out)
+# host_port = 8005             #   and at which port (8005 if left out; 0: the one it sends from)
 # byte_order = "network"       # what the IG sends: "network" (big-endian, if left out) or "native"
 # geoid_height_m = 0.0         # the geoid above the WGS-84 ellipsoid, here

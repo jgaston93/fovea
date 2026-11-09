@@ -8,7 +8,8 @@
 //   address = "127.0.0.1"   # where the IG listens ([host] port in its config)
 //   port = 8004
 //   [host]
-//   port = 8005             # where Start of Frame comes back (0: any free port)
+//   port = 8005             # where Start of Frame comes back (0: any free port,
+//                           #   with Fovea's [host] host_port = 0)
 //   rate_hz = 60.0          # messages a second (asynchronous mode)
 //   byte_order = "network"  # what it sends: "network" (big-endian) or "native"
 //   [start]

@@ -356,6 +356,13 @@ TEST(Config, HostSectionIsChecked) {
         parse(head + "protocol = \"cigi\"\nport = 8004\nhost_address = \"1.2.3\"\nhost_port = 1\n"),
         10, "IPv4 address");
     expect_one_error(parse(head + "protocol = \"cigi\"\nhost_port = 70000\n"), 9, "host.host_port");
+    expect_one_error(
+        parse(head + "protocol = \"cigi\"\nhost_address = \"10.0.0.2\"\nhost_port = 0\n"), 10,
+        "needs no 'host.host_address'");
+    // 0 alone: the port the host sends from.
+    const auto any = parse(head + "protocol = \"cigi\"\nhost_port = 0\n");
+    ASSERT_TRUE(any.ok()) << any.errors[0].to_string();
+    EXPECT_EQ(any.config->host->host_port, 0);
     expect_one_error(parse(head + "protocol = \"cigi\"\nbyte_order = \"little\"\n"), 9,
                      "network, native");
     expect_one_error(parse(head + "protocol = \"cigi\"\nport = 8004\ngeoid_height_m = 400\n"), 10,
