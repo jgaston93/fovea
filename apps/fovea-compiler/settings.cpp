@@ -212,9 +212,10 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
         s.finest_level = static_cast<std::uint8_t>(*finest_level);
     }
 
+    // Its range is DatumShift::make's to check.
     const auto epoch = root["datum"]["epoch"].value<double>();
-    if (!epoch || !std::isfinite(*epoch) || *epoch < 1990.0 || *epoch > 2100.0) {
-        error(root.source(), "[datum] needs epoch, a decimal year from 1990 to 2100 (D-037)");
+    if (!epoch) {
+        error(root.source(), "[datum] needs epoch, a decimal year (D-037)");
     } else {
         s.datum_epoch = *epoch;
     }

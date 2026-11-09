@@ -137,8 +137,9 @@ ManifestResult parse_manifest(const std::string& text, const std::string& source
     if (const auto* frame = root["frame"].as_table()) {
         const auto name = (*frame)["name"].value<std::string>();
         const auto epoch = (*frame)["epoch"].value<double>();
-        if (!name || name->empty() || !epoch || !std::isfinite(*epoch)) {
-            error(frame->source(), "[frame] needs a name and an epoch (a decimal year)");
+        if (!name || *name != kDatabaseFrame || !epoch || !std::isfinite(*epoch)) {
+            error(frame->source(), std::string("[frame] needs name = \"") + kDatabaseFrame +
+                                       "\" and an epoch (a decimal year)");
         } else {
             m.frame = DatabaseManifest::Frame{*name, *epoch};
         }

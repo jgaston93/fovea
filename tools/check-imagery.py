@@ -42,6 +42,8 @@ from pathlib import Path
 
 import numpy as np
 from osgeo import gdal, osr
+
+from fovea_datum import Datum, check_frame
 from PIL import Image
 
 gdal.UseExceptions()
@@ -182,20 +184,10 @@ class Reference:
         im = s["imagery"]
         cache = base / im["cache"]
         self.texels = im["texels"]
-        self.epoch = s["datum"]["epoch"]
+        self.datum = Datum(s["datum"]["epoch"])
         geographic = osr.SpatialReference()
         geographic.ImportFromEPSG(4269)
         geographic.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-        # The database's WGS-84 to the sources' NAD83(2011), with no
-        # ballpark transformation (which would change nothing).
-        wgs, nad = osr.SpatialReference(), osr.SpatialReference()
-        wgs.ImportFromEPSG(9754)
-        nad.ImportFromEPSG(6319)
-        for srs in (wgs, nad):
-            srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-        options = osr.CoordinateTransformationOptions()
-        options.SetBallparkAllowed(False)
-        self.to_nad83 = osr.CoordinateTransformation(wgs, nad, options)
         # As the compiler lists them: '*' the only wildcard, paths normalized
         # (not resolved), a file to the first imagery pattern naming it.
         self.sources, taken = [], set()
@@ -223,8 +215,7 @@ class Reference:
         cols = west + (np.arange(n) + 0.5 + shift[0]) * step
         rows = south + (np.arange(n) + 0.5 + shift[1]) * step
         lon, lat = np.meshgrid(cols, rows)
-        wgs = [(x, y, 0.0, self.epoch) for x, y in zip(lon.ravel(), lat.ravel())]
-        pts = np.array(self.to_nad83.TransformPoints(wgs))[:, :2]
+        pts = np.array(self.datum.to_nad83_points(lon.ravel(), lat.ravel()))
         best_depth = np.full(len(pts), -1.0)
         best_other = np.full(len(pts), -1.0)
         best_src = np.full(len(pts), -1)
@@ -294,6 +285,10 @@ def main():
 
     ref = Reference(args.settings)
     db = Tiles(ref.output)
+    wrong = check_frame(db.manifest, ref.datum, ref.output)
+    if wrong:
+        print(wrong)
+        return 1
     rng = random.Random(args.seed)
     failures = []
 

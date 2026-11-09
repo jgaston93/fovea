@@ -533,6 +533,15 @@ TEST_F(Compiler, TheManifestRecordsTheFrame) {
     const auto r = TerrainDatabase::open(db(), opened);
     ASSERT_TRUE(r.manifest.has_value() && r.manifest->frame.has_value());
     EXPECT_EQ(r.manifest->frame->epoch, 2026.0);
+    // Another frame is refused, not read as WGS-84.
+    std::string other = manifest_text(*r.manifest);
+    const auto name = other.find("WGS 84 (G2139)");
+    ASSERT_NE(name, std::string::npos);
+    other.replace(name, std::string("WGS 84 (G2139)").size(), "NAD83(2011)");
+    const ManifestResult refused = parse_manifest(other, "manifest.toml");
+    EXPECT_FALSE(refused.manifest.has_value());
+    ASSERT_FALSE(refused.errors.empty());
+    EXPECT_NE(refused.errors[0].find("[frame]"), std::string::npos);
     std::string text = scene_->settings();
     const auto at = text.find("[datum]\nepoch = 2026.0\n");
     ASSERT_NE(at, std::string::npos);

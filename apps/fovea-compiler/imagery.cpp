@@ -142,21 +142,24 @@ bool ImagerySources::texture(const TileKey& key, std::uint32_t texels, const Dat
     std::vector<double> xs;
     std::vector<double> ys;
     std::vector<int> ok;
+    // Each texel centre in the sources' NAD83(2011) (D-037), once.
+    std::vector<double> nad_lat(count);
+    std::vector<double> nad_lon(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        const Nad83Point p =
+            datum.to_nad83(b.south_deg + (static_cast<double>(std::size_t{i / side}) + 0.5) * step,
+                           b.west_deg + (static_cast<double>(i % side) + 0.5) * step);
+        nad_lat[i] = p.lat_deg;
+        nad_lon[i] = p.lon_deg;
+    }
     for (std::size_t si = 0; si < sources_.size(); ++si) {
         const Source& src = sources_[si];
         if (!overlaps(src)) {
             continue;
         }
-        xs.resize(count);
-        ys.resize(count);
+        xs = nad_lon;  // transformed in place
+        ys = nad_lat;
         ok.assign(count, 0);
-        for (std::size_t i = 0; i < count; ++i) {
-            const Nad83Point p = datum.to_nad83(
-                b.south_deg + (static_cast<double>(std::size_t{i / side}) + 0.5) * step,
-                b.west_deg + (static_cast<double>(i % side) + 0.5) * step);
-            xs[i] = p.lon_deg;
-            ys[i] = p.lat_deg;
-        }
         // False when any point fails (GDAL 3.8), not only all: each point's
         // `ok` decides.
         (void)OCTTransformEx(src.to_source, static_cast<int>(count), xs.data(), ys.data(), nullptr,
