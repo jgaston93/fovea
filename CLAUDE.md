@@ -73,10 +73,12 @@ The first session's tasks are listed in the plan under "First Claude Code sessio
 
 There are two halves. The **offline compiler** reprojects and tiles public source data (3DEP, NAIP, NLCD, OSM, FAA) into a versioned, layered, multi-resolution tile database with a manifest. The **runtime IG** streams that database.
 
-The runtime has three threads:
+The runtime has three main threads:
 1. **Network**: a host adapter (CIGI first) writes the latest entity state into a lock-free buffer.
 2. **Paging**: predicts motion, loads tiles and models from disk, and uploads them through a transfer queue. Models load only on this thread.
 3. **Render**: runs a fixed 60 Hz clock and consumes only prepared data.
+
+A fourth, the query thread (D-036), answers a host's terrain queries (HAT/HOT) from its own database reader, through SPSC rings to and from the network thread.
 
 Invariants that are expensive to retrofit, so respect them in all code:
 - **No disk I/O or heap allocation on the render path.** The render thread never blocks.

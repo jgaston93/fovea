@@ -53,6 +53,15 @@ static_assert(static_cast<std::uint8_t>(cigi::WeatherLayerId::ground_fog) == 0 &
               static_cast<std::uint8_t>(cigi::WeatherLayerId::rain) == 4 &&
               static_cast<std::uint8_t>(cigi::WeatherLayerId::snow) == 5 && kMaxWeatherLayers == 6);
 
+// What a HAT/HOT answer needs of its request, carried as the query's tag:
+// the HAT/HOT ID (bits 0-15), Request Type (16-17) and the Host Frame
+// Number's low 4 bits when it was asked (18-21).
+std::uint64_t hat_hot_tag(const cigi::HatHotRequest& r, std::uint32_t host_frame) {
+    return std::uint64_t{r.hat_hot_id} |
+           (std::uint64_t{static_cast<std::uint8_t>(r.request_type)} << 16U) |
+           (std::uint64_t{host_frame & 0xFU} << 18U);
+}
+
 // The Julian date at the start of its minute.
 double to_the_minute(double jd) {
     return (std::floor((jd + 0.5) * 1440.0)) / 1440.0 - 0.5;
@@ -73,20 +82,44 @@ std::uint32_t CigiAdapter::ig_ticks(LocalTime t) const {
                                       10U);
 }
 
-void CigiAdapter::report_frames() {
+void CigiAdapter::report_frames(const SceneSnapshot& scene) {
     if (frame_starts_ == nullptr) {
         return;
     }
     // Only the newest: older ones waited through a stall and are stale.
     std::optional<FrameStart> newest;
+    std::uint32_t started = 0;
     while (const auto f = frame_starts_->try_pop()) {
         if (newest) {
             ++stats_.frames_coalesced;
         }
         newest = f;
+        ++started;
     }
     if (!newest) {
         return;
+    }
+    // Periodic HAT/HOT requests due in these frames, answered with the
+    // next; those about a destroyed entity end with an invalid answer.
+    for (std::size_t i = 0; i < periodic_.size();) {
+        Periodic& p = periodic_[i];
+        const bool gone =
+            p.request.entity_coordinates && find_entity(scene, p.request.entity_id) == nullptr;
+        p.frames += started;
+        if (p.frames >= p.request.update_period || gone) {
+            p.frames = 0;
+            request_height(p.request, scene);
+        }
+        if (gone) {
+            periodic_[i] = periodic_[periodic_.size() - 1];
+            periodic_.pop_back();
+        } else {
+            ++i;
+        }
+    }
+    if (posted_) {
+        options_.heights->notify();
+        posted_ = false;
     }
     std::optional<UdpEndpoint> to = options_.host ? options_.host : last_sender_;
     if (to && !options_.host && options_.host_port) {
@@ -94,6 +127,13 @@ void CigiAdapter::report_frames() {
     }
     if (!to) {
         ++stats_.frames_unreported;
+        // Nowhere to send answers either (a host that asked has an address,
+        // so this is only before one has).
+        stats_.hat_hot_dropped += local_answers_.size();
+        local_answers_.clear();
+        while (options_.heights != nullptr && options_.heights->answers.try_pop()) {
+            ++stats_.hat_hot_dropped;
+        }
         return;
     }
     cigi::StartOfFrame sof;
@@ -102,17 +142,132 @@ void CigiAdapter::report_frames() {
     sof.timestamp = ig_ticks(newest->t);
     sof.ig_frame_number = static_cast<std::uint32_t>(newest->frame);
     sof.last_host_frame_number = last_host_frame_;
-    std::array<std::uint8_t, cigi::kStartOfFrameSize> out{};
-    const std::size_t n = cigi::encode(sof, out, cigi::swaps(options_.byte_order));
-    if (socket_.send_to(std::span(out).first(n), *to)) {
+    std::size_t n = cigi::encode(sof, out_, cigi::swaps(options_.byte_order));
+    // The answers ready: the query thread's while they fit (the rest go
+    // with the next frame's), then those made here, asked no earlier (so an
+    // invalid answer ending a periodic request comes after the last valid
+    // one). The datagram holds them all at the rings' sizes.
+    static_assert(cigi::kStartOfFrameSize + (HeightQueries::kCapacity + kMaxLocalAnswers) *
+                                                cigi::kHatHotExtendedResponseSize <=
+                  std::tuple_size_v<decltype(out_)>);
+    if (options_.heights != nullptr) {
+        while (const auto a = options_.heights->answers.try_pop()) {
+            n += encode_answer(*a, std::span(out_).subspan(n));
+        }
+    }
+    for (const HeightAnswer& a : local_answers_) {
+        n += encode_answer(a, std::span(out_).subspan(n));
+    }
+    local_answers_.clear();
+    if (socket_.send_to(std::span(out_).first(n), *to)) {
         ++stats_.frames_reported;
     } else {
         ++stats_.frames_unreported;
     }
 }
 
+std::size_t CigiAdapter::encode_answer(const HeightAnswer& a, std::span<std::uint8_t> out) {
+    const auto id = static_cast<std::uint16_t>(a.request.tag & 0xFFFFU);
+    const auto type = static_cast<cigi::HatHotRequestType>((a.request.tag >> 16U) & 0x3U);
+    const auto lsn = static_cast<std::uint8_t>((a.request.tag >> 18U) & 0xFU);
+    const bool swap = cigi::swaps(options_.byte_order);
+    const double hat = a.request.alt_m - a.terrain_m;
+    const double hot = a.terrain_m - options_.geoid_height_m;  // above mean sea level (D-035)
+    std::size_t n = 0;
+    if (type == cigi::HatHotRequestType::extended) {
+        cigi::HatHotExtendedResponse x;
+        x.hat_hot_id = id;
+        x.valid = a.valid;
+        x.host_frame_number_lsn = lsn;
+        if (a.valid) {
+            x.hat_m = hat;
+            x.hot_m = hot;
+            x.normal_azimuth_deg = a.normal_azimuth_deg;
+            x.normal_elevation_deg = a.normal_elevation_deg;
+        }
+        n = cigi::encode(x, out, swap);
+    } else {
+        cigi::HatHotResponse r;
+        r.hat_hot_id = id;
+        r.valid = a.valid;
+        r.hot = type == cigi::HatHotRequestType::hot;
+        r.host_frame_number_lsn = lsn;
+        if (a.valid) {
+            r.height_m = r.hot ? hot : hat;
+        }
+        n = cigi::encode(r, out, swap);
+    }
+    if (n == 0) {
+        ++stats_.hat_hot_dropped;  // no room (the caller leaves room for one)
+        return 0;
+    }
+    ++stats_.hat_hot_answers;
+    if (!a.valid) {
+        ++stats_.hat_hot_invalid;
+    }
+    return n;
+}
+
+void CigiAdapter::answer_invalid(const HeightRequest& request) {
+    HeightAnswer a;
+    a.request = request;
+    if (!local_answers_.push_back(a)) {
+        ++stats_.hat_hot_dropped;
+    }
+}
+
+void CigiAdapter::request_height(const cigi::HatHotRequest& r, const SceneSnapshot& scene) {
+    HeightRequest q;
+    q.tag = hat_hot_tag(r, last_host_frame_);
+    if (r.entity_coordinates) {
+        // X, Y, Z in the entity's body axes (forward, right, down) from its
+        // latest pose. An entity that isn't there, or isn't drawn, has no
+        // answer.
+        const EntityState* e = find_entity(scene, r.entity_id);
+        if (e == nullptr || !e->active) {
+            answer_invalid(q);
+            return;
+        }
+        const Geodetic g = ecef_to_geodetic(
+            e->cur.ecef + e->cur.orientation * DVec3{r.lat_or_x, r.lon_or_y, r.alt_or_z});
+        q.lat_deg = g.lat_deg;
+        q.lon_deg = g.lon_deg;
+        q.alt_m = g.alt_m;
+    } else {
+        q.lat_deg = r.lat_or_x;
+        q.lon_deg = r.lon_or_y;
+        q.alt_m = r.alt_or_z + options_.geoid_height_m;  // mean sea level to ellipsoid (D-035)
+    }
+    if (options_.heights == nullptr || !std::isfinite(q.lat_deg) || !std::isfinite(q.lon_deg) ||
+        std::abs(q.lat_deg) > 90.0) {
+        answer_invalid(q);
+        return;
+    }
+    if (!options_.heights->requests.try_push(q)) {
+        ++stats_.hat_hot_dropped;
+        return;
+    }
+    posted_ = true;
+}
+
+void CigiAdapter::apply_hat_hot(const cigi::HatHotRequest& r, const SceneSnapshot& scene) {
+    ++stats_.hat_hot_requests;
+    // A request replaces any periodic one with its ID; Update Period 0 ends it.
+    for (std::size_t i = 0; i < periodic_.size(); ++i) {
+        if (periodic_[i].request.hat_hot_id == r.hat_hot_id) {
+            periodic_[i] = periodic_[periodic_.size() - 1];
+            periodic_.pop_back();
+            break;
+        }
+    }
+    if (r.update_period > 0 && !periodic_.push_back({r, 0})) {
+        ++stats_.hat_hot_periodic_full;
+    }
+    request_height(r, scene);
+}
+
 bool CigiAdapter::poll(SceneState& scene) {
-    report_frames();
+    report_frames(scene.edit());
     if (!socket_.wait_readable(options_.wait_ms)) {
         return true;
     }
@@ -131,6 +286,10 @@ bool CigiAdapter::poll(SceneState& scene) {
             last_sender_ = r->from;
             changed = true;
         }
+    }
+    if (posted_) {
+        options_.heights->notify();
+        posted_ = false;
     }
     if (changed) {
         scene.publish();
@@ -188,6 +347,7 @@ bool CigiAdapter::apply(std::span<const std::uint8_t> message, SceneSnapshot& sc
     if (ig->ig_mode == cigi::IgMode::reset_standby) {
         if (mode_ != cigi::IgMode::reset_standby) {
             scene.entities.clear();  // entering Reset/Standby destroys every entity,
+            periodic_.clear();       // ends periodic HAT/HOT requests,
             // and puts the environment back as it started (ICD 2.7.3, p. 13)
             scene.environment = options_.environment;
             last_host_ticks_.reset();  // a new session may start its clock afresh,
@@ -229,6 +389,12 @@ bool CigiAdapter::apply(std::span<const std::uint8_t> message, SceneSnapshot& sc
         } else if (packet.id == cigi::kWeatherControlId) {
             if (const auto w = cigi::decode_weather_control(packet.bytes, swap)) {
                 apply_weather(*w, scene.environment);
+            } else {
+                ++stats_.rejected_packets;
+            }
+        } else if (packet.id == cigi::kHatHotRequestId) {
+            if (const auto r = cigi::decode_hat_hot_request(packet.bytes, swap)) {
+                apply_hat_hot(*r, scene);
             } else {
                 ++stats_.rejected_packets;
             }

@@ -3,6 +3,7 @@ include(GoogleTest)
 add_executable(fovea_unit_tests
     support/alloc_counter.cpp
     support/glb.cpp
+    support/terrain_db.cpp
     unit/test_alloc_counter.cpp
     unit/test_attitude.cpp
     unit/test_cigi.cpp
@@ -12,6 +13,7 @@ add_executable(fovea_unit_tests
     unit/test_containers.cpp
     unit/test_celestial.cpp
     unit/test_geodesy.cpp
+    unit/test_hat_hot.cpp
     unit/test_image_file.cpp
     unit/test_log.cpp
     unit/test_models.cpp
