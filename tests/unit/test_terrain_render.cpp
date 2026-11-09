@@ -730,8 +730,9 @@ TEST(TerrainRender, TheSunLightsTheWallsThatFaceItAndNoneFromUnderTheHorizon) {
 
 // Lit windows (milestone 6 step 8, D-033): a dark box whose walls give off
 // 40 cd/m² of warm light, beside the same box without, seen from the east.
-// At midnight its wall shows bright where the other's is near black; at
-// noon the exposure hides the glow: the two differ by at most a level.
+// At midnight its wall shows bright and warm where the other's is near
+// black; at noon the exposure hides the glow: the two differ by at most a
+// level.
 TEST(TerrainRender, EmissiveMaterialsGlowAtNightAndNotByDay) {
     double lat0 = 0.0;
     double lon0 = 0.0;
@@ -766,9 +767,10 @@ TEST(TerrainRender, EmissiveMaterialsGlowAtNightAndNotByDay) {
     const auto unlit = wall(dark_px, -15.0);
     std::printf("midnight: lit wall %.0f %.0f %.0f, plain %.0f %.0f %.0f\n", glowing[0],
                 glowing[1], glowing[2], unlit[0], unlit[1], unlit[2]);
-    for (std::size_t c = 0; c < 3; ++c) {
-        EXPECT_GT(glowing[c], 200.0) << "channel " << c;
-    }
+    // Bright and warm: the tone map keeps its colour (not clipped white).
+    EXPECT_GT(glowing[0], 240.0);
+    EXPECT_GT(glowing[0], glowing[2] + 30.0);
+    EXPECT_GT(glowing[2], 120.0);
     EXPECT_LT(unlit[0], 60.0);
 
     const SkyBodies noon = sky_bodies(julian_date(2026, 6, 21, 17.0 * 3600.0));
