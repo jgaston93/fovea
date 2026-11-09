@@ -89,8 +89,13 @@ void fill_weather(ViewLighting& l, std::span<const WeatherLayer> weather, double
             bands[n++] = &w;
         }
     }
-    std::sort(bands.begin(), bands.begin() + static_cast<std::ptrdiff_t>(n),
-              [](const WeatherLayer* a, const WeatherLayer* b) { return a->base_m < b->base_m; });
+    // Lowest first, by insertion: six at most (std::sort trips GCC 13's
+    // -Warray-bounds at -O3).
+    for (std::size_t k = 1; k < n; ++k) {
+        for (std::size_t j = k; j > 0 && bands[j]->base_m < bands[j - 1]->base_m; --j) {
+            std::swap(bands[j], bands[j - 1]);
+        }
+    }
     l.layer_count = static_cast<std::uint32_t>(n);
     for (std::size_t k = 0; k < n; ++k) {
         const WeatherLayer& w = *bands[k];
