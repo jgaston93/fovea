@@ -80,7 +80,12 @@ void Session::send_frame(const FlightState& state, LocalTime t) {
     const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t - start_).count();
     ig.timestamp = static_cast<std::uint32_t>(static_cast<std::uint64_t>(us) / 10U);
 
-    std::array<std::uint8_t, cigi::kIgControlSize + cigi::kEntityControlSize> out{};
+    // IG Control, entity 0, and an environment change at most: the
+    // celestial sphere, the atmosphere and six weather layers.
+    std::array<std::uint8_t, cigi::kIgControlSize + cigi::kEntityControlSize +
+                                 cigi::kCelestialSphereControlSize + cigi::kAtmosphereControlSize +
+                                 6 * cigi::kWeatherControlSize>
+        out{};
     std::size_t n = cigi::encode(ig, out);
     // Until the IG reports Operate, IG Control alone (ICD 2.8).
     if (operating_) {
@@ -95,10 +100,40 @@ void Session::send_frame(const FlightState& state, LocalTime t) {
         e.pitch_deg = static_cast<float>(state.attitude.pitch_deg);
         e.roll_deg = static_cast<float>(state.attitude.roll_deg);
         n += cigi::encode(e, std::span(out).subspan(n));
+        if (pending_.celestial) {
+            n += cigi::encode(*pending_.celestial, std::span(out).subspan(n));
+        }
+        if (pending_.atmosphere) {
+            n += cigi::encode(*pending_.atmosphere, std::span(out).subspan(n));
+        }
+        for (const cigi::WeatherControl& w : pending_.weather) {
+            n += cigi::encode(w, std::span(out).subspan(n));
+        }
+        pending_ = {};
     }
     if (socket_.send_to(std::span(out).first(n), ig_)) {
         ++stats_.messages_sent;
         sent_[host_frame_ % sent_.size()] = t;
+    }
+}
+
+void Session::queue_environment(const EnvironmentChange& change) {
+    if (change.celestial) {
+        pending_.celestial = change.celestial;
+    }
+    if (change.atmosphere) {
+        pending_.atmosphere = change.atmosphere;
+    }
+    for (const cigi::WeatherControl& w : change.weather) {
+        // The newest for each layer; six at most, as the message has room for.
+        auto same =
+            std::find_if(pending_.weather.begin(), pending_.weather.end(),
+                         [&](const cigi::WeatherControl& p) { return p.layer_id == w.layer_id; });
+        if (same != pending_.weather.end()) {
+            *same = w;
+        } else if (pending_.weather.size() < 6) {
+            pending_.weather.push_back(w);
+        }
     }
 }
 

@@ -160,6 +160,163 @@ std::optional<EntityControl> decode_entity_control(std::span<const std::uint8_t>
     return p;
 }
 
+// ICD 4.1.9, Figure 53 (p. 82):
+//   0 Packet ID = 9 | 1 Packet Size = 16 | 2 Hour | 3 Minute
+//   4 Reserved (7-5), Date/Time Valid (4), Star Field Enable (3),
+//     Moon Enable (2), Sun Enable (1), Ephemeris Model Enable (0)
+//   5-7 Reserved | 8-11 Date | 12-15 Star Field Intensity
+std::size_t encode(const CelestialSphereControl& p, std::span<std::uint8_t> out) {
+    if (out.size() < kCelestialSphereControlSize) {
+        return 0;
+    }
+    clear(out, kCelestialSphereControlSize);
+    out[0] = kCelestialSphereControlId;
+    out[1] = kCelestialSphereControlSize;
+    out[2] = p.hour;
+    out[3] = p.minute;
+    out[4] = static_cast<std::uint8_t>(
+        field(flag(p.date_time_valid), 4, 1) | field(flag(p.star_field_enable), 3, 1) |
+        field(flag(p.moon_enable), 2, 1) | field(flag(p.sun_enable), 1, 1) |
+        field(flag(p.ephemeris_enable), 0, 1));
+    put(out, 8, p.date);
+    put(out, 12, p.star_field_intensity);
+    return kCelestialSphereControlSize;
+}
+
+std::optional<CelestialSphereControl> decode_celestial_sphere_control(
+    std::span<const std::uint8_t> in, bool swap) {
+    if (!has_packet(in, kCelestialSphereControlId, kCelestialSphereControlSize) || in[2] > 23 ||
+        in[3] > 59) {
+        return std::nullopt;  // Hour 0-23, Minute 0-59 (p. 83)
+    }
+    CelestialSphereControl p;
+    p.hour = in[2];
+    p.minute = in[3];
+    p.date_time_valid = bits(in[4], 4, 1) != 0;
+    p.star_field_enable = bits(in[4], 3, 1) != 0;
+    p.moon_enable = bits(in[4], 2, 1) != 0;
+    p.sun_enable = bits(in[4], 1, 1) != 0;
+    p.ephemeris_enable = bits(in[4], 0, 1) != 0;
+    p.date = get<std::uint32_t>(in, 8, swap);
+    p.star_field_intensity = get<float>(in, 12, swap);
+    return p;
+}
+
+// ICD 4.1.10, Figure 54 (p. 85):
+//   0 Packet ID = 10 | 1 Packet Size = 32
+//   2 Reserved (7-1), Atmospheric Model Enable (0) | 3 Global Humidity
+//   4-7 Global Air Temperature | 8-11 Global Visibility Range
+//   12-15 Global Horizontal Wind Speed | 16-19 Global Vertical Wind Speed
+//   20-23 Global Wind Direction | 24-27 Global Barometric Pressure
+//   28-31 Reserved
+std::size_t encode(const AtmosphereControl& p, std::span<std::uint8_t> out) {
+    if (out.size() < kAtmosphereControlSize) {
+        return 0;
+    }
+    clear(out, kAtmosphereControlSize);
+    out[0] = kAtmosphereControlId;
+    out[1] = kAtmosphereControlSize;
+    out[2] = field(flag(p.atmospheric_model_enable), 0, 1);
+    out[3] = p.humidity;
+    put(out, 4, p.air_temperature_c);
+    put(out, 8, p.visibility_range_m);
+    put(out, 12, p.horizontal_wind_mps);
+    put(out, 16, p.vertical_wind_mps);
+    put(out, 20, p.wind_direction_deg);
+    put(out, 24, p.barometric_pressure_mb);
+    return kAtmosphereControlSize;
+}
+
+std::optional<AtmosphereControl> decode_atmosphere_control(std::span<const std::uint8_t> in,
+                                                           bool swap) {
+    if (!has_packet(in, kAtmosphereControlId, kAtmosphereControlSize)) {
+        return std::nullopt;
+    }
+    AtmosphereControl p;
+    p.atmospheric_model_enable = bits(in[2], 0, 1) != 0;
+    p.humidity = in[3];
+    p.air_temperature_c = get<float>(in, 4, swap);
+    p.visibility_range_m = get<float>(in, 8, swap);
+    p.horizontal_wind_mps = get<float>(in, 12, swap);
+    p.vertical_wind_mps = get<float>(in, 16, swap);
+    p.wind_direction_deg = get<float>(in, 20, swap);
+    p.barometric_pressure_mb = get<float>(in, 24, swap);
+    return p;
+}
+
+// ICD 4.1.12, Figure 65 (p. 101):
+//   0 Packet ID = 12 | 1 Packet Size = 56 | 2-3 Entity ID/Region ID
+//   4 Layer ID | 5 Humidity
+//   6 Cloud Type (7-4), Random Lightning Enable (3), Random Winds Enable (2),
+//     Scud Enable (1), Weather Enable (0)
+//   7 Reserved (7-5), Severity (4-2), Scope (1-0)
+//   8-11 Air Temperature | 12-15 Visibility Range | 16-19 Scud Frequency
+//   20-23 Coverage | 24-27 Base Elevation | 28-31 Thickness
+//   32-35 Transition Band | 36-39 Horizontal Wind Speed
+//   40-43 Vertical Wind Speed | 44-47 Wind Direction
+//   48-51 Barometric Pressure | 52-55 Aerosol Concentration
+std::size_t encode(const WeatherControl& p, std::span<std::uint8_t> out) {
+    if (out.size() < kWeatherControlSize) {
+        return 0;
+    }
+    clear(out, kWeatherControlSize);
+    out[0] = kWeatherControlId;
+    out[1] = kWeatherControlSize;
+    put(out, 2, p.entity_or_region_id);
+    out[4] = p.layer_id;
+    out[5] = p.humidity;
+    out[6] = static_cast<std::uint8_t>(
+        field(p.cloud_type, 4, 4) | field(flag(p.random_lightning_enable), 3, 1) |
+        field(flag(p.random_winds_enable), 2, 1) | field(flag(p.scud_enable), 1, 1) |
+        field(flag(p.weather_enable), 0, 1));
+    out[7] = static_cast<std::uint8_t>(field(p.severity, 2, 3) |
+                                       field(static_cast<unsigned>(p.scope), 0, 2));
+    put(out, 8, p.air_temperature_c);
+    put(out, 12, p.visibility_range_m);
+    put(out, 16, p.scud_frequency);
+    put(out, 20, p.coverage);
+    put(out, 24, p.base_elevation_m);
+    put(out, 28, p.thickness_m);
+    put(out, 32, p.transition_band_m);
+    put(out, 36, p.horizontal_wind_mps);
+    put(out, 40, p.vertical_wind_mps);
+    put(out, 44, p.wind_direction_deg);
+    put(out, 48, p.barometric_pressure_mb);
+    put(out, 52, p.aerosol_concentration);
+    return kWeatherControlSize;
+}
+
+std::optional<WeatherControl> decode_weather_control(std::span<const std::uint8_t> in, bool swap) {
+    if (!has_packet(in, kWeatherControlId, kWeatherControlSize) || bits(in[7], 0, 2) == 3 ||
+        bits(in[7], 2, 3) > 5) {
+        return std::nullopt;  // Scope 3 undefined; Severity 0-5 (p. 104)
+    }
+    WeatherControl p;
+    p.entity_or_region_id = get<std::uint16_t>(in, 2, swap);
+    p.layer_id = in[4];
+    p.humidity = in[5];
+    p.cloud_type = bits(in[6], 4, 4);
+    p.random_lightning_enable = bits(in[6], 3, 1) != 0;
+    p.random_winds_enable = bits(in[6], 2, 1) != 0;
+    p.scud_enable = bits(in[6], 1, 1) != 0;
+    p.weather_enable = bits(in[6], 0, 1) != 0;
+    p.severity = bits(in[7], 2, 3);
+    p.scope = static_cast<WeatherScope>(bits(in[7], 0, 2));
+    p.air_temperature_c = get<float>(in, 8, swap);
+    p.visibility_range_m = get<float>(in, 12, swap);
+    p.scud_frequency = get<float>(in, 16, swap);
+    p.coverage = get<float>(in, 20, swap);
+    p.base_elevation_m = get<float>(in, 24, swap);
+    p.thickness_m = get<float>(in, 28, swap);
+    p.transition_band_m = get<float>(in, 32, swap);
+    p.horizontal_wind_mps = get<float>(in, 36, swap);
+    p.vertical_wind_mps = get<float>(in, 40, swap);
+    p.wind_direction_deg = get<float>(in, 44, swap);
+    p.barometric_pressure_mb = get<float>(in, 48, swap);
+    p.aerosol_concentration = get<float>(in, 52, swap);
+    return p;
+}
+
 // ICD 4.2.1, Figure 109 (p. 212):
 //   0 Packet ID = 101 | 1 Packet Size = 24 | 2 Major Version = 3 | 3 Database Number
 //   4 IG Status Code | 5 Minor Version (7-4), Earth Reference Model (3),

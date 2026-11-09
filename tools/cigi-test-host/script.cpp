@@ -133,8 +133,94 @@ private:
     std::vector<std::pair<std::uint32_t, std::string>> errors_;
 };
 
+// A segment's environment: Celestial Sphere Control from date, time and
+// time_runs, Atmosphere Control from visibility, a Weather Control for each
+// [[segment.layer]].
+void read_environment(Reader& r, const toml::table& t, const std::string& where,
+                      EnvironmentChange& out) {
+    const toml::node* date = t.get("date");
+    const toml::node* time = t.get("time");
+    const toml::node* runs = t.get("time_runs");
+    if ((date == nullptr) != (time == nullptr)) {
+        r.error(t.source(), where + ": 'date' and 'time' go together");
+    } else if (date != nullptr || runs != nullptr) {
+        cigi::CelestialSphereControl c;
+        if (runs != nullptr) {
+            if (const auto* b = runs->as_boolean()) {
+                c.ephemeris_enable = b->get();
+            } else {
+                r.error(runs->source(), "'time_runs' in " + where + " must be true or false");
+            }
+        }
+        if (date != nullptr) {
+            const auto* d = date->as_date();
+            const auto* tm = time->as_time();
+            if (d == nullptr || d->get().year < 1950 || d->get().year > 2050) {
+                r.error(date->source(), "'date' in " + where +
+                                            " must be a date from 1950 to 2050, like 2026-03-20");
+            } else if (tm == nullptr || tm->get().second != 0 || tm->get().nanosecond != 0) {
+                r.error(time->source(), "'time' in " + where +
+                                            " must be a time of day in whole minutes, like "
+                                            "11:45:00 (UTC)");
+            } else {
+                c.date_time_valid = true;
+                c.date = d->get().month * 1000000U + d->get().day * 10000U +
+                         static_cast<std::uint32_t>(d->get().year);
+                c.hour = tm->get().hour;
+                c.minute = tm->get().minute;
+            }
+        }
+        out.celestial = c;
+    }
+    if (t.get("visibility") != nullptr) {
+        cigi::AtmosphereControl a;
+        a.visibility_range_m =
+            static_cast<float>(r.number(t, "visibility", where, 1.0, 1e6, 1.0).value_or(1.0));
+        out.atmosphere = a;
+    }
+    const toml::node* n = t.get("layer");
+    if (n == nullptr) {
+        return;
+    }
+    const auto* list = n->as_array();
+    if (list == nullptr || !list->is_array_of_tables() || list->size() > 6) {
+        r.error(n->source(),
+                "'layer' in " + where + " must be up to 6 tables: write each as [[segment.layer]]");
+        return;
+    }
+    for (std::size_t i = 0; i < list->size(); ++i) {
+        const toml::table& l = *list->get(i)->as_table();
+        const std::string at = where + " layer " + std::to_string(i + 1);
+        r.check_keys(l, {"id", "base", "thickness", "visibility", "coverage", "enable"}, at);
+        cigi::WeatherControl w;
+        w.layer_id = static_cast<std::uint8_t>(
+            r.number(l, "id", at, 0.0, 255.0, std::nullopt).value_or(0.0));
+        w.weather_enable = true;
+        if (const auto* e = l.get("enable")) {
+            if (const auto* b = e->as_boolean()) {
+                w.weather_enable = b->get();
+            } else {
+                r.error(e->source(), "'enable' in " + at + " must be true or false");
+            }
+        }
+        const std::optional<double> required = w.weather_enable ? std::nullopt : std::optional(0.0);
+        w.base_elevation_m =
+            static_cast<float>(r.number(l, "base", at, -500.0, 20000.0, required).value_or(0.0));
+        w.thickness_m =
+            static_cast<float>(r.number(l, "thickness", at, 0.0, 10000.0, required).value_or(0.0));
+        w.visibility_range_m =
+            static_cast<float>(r.number(l, "visibility", at, 1.0, 1e6, required).value_or(1.0));
+        w.coverage =
+            static_cast<float>(r.number(l, "coverage", at, 0.0, 100.0, 100.0).value_or(100.0));
+        out.weather.push_back(w);
+    }
+}
+
 void read_segment(Reader& r, const toml::table& t, const std::string& where, Segment& out) {
-    r.check_keys(t, {"kind", "duration", "speed", "climb", "turn_rate", "roll_rate"}, where);
+    r.check_keys(t,
+                 {"kind", "duration", "speed", "climb", "turn_rate", "roll_rate", "date", "time",
+                  "time_runs", "visibility", "layer"},
+                 where);
     const auto kind = r.string(t, "kind", where);
     const std::initializer_list<std::pair<std::string_view, Segment::Kind>> kinds = {
         {"hold", Segment::Kind::hold},
@@ -241,8 +327,12 @@ ScriptResult parse_script(const std::string& text, const std::string& source) {
         } else {
             for (std::size_t i = 0; i < list->size(); ++i) {
                 Segment seg;
-                read_segment(r, *list->get(i)->as_table(), "segment " + std::to_string(i + 1), seg);
+                EnvironmentChange change;
+                const std::string where = "segment " + std::to_string(i + 1);
+                read_segment(r, *list->get(i)->as_table(), where, seg);
+                read_environment(r, *list->get(i)->as_table(), where, change);
                 s.segments.push_back(seg);
+                s.environment.push_back(change);
             }
         }
     } else {

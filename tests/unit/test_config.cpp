@@ -155,6 +155,10 @@ TEST(Config, EnvironmentLayersAreReadAndChecked) {
     EXPECT_EQ(layers[1].visibility_m, 200.0);
     EXPECT_EQ(layers[2].kind, WeatherKind::rain);
     EXPECT_EQ(layers[2].visibility_m, 3000.0);
+    // Numbered as hosts number them: fog 0, clouds from 1, rain 4.
+    EXPECT_EQ(layers[0].id, 1);
+    EXPECT_EQ(layers[1].id, 0);
+    EXPECT_EQ(layers[2].id, 4);
     EXPECT_EQ(parse(kMinimal).config->environment.layers.size(), 0U);
 
     const std::string base = "base_m = 100\nthickness_m = 50\n";
@@ -180,6 +184,15 @@ TEST(Config, EnvironmentLayersAreReadAndChecked) {
         seven += "[[environment.layer]]\nkind = \"cloud\"\n" + base;
     }
     EXPECT_FALSE(parse(seven + kMinimal).ok());
+    // One fog, rain and snow layer each, three cloud layers at most.
+    const std::string fog = "[[environment.layer]]\nkind = \"fog\"\n" + base;
+    EXPECT_FALSE(parse(fog + fog + kMinimal).ok());
+    std::string four;
+    for (int i = 0; i < 4; ++i) {
+        four += "[[environment.layer]]\nkind = \"cloud\"\n" + base;
+    }
+    EXPECT_FALSE(parse(four + kMinimal).ok());
+    EXPECT_TRUE(parse(four.substr(0, four.size() / 4 * 3) + fog + kMinimal).ok());
     EXPECT_FALSE(parse("[environment]\nlayer = 1\n" + kMinimal).ok());
 }
 

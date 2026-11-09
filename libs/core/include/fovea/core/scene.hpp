@@ -77,6 +77,10 @@ struct WeatherLayer {
     double thickness_m = 0.0;
     double coverage = 1.0;         // clouds: the fraction of the sky they cover, 0 to 1
     double visibility_m = 1000.0;  // fog, rain and snow: within the band
+    // Which layer it is, so a writer can replace or remove it alone: fog 0,
+    // clouds 1 to 3, rain 4, snow 5 (as hosts number them, CIGI's Layer
+    // IDs among them). One layer each.
+    std::uint8_t id = 0;
 };
 
 // Fog, three cloud layers, rain and snow at once: CIGI's global layers less

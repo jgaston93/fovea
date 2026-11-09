@@ -25,7 +25,9 @@ visibility_m = 50000            # drawn from milestone 6 step 3
 # level, made ellipsoidal with [host]'s geoid_height_m. Fog, rain and snow
 # are bands of the visibility given (fog's 200 m, rain's 5,000 and snow's
 # 1,500 if not). Cloud layers are taken (coverage: the share of the sky,
-# 1 overcast) but not drawn yet (issue #73).
+# 1 overcast) but not drawn yet (issue #73). One fog, rain and snow layer
+# each, up to three cloud layers. A host's packets replace all of this as
+# they arrive (step 7): its time, its visibility, and each layer it sends.
 # [[environment.layer]]
 # kind = "cloud"                # cloud, fog, rain or snow
 # base_m = 1500

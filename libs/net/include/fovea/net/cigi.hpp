@@ -39,6 +39,13 @@ inline constexpr std::uint8_t kIgControlId = 1;  // ICD 4.1.1, p. 42
 inline constexpr std::uint8_t kIgControlSize = 24;
 inline constexpr std::uint8_t kEntityControlId = 2;  // ICD 4.1.2, p. 48
 inline constexpr std::uint8_t kEntityControlSize = 48;
+inline constexpr std::uint8_t kCelestialSphereControlId = 9;  // ICD 4.1.9, p. 82
+inline constexpr std::uint8_t kCelestialSphereControlSize = 16;
+inline constexpr std::uint8_t kAtmosphereControlId = 10;  // ICD 4.1.10, p. 85
+inline constexpr std::uint8_t kAtmosphereControlSize = 32;
+inline constexpr std::uint8_t kEnvironmentalRegionControlId = 11;  // ICD 4.1.11, p. 88
+inline constexpr std::uint8_t kWeatherControlId = 12;              // ICD 4.1.12, p. 100
+inline constexpr std::uint8_t kWeatherControlSize = 56;
 inline constexpr std::uint8_t kStartOfFrameId = 101;  // ICD 4.2.1, p. 212
 inline constexpr std::uint8_t kStartOfFrameSize = 24;
 
@@ -97,6 +104,77 @@ struct EntityControl {
     double alt_or_z = 0.0;
 };
 
+// ICD 4.1.9 Celestial Sphere Control (p. 82-84): the date and time of day
+// and the sky's bodies.
+struct CelestialSphereControl {
+    std::uint8_t hour = 0;         // 0 to 23, UTC
+    std::uint8_t minute = 0;       // 0 to 59, UTC
+    bool ephemeris_enable = true;  // the IG runs the time of day on
+    bool sun_enable = true;
+    bool moon_enable = true;
+    bool star_field_enable = true;
+    bool date_time_valid = false;         // Hour, Minute and Date set the IG's date and time
+    std::uint32_t date = 0;               // MMDDYYYY: month x 1000000 + day x 10000 + year
+    float star_field_intensity = 100.0F;  // percent
+};
+
+// ICD 4.1.10 Atmosphere Control (p. 85-87): the global atmosphere.
+struct AtmosphereControl {
+    bool atmospheric_model_enable = false;  // for sensors' apparent radiances
+    std::uint8_t humidity = 0;              // percent
+    float air_temperature_c = 0.0F;
+    float visibility_range_m = 0.0F;  // >= 0
+    float horizontal_wind_mps = 0.0F;
+    float vertical_wind_mps = 0.0F;   // positive up
+    float wind_direction_deg = 0.0F;  // from which it blows, from true north
+    float barometric_pressure_mb = 0.0F;
+};
+
+// Weather Control's Scope (p. 104). 3 is undefined: a packet holding it is
+// rejected.
+enum class WeatherScope : std::uint8_t { global = 0, regional = 1, entity = 2 };
+
+// Weather Control's standard Layer IDs (p. 102); 10 to 255 are the IG's.
+enum class WeatherLayerId : std::uint8_t {
+    ground_fog = 0,
+    cloud_1 = 1,
+    cloud_2 = 2,
+    cloud_3 = 3,
+    rain = 4,
+    snow = 5,
+    sleet = 6,
+    hail = 7,
+    sand = 8,
+    dust = 9,
+};
+
+// ICD 4.1.12 Weather Control (p. 100-107): a global or regional weather
+// layer, or a weather entity.
+struct WeatherControl {
+    std::uint16_t entity_or_region_id = 0;  // ignored for global layers
+    std::uint8_t layer_id = 0;              // WeatherLayerId, or the IG's own
+    std::uint8_t humidity = 0;              // percent
+    bool weather_enable = false;
+    bool scud_enable = false;
+    bool random_winds_enable = false;
+    bool random_lightning_enable = false;
+    std::uint8_t cloud_type = 0;  // 4 bits: 0 none, 1 to 10 the ICD's types
+    WeatherScope scope = WeatherScope::global;
+    std::uint8_t severity = 0;  // 3 bits, 0 to 5; 6 and 7 are undefined: rejected
+    float air_temperature_c = 0.0F;
+    float visibility_range_m = 0.0F;
+    float scud_frequency = 0.0F;    // percent
+    float coverage = 0.0F;          // percent
+    float base_elevation_m = 0.0F;  // above mean sea level
+    float thickness_m = 0.0F;
+    float transition_band_m = 0.0F;
+    float horizontal_wind_mps = 0.0F;
+    float vertical_wind_mps = 0.0F;
+    float wind_direction_deg = 0.0F;
+    float barometric_pressure_mb = 0.0F;
+    float aerosol_concentration = 0.0F;  // g/m^3
+};
+
 // ICD 4.2.1 Start of Frame (p. 212-216): IG to host, first packet of each
 // message.
 struct StartOfFrame {
@@ -115,6 +193,9 @@ struct StartOfFrame {
 // returns its size, or 0 if `out` is too small.
 std::size_t encode(const IgControl& p, std::span<std::uint8_t> out);
 std::size_t encode(const EntityControl& p, std::span<std::uint8_t> out);
+std::size_t encode(const CelestialSphereControl& p, std::span<std::uint8_t> out);
+std::size_t encode(const AtmosphereControl& p, std::span<std::uint8_t> out);
+std::size_t encode(const WeatherControl& p, std::span<std::uint8_t> out);
 std::size_t encode(const StartOfFrame& p, std::span<std::uint8_t> out);
 
 // Decoding a whole message.
@@ -158,10 +239,16 @@ private:
 // Decoding one packet from MessageReader: nothing if the ID is wrong, the
 // packet is shorter than the ICD's size, or a field holds a value the ICD
 // leaves undefined (Entity State or Ground/Ocean Clamp 3; IG Mode 3 in IG
-// Control, which only the IG may report). Longer packets are accepted (ICD
+// Control, which only the IG may report; Hour over 23 or Minute over 59;
+// Weather Control Scope 3 or Severity over 5). Longer packets are accepted (ICD
 // 2.11, rule 4). `swap`: MessageReader::swapped().
 std::optional<IgControl> decode_ig_control(std::span<const std::uint8_t> in, bool swap);
 std::optional<EntityControl> decode_entity_control(std::span<const std::uint8_t> in, bool swap);
+std::optional<CelestialSphereControl> decode_celestial_sphere_control(
+    std::span<const std::uint8_t> in, bool swap);
+std::optional<AtmosphereControl> decode_atmosphere_control(std::span<const std::uint8_t> in,
+                                                           bool swap);
+std::optional<WeatherControl> decode_weather_control(std::span<const std::uint8_t> in, bool swap);
 std::optional<StartOfFrame> decode_start_of_frame(std::span<const std::uint8_t> in, bool swap);
 
 }  // namespace fovea::cigi
