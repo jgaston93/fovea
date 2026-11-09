@@ -531,6 +531,10 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
             if (h.host_address) {
                 host_options.host = fovea::UdpEndpoint{*h.host_address, h.host_port};
             }
+            host_options.host_port = h.host_port;
+            host_options.byte_order = h.byte_order == fovea::HostByteOrder::network
+                                          ? fovea::cigi::ByteOrder::network
+                                          : fovea::cigi::ByteOrder::native;
             host_options.geoid_height_m = h.geoid_height_m;
             host_options.environment = scene_state->edit().environment;
             frame_starts = std::make_unique<fovea::FrameStartRing>();
@@ -543,11 +547,15 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
                 return 1;
             }
             std::printf(
-                "CIGI 3.3: listening on %s (receive buffer %zu KB); Start of Frame to %s\n",
+                "CIGI 3.3: listening on %s (receive buffer %zu KB); Start of Frame to %s, in %s "
+                "byte order\n",
                 fovea::format_endpoint({host_options.address, host_adapter->port()}).c_str(),
                 host_adapter->receive_buffer_bytes() / 1024,
                 host_options.host ? fovea::format_endpoint(*host_options.host).c_str()
-                                  : "the host's address, once it sends");
+                                  : ("port " + std::to_string(h.host_port) +
+                                     " at the host's address, once it sends")
+                                        .c_str(),
+                h.byte_order == fovea::HostByteOrder::network ? "network" : "native");
             loop_options.frame_starts = frame_starts.get();
             loop_options.rig = &rig;
             host_thread = std::make_unique<fovea::HostThread>(*host_adapter, *scene_state);

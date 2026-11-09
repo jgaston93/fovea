@@ -252,6 +252,35 @@ enable = false
     }
 }
 
+// [host]'s port defaults to Fovea's host_port (8005), and what it sends to
+// network byte order, as Fovea's do (Integration 1 step 2).
+TEST(TestHostScript, HostPortAndByteOrder) {
+    const std::string head = R"([ig]
+address = "127.0.0.1"
+port = 8004
+[start]
+lat = 34.6
+lon = -86.8
+alt = 300.0
+[[segment]]
+kind = "hold"
+duration = 5.0
+)";
+    const auto plain = parse_script(head, "s.toml");
+    ASSERT_TRUE(plain.script.has_value()) << plain.errors[0];
+    EXPECT_EQ(plain.script->host_port, 8005);
+    EXPECT_EQ(plain.script->byte_order, cigi::ByteOrder::network);
+    const auto native =
+        parse_script(head + "[host]\nport = 0\nbyte_order = \"native\"\n", "s.toml");
+    ASSERT_TRUE(native.script.has_value()) << native.errors[0];
+    EXPECT_EQ(native.script->host_port, 0);
+    EXPECT_EQ(native.script->byte_order, cigi::ByteOrder::native);
+    const auto bad = parse_script(head + "[host]\nbyte_order = \"little\"\n", "s.toml");
+    ASSERT_EQ(bad.errors.size(), 1U);
+    EXPECT_NE(bad.errors[0].find("s.toml:12: 'byte_order' in [host] must be"), std::string::npos)
+        << bad.errors[0];
+}
+
 TEST(TestHostScript, MistakesAreReportedWithTheirLines) {
     const std::string text = R"([ig]
 address = "1.2.3"

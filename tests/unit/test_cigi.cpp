@@ -12,7 +12,8 @@
 
 // The expected bytes here are written by hand from the ICD's packet figures
 // (CIGI 3.3 ICD: Figure 39, p. 42; Figure 42, p. 48; Figure 53, p. 82;
-// Figure 54, p. 85; Figure 65, p. 101; Figure 109, p. 212), not
+// Figure 54, p. 85; Figure 65, p. 101; Figure 86, p. 152; Figure 109,
+// p. 212; Figure 110, p. 217; Figure 112, p. 220), not
 // produced by the encoder, as a big-endian or a little-endian sender would
 // send them.
 
@@ -650,6 +651,231 @@ TEST(Cigi, ReadingAndWritingAllocateNothing) {
         }
     }
     EXPECT_EQ(counter.count(), 0U);
+}
+
+// HAT/HOT (Integration 1 step 2). Figure 86 in a given byte order: ID
+// 0x0102; entity coordinates, Extended (2); update period 3; entity 0x0405.
+template <typename Order>
+Bytes hat_hot_request(Order order) {
+    return cat({{0x18, 0x20},  // Packet ID 24, Packet Size 32
+                order(std::uint16_t{0x0102}),
+                {0x06, 0x03},  // 00000 1 10, Update Period 3
+                order(std::uint16_t{0x0405}),
+                order(34.6372),
+                order(-86.7751),
+                order(190.5)});
+}
+
+void expect_hat_hot_request(const HatHotRequest& p) {
+    EXPECT_EQ(p.hat_hot_id, 0x0102);
+    EXPECT_TRUE(p.entity_coordinates);
+    EXPECT_EQ(p.request_type, HatHotRequestType::extended);
+    EXPECT_EQ(p.update_period, 3);
+    EXPECT_EQ(p.entity_id, 0x0405);
+    EXPECT_DOUBLE_EQ(p.lat_or_x, 34.6372);
+    EXPECT_DOUBLE_EQ(p.lon_or_y, -86.7751);
+    EXPECT_DOUBLE_EQ(p.alt_or_z, 190.5);
+}
+
+// Figure 110: ID 0x0102; Host Frame Number LSN 0xA, HOT, valid; 190.5 m.
+template <typename Order>
+Bytes hat_hot_response(Order order) {
+    return cat({{0x66, 0x10},  // Packet ID 102, Packet Size 16
+                order(std::uint16_t{0x0102}),
+                {0xA3, 0x00, 0x00, 0x00},  // 1010 00 1 1, Reserved
+                order(190.5)});
+}
+
+// Figure 112: ID 0x0102; LSN 0x5, valid; HAT 12.25, HOT 190.5, material
+// 0x01020304, normal at azimuth -45 and elevation 80 degrees.
+template <typename Order>
+Bytes hat_hot_extended_response(Order order) {
+    return cat({{0x67, 0x28},  // Packet ID 103, Packet Size 40
+                order(std::uint16_t{0x0102}),
+                {0x51, 0x00, 0x00, 0x00},  // 0101 000 1, Reserved
+                order(12.25),
+                order(190.5),
+                order(std::uint32_t{0x01020304}),
+                order(-45.0F),
+                order(80.0F),
+                {0x00, 0x00, 0x00, 0x00}});
+}
+
+TEST(Cigi, HatHotRequestInBothByteOrders) {
+    for (const bool big : {true, false}) {
+        SCOPED_TRACE(big ? "big-endian host" : "little-endian host");
+        const auto order = [big](auto v) { return big ? be(v) : le(v); };
+        const Bytes message =
+            cat({big ? kIgControlBigEndian : kIgControlLittleEndian, hat_hot_request(order)});
+        MessageReader reader(message, kIgControlId);
+        MessageReader::Packet p;
+        ASSERT_TRUE(reader.next(p));
+        ASSERT_TRUE(reader.next(p));
+        EXPECT_EQ(p.id, kHatHotRequestId);
+        const auto r = decode_hat_hot_request(p.bytes, reader.swapped());
+        ASSERT_TRUE(r.has_value());
+        expect_hat_hot_request(*r);
+        EXPECT_FALSE(reader.next(p));
+        EXPECT_EQ(reader.error(), MessageError::none);
+    }
+}
+
+// Each order's bytes, by the ICD's figures: network order is big-endian
+// whatever this computer is.
+TEST(Cigi, HatHotPacketsEncodeTheIcdBytesInEitherOrder) {
+    const auto big = [](auto v) { return be(v); };
+    const auto native = [](auto v) {
+        return std::endian::native == std::endian::little ? le(v) : be(v);
+    };
+    HatHotRequest q;
+    q.hat_hot_id = 0x0102;
+    q.entity_coordinates = true;
+    q.request_type = HatHotRequestType::extended;
+    q.update_period = 3;
+    q.entity_id = 0x0405;
+    q.lat_or_x = 34.6372;
+    q.lon_or_y = -86.7751;
+    q.alt_or_z = 190.5;
+    HatHotResponse r;
+    r.hat_hot_id = 0x0102;
+    r.host_frame_number_lsn = 0xA;
+    r.hot = true;
+    r.valid = true;
+    r.height_m = 190.5;
+    HatHotExtendedResponse x;
+    x.hat_hot_id = 0x0102;
+    x.host_frame_number_lsn = 0x5;
+    x.valid = true;
+    x.hat_m = 12.25;
+    x.hot_m = 190.5;
+    x.material_code = 0x01020304;
+    x.normal_azimuth_deg = -45.0F;
+    x.normal_elevation_deg = 80.0F;
+    for (const ByteOrder o : {ByteOrder::network, ByteOrder::native}) {
+        SCOPED_TRACE(o == ByteOrder::network ? "network" : "native");
+        const bool swap = swaps(o);
+        const auto order = [&](auto v) { return o == ByteOrder::network ? big(v) : native(v); };
+        std::array<std::uint8_t, 48> out{};
+        out.fill(0xEE);
+        ASSERT_EQ(encode(q, out, swap), 32U);
+        EXPECT_EQ(Bytes(out.begin(), out.begin() + 32), hat_hot_request(order));
+        EXPECT_EQ(out[32], 0xEE);  // nothing past the packet
+        ASSERT_EQ(encode(r, out, swap), 16U);
+        EXPECT_EQ(Bytes(out.begin(), out.begin() + 16), hat_hot_response(order));
+        ASSERT_EQ(encode(x, out, swap), 40U);
+        EXPECT_EQ(Bytes(out.begin(), out.begin() + 40), hat_hot_extended_response(order));
+    }
+}
+
+TEST(Cigi, HatHotResponsesFromEitherOrder) {
+    for (const bool big : {true, false}) {
+        SCOPED_TRACE(big ? "big-endian IG" : "little-endian IG");
+        const auto order = [big](auto v) { return big ? be(v) : le(v); };
+        const bool swap = big == needs_swap_from_big_endian();
+        const auto r = decode_hat_hot_response(hat_hot_response(order), swap);
+        ASSERT_TRUE(r.has_value());
+        EXPECT_EQ(r->hat_hot_id, 0x0102);
+        EXPECT_EQ(r->host_frame_number_lsn, 0xA);
+        EXPECT_TRUE(r->hot);
+        EXPECT_TRUE(r->valid);
+        EXPECT_DOUBLE_EQ(r->height_m, 190.5);
+        const auto x = decode_hat_hot_extended_response(hat_hot_extended_response(order), swap);
+        ASSERT_TRUE(x.has_value());
+        EXPECT_EQ(x->hat_hot_id, 0x0102);
+        EXPECT_EQ(x->host_frame_number_lsn, 0x5);
+        EXPECT_TRUE(x->valid);
+        EXPECT_DOUBLE_EQ(x->hat_m, 12.25);
+        EXPECT_DOUBLE_EQ(x->hot_m, 190.5);
+        EXPECT_EQ(x->material_code, 0x01020304U);
+        EXPECT_FLOAT_EQ(x->normal_azimuth_deg, -45.0F);
+        EXPECT_FLOAT_EQ(x->normal_elevation_deg, 80.0F);
+    }
+}
+
+// What a host in network order gets: Start of Frame as Figure 109 lays it
+// out, big-endian, its magic number 8000h read as unswapped there.
+TEST(Cigi, StartOfFrameInNetworkOrder) {
+    StartOfFrame sof;
+    sof.database_number = -1;
+    sof.ig_status = 7;
+    sof.host_defined_earth_model = true;
+    sof.ig_mode = IgMode::debug;
+    sof.ig_frame_number = 256;
+    sof.timestamp = 100000;
+    sof.last_host_frame_number = 0xFFFFFFFE;
+    std::array<std::uint8_t, 24> out{};
+    ASSERT_EQ(encode(sof, out, swaps(ByteOrder::network)), 24U);
+    EXPECT_EQ(Bytes(out.begin(), out.end()), kStartOfFrameBigEndian);
+    EXPECT_EQ(MessageReader(out, kStartOfFrameId).swapped(), needs_swap_from_big_endian());
+    EXPECT_FALSE(swaps(ByteOrder::native));
+}
+
+TEST(Cigi, HatHotReservedBitsAreSentAsZeroAndIgnored) {
+    // Every field at its widest: anything else set would be a reserved bit.
+    HatHotRequest q;
+    q.entity_coordinates = true;
+    q.request_type = static_cast<HatHotRequestType>(3);
+    std::array<std::uint8_t, 48> d{};
+    d.fill(0xFF);
+    ASSERT_EQ(encode(q, d), 32U);
+    EXPECT_EQ(d[4] & 0xF8, 0);  // byte 4 bits 7-3
+    HatHotResponse r;
+    r.host_frame_number_lsn = 0xF;
+    r.hot = r.valid = true;
+    d.fill(0xFF);
+    ASSERT_EQ(encode(r, d), 16U);
+    EXPECT_EQ(d[4] & 0x0C, 0);  // byte 4 bits 3-2
+    EXPECT_EQ(d[5] | d[6] | d[7], 0);
+    HatHotExtendedResponse x;
+    x.host_frame_number_lsn = 0xF;
+    x.valid = true;
+    d.fill(0xFF);
+    ASSERT_EQ(encode(x, d), 40U);
+    EXPECT_EQ(d[4] & 0x0E, 0);  // byte 4 bits 3-1
+    EXPECT_EQ(d[5] | d[6] | d[7] | d[36] | d[37] | d[38] | d[39], 0);
+    // Set on receive, they're left alone (ICD 2.11, rule 4: a later version
+    // may use them).
+    Bytes request = hat_hot_request([](auto v) { return be(v); });
+    request[4] = static_cast<std::uint8_t>(request[4] | 0xF8);
+    const auto rq = decode_hat_hot_request(request, needs_swap_from_big_endian());
+    ASSERT_TRUE(rq.has_value());
+    expect_hat_hot_request(*rq);
+    Bytes response = hat_hot_response([](auto v) { return be(v); });
+    response[4] = static_cast<std::uint8_t>(response[4] | 0x0C);
+    response[6] = 0xFF;
+    const auto rs = decode_hat_hot_response(response, needs_swap_from_big_endian());
+    ASSERT_TRUE(rs.has_value());
+    EXPECT_EQ(rs->host_frame_number_lsn, 0xA);
+    EXPECT_TRUE(rs->hot && rs->valid);
+}
+
+TEST(Cigi, HatHotRequestTypeThreeIsRejected) {
+    // Request Type 3 is undefined (p. 153).
+    Bytes request = hat_hot_request([](auto v) { return be(v); });
+    request[4] = static_cast<std::uint8_t>(request[4] | 0x03);
+    EXPECT_FALSE(decode_hat_hot_request(request, needs_swap_from_big_endian()).has_value());
+    for (const unsigned type : {0U, 1U, 2U}) {
+        request[4] = static_cast<std::uint8_t>((request[4] & 0xFCU) | type);
+        const auto q = decode_hat_hot_request(request, needs_swap_from_big_endian());
+        ASSERT_TRUE(q.has_value());
+        EXPECT_EQ(static_cast<unsigned>(q->request_type), type);
+    }
+}
+
+TEST(Cigi, HatHotPacketsNeedTheirSize) {
+    std::array<std::uint8_t, 39> small{};
+    EXPECT_EQ(encode(HatHotRequest{}, std::span(small).first(31)), 0U);
+    EXPECT_EQ(encode(HatHotResponse{}, std::span(small).first(15)), 0U);
+    EXPECT_EQ(encode(HatHotExtendedResponse{}, small), 0U);
+    const Bytes request = hat_hot_request([](auto v) { return be(v); });
+    EXPECT_FALSE(decode_hat_hot_request(std::span(request).first(31), false).has_value());
+    Bytes short_size = request;
+    short_size[1] = 31;
+    EXPECT_FALSE(decode_hat_hot_request(short_size, false).has_value());
+    const Bytes x = hat_hot_extended_response([](auto v) { return be(v); });
+    EXPECT_FALSE(decode_hat_hot_extended_response(std::span(x).first(39), false).has_value());
+    // Each decoder takes its own packet only.
+    EXPECT_FALSE(decode_hat_hot_response(x, false).has_value());
 }
 
 }  // namespace

@@ -10,6 +10,7 @@
 //   [host]
 //   port = 8005             # where Start of Frame comes back (0: any free port)
 //   rate_hz = 60.0          # messages a second (asynchronous mode)
+//   byte_order = "network"  # what it sends: "network" (big-endian) or "native"
 //   [start]
 //   lat = 34.6
 //   lon = -86.8
@@ -64,8 +65,9 @@ struct EnvironmentChange {
 struct Script {
     std::uint32_t ig_address = 0;  // IPv4, host byte order
     std::uint16_t ig_port = 0;
-    std::uint16_t host_port = 0;
+    std::uint16_t host_port = 8005;  // Fovea's [host] host_port default
     double rate_hz = 60.0;
+    cigi::ByteOrder byte_order = cigi::ByteOrder::network;
     FlightState start;
     std::vector<Segment> segments;
     std::vector<EnvironmentChange> environment;  // one for each segment

@@ -65,14 +65,22 @@ The compiler converts positions and ellipsoidal heights from NAD83(2011) to WGS-
 - **The packets.** In `libs/net`, from the ICD's figures:
   - HAT/HOT Request (4.1.24, Figure 86, p. 152, ID 24, 32 bytes);
   - HAT/HOT Response (4.2.2, Figure 110, p. 217, ID 102, 16 bytes);
-  - HAT/HOT Extended Response (4.2.3, Figure 112, p. 219, ID 103, 40 bytes).
+  - HAT/HOT Extended Response (4.2.3, Figure 112, p. 220, ID 103, 40 bytes).
   - The errata are checked for each.
 - **Byte order.** The codec writes either order, and `[host] byte_order` (`"network"`, the default, or `"native"`) chooses which the IG sends. Fovea already reads either, by the Byte Swap Magic Number (ICD 2.5, p. 7). The test host gets the same option.
-- **Ports.** `[host] port` defaults to 8004, and the reply goes to `host_port`, default 8005, at the address the host sends from. Both are still configurable.
+- **Ports.** `[host] port` defaults to 8004, and the reply goes to `host_port`, default 8005, at `host_address`, or at the address the host sends from without it. All are still configurable.
 - **Done when:**
-  - Tests check bytes in both byte orders, with reserved bits and undefined values (Request Type 3) rejected.
+  - Tests check bytes in both byte orders. Reserved bits are sent as zero and ignored on receive (ICD 2.11, rule 4: a later version may use them), and undefined values (Request Type 3) are rejected.
   - The fuzz target and corpus cover all three packets.
   - Start of Frame and the responses are byte-checked big-endian, and Fovea answers a big-endian host in big-endian.
+
+### Step 2 results (2026-11-09)
+
+- **The packets** are in `cigi.hpp`, written from Figures 86, 110 and 112, which the errata leave unchanged. Bit positions were read off the field boxes in the PDF. Tests check each one byte for byte in both orders, every bit field set apart from its neighbours, with reserved bits zero on sending and ignored on receipt. Request Type 3 is refused.
+- **Byte order.** Every encoder takes a `swap`, so either order can be written. The adapter and the test host send in network order unless told `byte_order = "native"`. A test checks that a big-endian host's IG Control gets a big-endian Start of Frame back, and another that Start of Frame in network order is Figure 109's bytes.
+- **Ports.** `[host] port` defaults to 8004 and `host_port` to 8005, and `host_address` no longer needs `host_port` with it. Without an address, answers go to `host_port` at the address the host sends from. The test host's `[host] port` defaults to 8005 to match.
+- **Fuzzing.** The target decodes and round-trips all three packets in both orders, and the corpus gains a message of each kind. 60 s and 7.2 million inputs found nothing.
+- Nothing answers requests yet: that is step 3.
 
 ## Step 3: Answering them (D-036)
 

@@ -70,10 +70,14 @@ namespace fovea {
 struct CigiAdapterOptions {
     std::uint16_t port = 0;     // where host messages arrive; 0: any free port
     std::uint32_t address = 0;  // the local address to listen on; 0: all interfaces
-    // Where Start of Frame goes. Without it, to wherever the last host
-    // message came from, so nothing is sent until the host's first message;
-    // a host that waits for Start of Frame before sending needs this set.
+    // Where Start of Frame goes. Without it, to the address the last host
+    // message came from, at `host_port` (unset: the port it came from), so
+    // nothing is sent until the host's first message; a host that waits for
+    // Start of Frame before sending needs `host` set.
     std::optional<UdpEndpoint> host;
+    std::optional<std::uint16_t> host_port;
+    // The byte order sent in (ICD 2.5); any is read.
+    cigi::ByteOrder byte_order = cigi::ByteOrder::network;
     // Height of the geoid (mean sea level) above the WGS-84 ellipsoid, added
     // to CIGI altitudes. A constant until a geoid model arrives with terrain
     // (milestone 3); 0 puts sea level on the ellipsoid, which is off by the

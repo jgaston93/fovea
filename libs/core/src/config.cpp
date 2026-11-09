@@ -225,9 +225,10 @@ void check_range(Parser& p, const toml::node& n, const std::string& path, double
 }
 
 void parse_host(Parser& p, const toml::table& t, HostConfig& out) {
-    p.check_keys(
-        t, {"protocol", "port", "listen_address", "host_address", "host_port", "geoid_height_m"},
-        "host");
+    p.check_keys(t,
+                 {"protocol", "port", "listen_address", "host_address", "host_port", "byte_order",
+                  "geoid_height_m"},
+                 "host");
     if (const auto* n = t.get("listen_address")) {
         if (auto v = p.string(*n, "host.listen_address")) {
             out.listen_address = parse_ipv4(*v);
@@ -243,7 +244,7 @@ void parse_host(Parser& p, const toml::table& t, HostConfig& out) {
             out.protocol = *v;
         }
     }
-    if (const auto* n = p.required(t, "port", "host")) {
+    if (const auto* n = t.get("port")) {
         if (auto v = p.integer(*n, "host.port", 1, 65535)) {
             out.port = static_cast<std::uint16_t>(*v);
         }
@@ -274,9 +275,12 @@ void parse_host(Parser& p, const toml::table& t, HostConfig& out) {
                 "'host.host_address' is another computer, but 'host.listen_address' is this "
                 "computer only (127.x.x.x): Start of Frame couldn't reach the host");
     }
-    if ((address == nullptr) != (port == nullptr)) {
-        p.error((address != nullptr ? address : port)->source(),
-                "'host.host_address' and 'host.host_port' go together: set both, or neither");
+    if (const auto* n = t.get("byte_order")) {
+        if (auto v = p.choice<HostByteOrder>(
+                *n, "host.byte_order",
+                {{"network", HostByteOrder::network}, {"native", HostByteOrder::native}})) {
+            out.byte_order = *v;
+        }
     }
     if (const auto* n = t.get("geoid_height_m")) {
         if (auto v = p.number(*n, "host.geoid_height_m")) {

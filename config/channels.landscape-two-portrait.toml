@@ -34,13 +34,14 @@ view_rotation = { yaw = 35.0, pitch = 0.0, roll = 0.0 }
 frustum = { left = -15.0, right = 15.0, top = 25.5, bottom = -25.5 }    # covers yaw 20..50
 
 # A host program driving the scene (milestone 2): CIGI 3.3 over UDP. Leave
-# it out and nothing listens. The ports are any free ones; the host's
-# settings must match (the CIGI ICD names none).
+# it out and nothing listens. The ports default to the usual CIGI pair
+# (the ICD names none); the host's settings must match.
 # [host]
 # protocol = "cigi"
-# port = 8004                  # where the host's messages arrive
-# host_address = "127.0.0.1"   # where Start of Frame goes; set both, or neither
-# host_port = 8005             #   (neither: back to wherever the host sends from)
+# port = 8004                  # where the host's messages arrive (8004 if left out)
+# host_address = "127.0.0.1"   # where Start of Frame goes (left out: wherever the host sends from)
+# host_port = 8005             #   and at which port (8005 if left out)
+# byte_order = "network"       # what the IG sends: "network" (big-endian, if left out) or "native"
 # geoid_height_m = 0.0         # the geoid above the WGS-84 ellipsoid, here
 
 # [reference_scene] origin: the ground grid is the level plane through this

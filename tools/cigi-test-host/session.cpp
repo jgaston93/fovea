@@ -9,8 +9,12 @@
 namespace fovea::test_host {
 
 Session::Session(const UdpEndpoint& ig, std::uint16_t local_port, std::uint32_t local_address,
-                 bool smoothing)
-    : socket_(local_port, local_address), ig_(ig), start_(now()), smoothing_(smoothing) {}
+                 bool smoothing, cigi::ByteOrder order)
+    : socket_(local_port, local_address),
+      ig_(ig),
+      start_(now()),
+      smoothing_(smoothing),
+      swap_(cigi::swaps(order)) {}
 
 void Session::read_start_of_frames(LocalTime t) {
     std::array<std::uint8_t, 2048> buffer{};
@@ -88,7 +92,7 @@ void Session::send_frame(const FlightState& state, LocalTime t) {
                                  cigi::kCelestialSphereControlSize + cigi::kAtmosphereControlSize +
                                  kMaxWeatherLayers * cigi::kWeatherControlSize>
         out{};
-    std::size_t n = cigi::encode(ig, out);
+    std::size_t n = cigi::encode(ig, out, swap_);
     // Until the IG reports Operate, IG Control alone (ICD 2.8).
     if (operating_) {
         cigi::EntityControl e;
@@ -101,15 +105,15 @@ void Session::send_frame(const FlightState& state, LocalTime t) {
         e.yaw_deg = static_cast<float>(state.attitude.yaw_deg);
         e.pitch_deg = static_cast<float>(state.attitude.pitch_deg);
         e.roll_deg = static_cast<float>(state.attitude.roll_deg);
-        n += cigi::encode(e, std::span(out).subspan(n));
+        n += cigi::encode(e, std::span(out).subspan(n), swap_);
         if (pending_.celestial) {
-            n += cigi::encode(*pending_.celestial, std::span(out).subspan(n));
+            n += cigi::encode(*pending_.celestial, std::span(out).subspan(n), swap_);
         }
         if (pending_.atmosphere) {
-            n += cigi::encode(*pending_.atmosphere, std::span(out).subspan(n));
+            n += cigi::encode(*pending_.atmosphere, std::span(out).subspan(n), swap_);
         }
         for (const cigi::WeatherControl& w : pending_.weather) {
-            n += cigi::encode(w, std::span(out).subspan(n));
+            n += cigi::encode(w, std::span(out).subspan(n), swap_);
         }
         pending_ = {};
     }

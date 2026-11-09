@@ -88,7 +88,10 @@ void CigiAdapter::report_frames() {
     if (!newest) {
         return;
     }
-    const std::optional<UdpEndpoint> to = options_.host ? options_.host : last_sender_;
+    std::optional<UdpEndpoint> to = options_.host ? options_.host : last_sender_;
+    if (to && !options_.host && options_.host_port) {
+        to->port = *options_.host_port;
+    }
     if (!to) {
         ++stats_.frames_unreported;
         return;
@@ -100,7 +103,7 @@ void CigiAdapter::report_frames() {
     sof.ig_frame_number = static_cast<std::uint32_t>(newest->frame);
     sof.last_host_frame_number = last_host_frame_;
     std::array<std::uint8_t, cigi::kStartOfFrameSize> out{};
-    const std::size_t n = cigi::encode(sof, out);
+    const std::size_t n = cigi::encode(sof, out, cigi::swaps(options_.byte_order));
     if (socket_.send_to(std::span(out).first(n), *to)) {
         ++stats_.frames_reported;
     } else {

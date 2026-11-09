@@ -319,6 +319,7 @@ port = 8004
 listen_address = "192.168.1.10"
 host_address = "192.168.1.20"
 host_port = 8005
+byte_order = "native"
 geoid_height_m = -29.5
 )");
     ASSERT_TRUE(r.ok()) << r.errors[0].to_string();
@@ -329,7 +330,21 @@ geoid_height_m = -29.5
     EXPECT_EQ(h.listen_address, 0xC0A8010AU);
     EXPECT_EQ(h.host_address, 0xC0A80114U);
     EXPECT_EQ(h.host_port, 8005);
+    EXPECT_EQ(h.byte_order, HostByteOrder::native);
     EXPECT_DOUBLE_EQ(h.geoid_height_m, -29.5);
+}
+
+// The usual CIGI pair, in network byte order (Integration 1 step 2).
+TEST(Config, HostSectionDefaults) {
+    const auto r = parse(kMinimal + "[host]\nprotocol = \"cigi\"\nhost_address = \"10.0.0.2\"\n");
+    ASSERT_TRUE(r.ok()) << r.errors[0].to_string();
+    const HostConfig& h = *r.config->host;
+    EXPECT_EQ(h.port, 8004);
+    EXPECT_FALSE(h.listen_address.has_value());
+    EXPECT_EQ(h.host_address, 0x0A000002U);
+    EXPECT_EQ(h.host_port, 8005);
+    EXPECT_EQ(h.byte_order, HostByteOrder::network);
+    EXPECT_DOUBLE_EQ(h.geoid_height_m, 0.0);
 }
 
 TEST(Config, HostSectionIsChecked) {
@@ -340,8 +355,9 @@ TEST(Config, HostSectionIsChecked) {
     expect_one_error(
         parse(head + "protocol = \"cigi\"\nport = 8004\nhost_address = \"1.2.3\"\nhost_port = 1\n"),
         10, "IPv4 address");
-    expect_one_error(parse(head + "protocol = \"cigi\"\nport = 8004\nhost_port = 8005\n"), 10,
-                     "go together");
+    expect_one_error(parse(head + "protocol = \"cigi\"\nhost_port = 70000\n"), 9, "host.host_port");
+    expect_one_error(parse(head + "protocol = \"cigi\"\nbyte_order = \"little\"\n"), 9,
+                     "network, native");
     expect_one_error(parse(head + "protocol = \"cigi\"\nport = 8004\ngeoid_height_m = 400\n"), 10,
                      "host.geoid_height_m");
     expect_one_error(
