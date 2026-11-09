@@ -851,7 +851,8 @@ double brightness(const std::vector<std::uint8_t>& px, std::uint32_t w, glm::dve
 // Rain and snow fall from an overcast (step 6; clouds aren't drawn yet,
 // #73): under a band of rain the ground has only its grey light, no sun, so
 // a post's shadow is gone; and the ground is darker than in the sun.
-TEST(TerrainRender, RainTakesTheSunAndItsShadows) {
+// Snow's overcast is thinner: its ground brighter than rain's.
+TEST(TerrainRender, RainAndSnowTakeTheSunAndItsShadows) {
     double lat0 = 0.0;
     double lon0 = 0.0;
     Spec s = flat_grey(&lat0, &lon0);
@@ -891,6 +892,12 @@ TEST(TerrainRender, RainTakesTheSunAndItsShadows) {
     EXPECT_LT(sunny_dark, sunny_lit * 0.8);
     EXPECT_NEAR(wet_dark, wet_lit, 3.0) << "a shadow in the rain";
     EXPECT_LT(wet_lit, sunny_lit) << "the rain's overcast no darker than the sun";
+    // Snow falls from thinner cloud than rain: its ground lit brighter.
+    const std::array<WeatherLayer, 1> snow = {
+        WeatherLayer{WeatherKind::snow, 0.0, 1500.0, 1.0, 5000.0}};
+    const double snowy_lit = brightness(draw_weather(dir, down, kSize, sky, snow), kSize, at(6.0));
+    std::printf("snow: %.0f\n", snowy_lit);
+    EXPECT_GT(snowy_lit, wet_lit * 1.3) << "snow's overcast no brighter than rain's";
 }
 
 // A fog layer hides what is in it and not what is above it (step 6): a

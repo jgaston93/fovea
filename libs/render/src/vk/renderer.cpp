@@ -61,11 +61,23 @@ namespace fovea {
 
 namespace {
 
+// A band's kind as the shaders take it (weather.slang).
+float band_kind(WeatherKind k) {
+    switch (k) {
+        case WeatherKind::rain:
+            return 1.0F;
+        case WeatherKind::snow:
+            return 2.0F;
+        default:
+            return 0.0F;
+    }
+}
+
 // A view's weather into its lighting block (step 6, D-034): the eye's
 // height and up, and the fog, rain and snow, lowest first, each as its base,
 // top, extinction (Koschmieder's 3.912 over its visibility) and kind (0
-// fog, 1 rain or snow, under an overcast). Cloud layers
-// aren't drawn yet (#73): left out. No allocation.
+// fog, 1 rain, 2 snow: each under its own overcast). Cloud layers aren't
+// drawn yet (#73): left out. No allocation.
 void fill_weather(ViewLighting& l, std::span<const WeatherLayer> weather, double eye_height_m,
                   const DVec3& up) {
     l.eye_height_m = static_cast<float>(eye_height_m);
@@ -83,8 +95,7 @@ void fill_weather(ViewLighting& l, std::span<const WeatherLayer> weather, double
     for (std::size_t k = 0; k < n; ++k) {
         const WeatherLayer& w = *bands[k];
         l.layer[k] = {static_cast<float>(w.base_m), static_cast<float>(w.base_m + w.thickness_m),
-                      static_cast<float>(3.912 / std::max(w.visibility_m, 1.0)),
-                      w.kind == WeatherKind::fog ? 0.0F : 1.0F};
+                      static_cast<float>(3.912 / std::max(w.visibility_m, 1.0)), band_kind(w.kind)};
     }
 }
 

@@ -55,53 +55,49 @@ float3 level_light(ViewSky s) {
            s.moon_irradiance * saturate(-lighting.moon_local.z) + s.sky_irradiance;
 }
 
-// The light under the overcast rain and snow fall from (clouds aren't
-// drawn yet, #73, but rain and snow imply them): no sun or moon, a grey
-// third of the light on level ground, about what a thick stratus lets
-// through.
-float3 overcast_light(ViewSky s) {
-    return float3(luminance(level_light(s)) * 0.3);
+// The light under the overcast rain or snow falls from (clouds aren't drawn
+// yet, #73, but rain and snow imply them): no sun or moon, a fraction of the
+// light on level ground. Rain's (kind 1) a dark, blue-grey fifth, a thick
+// nimbostratus; snow's (kind 2) nearer half and whiter, from thinner cloud.
+float3 overcast_light(ViewSky s, float kind) {
+    const float3 tint = kind > 1.5 ? float3(0.45, 0.46, 0.48) : float3(0.19, 0.21, 0.24);
+    return luminance(level_light(s)) * tint;
 }
 
-// Whether a point (relative to the eye) is below the top of a band of rain
-// or snow (layer w 1), so under its overcast. Its height taken as level
-// with the eye's ground: near enough within the bands' reach.
-bool under_precipitation(float3 rel) {
+// The kind of the lowest band of rain or snow (layer w 1 or 2) a point
+// (relative to the eye) is below the top of, so under its overcast, or 0.
+// Its height taken as level with the eye's ground: near enough within the
+// bands' reach.
+float precipitation_over(float3 rel) {
     const float h = lighting.eye_height_m + dot(rel, lighting.up);
     for (uint k = 0; k < lighting.layer_count; ++k) {
         const float4 l = lighting.layer[k];
         if (l.w > 0.5 && h < l.y) {
-            return true;
+            return l.w;
         }
     }
-    return false;
+    return 0.0;
 }
 
 // A colour (radiance, before or after exposure as `scale` is 1 or the
 // exposure) seen through the bands to a point dist metres along a ray: the
-// light they scatter toward the eye, by their share of the depth, fog's as
-// a cloud lit from above (most of the light on level ground), rain's and
-// snow's the overcast's.
+// light they scatter toward the eye, by each band's share of the depth,
+// fog's as a cloud lit from above (most of the light on level ground),
+// rain's and snow's their overcast's.
 float3 through_bands(float3 colour, float mu, float dist, ViewSky s, float scale) {
     if (lighting.layer_count == 0) {
         return colour;
     }
-    float fog = 0.0;
-    float precipitation = 0.0;
+    float depth = 0.0;
+    float3 light = float3(0.0);
     for (uint k = 0; k < lighting.layer_count; ++k) {
         const float4 l = lighting.layer[k];
-        const float depth = l.z * band_length(mu, dist, l.x, l.y);
-        if (l.w > 0.5) {
-            precipitation += depth;
-        } else {
-            fog += depth;
-        }
+        const float d = l.z * band_length(mu, dist, l.x, l.y);
+        depth += d;
+        light += (l.w > 0.5 ? overcast_light(s, l.w) : level_light(s)) * d;
     }
-    const float depth = fog + precipitation;
     if (depth <= 0.0) {
         return colour;
     }
-    const float3 scattered =
-        (level_light(s) * fog + overcast_light(s) * precipitation) / depth * 0.8 * kInvPi;
-    return lerp(scattered * scale, colour, exp(-depth));
+    return lerp(light / depth * 0.8 * kInvPi * scale, colour, exp(-depth));
 }

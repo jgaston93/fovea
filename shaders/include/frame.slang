@@ -184,9 +184,10 @@ float3 irradiance_on(float3 n, ViewSky s, float2 lit) {
 #include "weather.slang"
 
 // The same, at a point relative to the eye: under rain or snow, only their
-// overcast's grey light (step 6).
+// overcast's light (step 6).
 float3 irradiance_at(float3 rel, float3 n, ViewSky s, float2 lit) {
-    return under_precipitation(rel) ? overcast_light(s) : irradiance_on(n, s, lit);
+    const float kind = precipitation_over(rel);
+    return kind > 0.5 ? overcast_light(s, kind) : irradiance_on(n, s, lit);
 }
 
 
