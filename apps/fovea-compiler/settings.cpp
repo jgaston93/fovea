@@ -212,6 +212,13 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
         s.finest_level = static_cast<std::uint8_t>(*finest_level);
     }
 
+    const auto epoch = root["datum"]["epoch"].value<double>();
+    if (!epoch || !std::isfinite(*epoch) || *epoch < 1990.0 || *epoch > 2100.0) {
+        error(root.source(), "[datum] needs epoch, a decimal year from 1990 to 2100 (D-037)");
+    } else {
+        s.datum_epoch = *epoch;
+    }
+
     const auto elevation = root["elevation"];
     const auto samples = elevation["samples"].value<std::int64_t>();
     // Odd: a coarser tile's samples fall on every second sample of its

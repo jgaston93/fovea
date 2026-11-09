@@ -71,8 +71,12 @@ std::string manifest_text(const DatabaseManifest& m) {
       << "schema = " << m.schema << "\n"
       << "name = " << toml_string(m.name) << "\n\n"
       << "[area]\nsouth = " << m.area.south_deg << "\nnorth = " << m.area.north_deg
-      << "\nwest = " << m.area.west_deg << "\neast = " << m.area.east_deg << "\n\n"
-      << "[layers.elevation]\nformat = \"float32\"\nsamples = " << m.elevation_samples << "\n";
+      << "\nwest = " << m.area.west_deg << "\neast = " << m.area.east_deg << "\n\n";
+    if (m.frame) {
+        s << "[frame]\nname = " << toml_string(m.frame->name) << "\nepoch = " << m.frame->epoch
+          << "\n\n";
+    }
+    s << "[layers.elevation]\nformat = \"float32\"\nsamples = " << m.elevation_samples << "\n";
     if (m.imagery) {
         s << "\n[layers.imagery]\nformat = \"" << imagery_format_name(m.imagery->format)
           << "\"\ntexels = " << m.imagery->texels << "\n";
@@ -130,6 +134,15 @@ ManifestResult parse_manifest(const std::string& text, const std::string& source
     m.area = {number(root["area"]["south"], "area.south"),
               number(root["area"]["north"], "area.north"),
               number(root["area"]["west"], "area.west"), number(root["area"]["east"], "area.east")};
+    if (const auto* frame = root["frame"].as_table()) {
+        const auto name = (*frame)["name"].value<std::string>();
+        const auto epoch = (*frame)["epoch"].value<double>();
+        if (!name || name->empty() || !epoch || !std::isfinite(*epoch)) {
+            error(frame->source(), "[frame] needs a name and an epoch (a decimal year)");
+        } else {
+            m.frame = DatabaseManifest::Frame{*name, *epoch};
+        }
+    }
     const auto elevation = root["layers"]["elevation"];
     if (elevation["format"].value_or(std::string{}) != "float32") {
         error(root.source(), "[layers.elevation] needs format = \"float32\"");

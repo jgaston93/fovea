@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "datum.hpp"
 #include "elevation.hpp"
 #include "fovea/terrain/tile_file.hpp"
 #include "imagery.hpp"
@@ -240,8 +241,8 @@ bool run_parallel(std::size_t count, unsigned jobs, std::vector<std::string>& er
 // The imagery pass: adds the layer to tiles the elevation pass wrote.
 class ImageryBuild {
 public:
-    ImageryBuild(const CompileSettings& s, fs::path part)
-        : s_(s), im_(*s.imagery), part_(std::move(part)) {}
+    ImageryBuild(const CompileSettings& s, const DatumShift& datum, fs::path part)
+        : s_(s), im_(*s.imagery), datum_(datum), part_(std::move(part)) {}
 
     // Encodes a tile's image with its mips into its file; returns its half,
     // for its parent.
@@ -269,7 +270,7 @@ public:
                                       std::string& why) {
         if (key.level == s_.finest_level) {
             Rgba8Image image;
-            if (!sources.texture(key, im_.texels, image, why)) {
+            if (!sources.texture(key, im_.texels, datum_, image, why)) {
                 return std::nullopt;
             }
             return finish(key, std::move(image), why);
@@ -292,15 +293,16 @@ public:
 private:
     const CompileSettings& s_;
     const CompileSettings::Imagery& im_;
+    const DatumShift& datum_;
     fs::path part_;
     std::atomic<std::size_t> tiles_{0};
     std::atomic<std::size_t> bytes_{0};
 };
 
-bool build_imagery(const CompileSettings& s, const fs::path& part, const LevelTiles& roots,
-                   unsigned jobs, CompileResult& result) {
+bool build_imagery(const CompileSettings& s, const DatumShift& datum, const fs::path& part,
+                   const LevelTiles& roots, unsigned jobs, CompileResult& result) {
     const auto start = std::chrono::steady_clock::now();
-    ImageryBuild build(s, part);
+    ImageryBuild build(s, datum, part);
     const auto level_tiles = [&](int lv) {
         return descendants(roots, static_cast<std::uint8_t>(lv - s.root_level));
     };
@@ -367,16 +369,28 @@ bool build_imagery(const CompileSettings& s, const fs::path& part, const LevelTi
     return true;
 }
 
-// The sources' heights at points, ellipsoidal (h = H + N, D-020): one rule
-// for the tiles and the runways' fit, so the blend meets the tiles.
-bool ellipsoidal_at(const ElevationSources& sources, const Geoid& geoid,
+// The sources' heights at WGS-84 points, above WGS-84's ellipsoid: each
+// point taken to NAD83(2011), the sources' frame (D-037), its height made
+// ellipsoidal there (h = H + N, D-020) and moved to WGS-84's. One rule for
+// the tiles and the runways' fit, so the blend meets the tiles.
+bool ellipsoidal_at(const ElevationSources& sources, const Geoid& geoid, const DatumShift& datum,
                     std::span<const double> lat, std::span<const double> lon,
                     std::vector<float>& out, std::string& error) {
-    if (!sources.at_points(lat, lon, out, error)) {
+    std::vector<double> nad_lat(lat.size());
+    std::vector<double> nad_lon(lat.size());
+    std::vector<double> shift(lat.size());
+    for (std::size_t i = 0; i < lat.size(); ++i) {
+        const Nad83Point p = datum.to_nad83(lat[i], lon[i]);
+        nad_lat[i] = p.lat_deg;
+        nad_lon[i] = p.lon_deg;
+        shift[i] = p.height_shift_m;
+    }
+    if (!sources.at_points(nad_lat, nad_lon, out, error)) {
         return false;
     }
     for (std::size_t i = 0; i < out.size(); ++i) {
-        out[i] = static_cast<float>(static_cast<double>(out[i]) + geoid.at(lat[i], lon[i]));
+        out[i] = static_cast<float>(static_cast<double>(out[i]) + geoid.at(nad_lat[i], nad_lon[i]) +
+                                    shift[i]);
     }
     return true;
 }
@@ -417,6 +431,11 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
         result.errors.push_back(error);
         return result;
     }
+    const auto datum = DatumShift::make(extent, s.datum_epoch, error);
+    if (!datum) {
+        result.errors.push_back(error);
+        return result;
+    }
     fs::remove_all(part, ec);
     fs::create_directories(part, ec);
     if (ec) {
@@ -444,9 +463,13 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
         }
         const PointHeights heights = [&](std::span<const double> lat, std::span<const double> lon,
                                          std::vector<float>& out, std::string& err) {
-            return ellipsoidal_at(*sources, *geoid, lat, lon, out, err);
+            return ellipsoidal_at(*sources, *geoid, *datum, lat, lon, out, err);
         };
-        for (const Runway& r : s.runways) {
+        for (Runway r : s.runways) {
+            // The FAA's ends are NAD83(2011).
+            for (RunwayEnd& end : r.ends) {
+                datum->to_wgs84(end.lat_deg, end.lon_deg);
+            }
             auto fitted = RunwaySurface::fit(r, s.runway_blend_m, heights, error);
             if (!fitted) {
                 return fail(error);
@@ -473,6 +496,7 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
     DatabaseManifest& m = result.manifest;
     m.name = s.name;
     m.area = s.area;
+    m.frame = DatabaseManifest::Frame{"WGS 84 (G2139)", s.datum_epoch};
     m.elevation_samples = s.samples;
     m.sources = s.credits;
 
@@ -519,8 +543,8 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
                                 st->lon[at] = b.west_deg + c * step;
                             }
                         }
-                        if (!ellipsoidal_at(*st->sources, *geoid, st->lat, st->lon, grid.heights,
-                                            err)) {
+                        if (!ellipsoidal_at(*st->sources, *geoid, *datum, st->lat, st->lon,
+                                            grid.heights, err)) {
                             err.insert(0, "tile " + to_string(key) + ": ");
                             return false;
                         }
@@ -567,7 +591,7 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
     }
 
     if (s.imagery) {
-        if (!build_imagery(s, part, roots, jobs, result)) {
+        if (!build_imagery(s, *datum, part, roots, jobs, result)) {
             fs::remove_all(part, ec);
             return result;
         }
@@ -576,8 +600,13 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
     if (s.placements) {
         const std::uint8_t level = s.placements->level.value_or(s.root_level);
         PlacementReport report;
-        if (!bake_placements(s.placements->placements, s.placements->models, part, m, level,
-                             s.finest_level, report, result.errors)) {
+        // Read off the imagery, NAD83(2011).
+        std::vector<PlacementSpec> placements = s.placements->placements;
+        for (PlacementSpec& p : placements) {
+            datum->to_wgs84(p.lat_deg, p.lon_deg);
+        }
+        if (!bake_placements(placements, s.placements->models, part, m, level, s.finest_level,
+                             report, result.errors)) {
             fs::remove_all(part, ec);
             return result;
         }

@@ -53,6 +53,8 @@ struct SourceInfo {
 // manifest.toml:
 //   schema = 1, name = "..."
 //   [area] south, north, west, east
+//   [frame] name = "WGS 84 (G2139)", epoch = 2026.0   (D-037; older
+//           databases have none: their frame was NAD83(2011), taken as WGS-84)
 //   [layers.elevation] format = "float32", samples = 257
 //   [layers.imagery] format = "bc7", texels = 512  (if the database has imagery)
 //   [layers.placements] level = 12   (if it has placements: in that level's
@@ -78,6 +80,12 @@ struct DatabaseManifest {
         std::uint8_t level = 0;
     };
     std::optional<Placements> placements;
+    // The frame its coordinates and heights are in (D-037).
+    struct Frame {
+        std::string name;    // "WGS 84 (G2139)"
+        double epoch = 0.0;  // a decimal year
+    };
+    std::optional<Frame> frame;
     std::vector<SourceInfo> sources;
     std::vector<LevelTiles> levels;  // coarsest first
 

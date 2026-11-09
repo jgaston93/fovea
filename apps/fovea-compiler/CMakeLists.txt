@@ -18,6 +18,7 @@ endif()
 # The library holds what the tests use too.
 add_library(fovea_compiler_lib STATIC
     compile.cpp
+    datum.cpp
     elevation.cpp
     imagery.cpp
     placements.cpp

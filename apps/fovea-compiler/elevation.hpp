@@ -1,14 +1,13 @@
 #pragma once
 
-// Reading elevation sources through GDAL (D-019): with imagery.cpp, the
-// only files in Fovea that see GDAL's API, so the rest of the compiler
-// stays plain C++.
+// Reading elevation sources through GDAL (D-019): with imagery.cpp and
+// datum.cpp, the only files in Fovea that see GDAL's API, so the rest of
+// the compiler stays plain C++.
 //
 // Sources are DEMs in any CRS GDAL reads, with orthometric heights (NAVD88
 // for 3DEP); the geoid grid turns those into ellipsoid heights (D-020):
-// h = H + N. Tile grids are in NAD83 geographic coordinates, which this
-// compiler takes as WGS-84: they differ by about a metre here, below the
-// accuracy the sources state (docs/milestone-3.md, step 3).
+// h = H + N. Points here are NAD83(2011) geographic, the sources' frame;
+// compile.cpp takes the tiles' WGS-84 points to it (datum.hpp, D-037).
 
 #include <cstdint>
 #include <filesystem>
@@ -48,7 +47,7 @@ public:
     // shared samples.
     bool heights(const TileKey& key, std::uint32_t samples, std::vector<float>& out,
                  std::string& error) const;
-    // The same at any points (NAD83 geographic, as the tiles' grids).
+    // The same at any points (NAD83(2011) geographic).
     bool at_points(std::span<const double> lat_deg, std::span<const double> lon_deg,
                    std::vector<float>& out, std::string& error) const;
 

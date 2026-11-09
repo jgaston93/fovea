@@ -20,6 +20,11 @@ Checks, each against a stated tolerance (exit status 1 if any fails):
   - the FAA's surveyed runway-end and field elevations (NAVD88) from the
     airport file, against the database's heights less the geoid.
 
+The database is WGS 84 (G2139) at the settings' [datum] epoch, and the
+sources (and the FAA's survey) are NAD83(2011) (D-037): each database point
+is taken to NAD83(2011) by PROJ here, point by point, independently of the
+compiler's interpolated grid, and its height moved to WGS-84's ellipsoid.
+
 Needs python3-gdal and python3-numpy (Ubuntu packages).
 """
 
@@ -36,6 +41,7 @@ import numpy as np
 from osgeo import gdal, osr
 
 gdal.UseExceptions()
+osr.UseExceptions()
 
 FT = 0.3048
 
@@ -96,10 +102,11 @@ class Runway:
     (positive to the right, looking along it), in the tangent plane at its
     middle."""
 
-    def __init__(self, t, airport=""):
+    def __init__(self, t, datum, airport=""):
         self.name = f"{airport} {t['name']}" if airport else t["name"]  # as the compiler names it
         self.width = t["width_ft"] * FT
-        self.ends = [(e["id"], degrees_minutes(e["lat"]), degrees_minutes(e["lon"]),
+        # The FAA's ends, NAD83(2011), in the database's WGS-84.
+        self.ends = [(e["id"], *datum.to_wgs84(degrees_minutes(e["lat"]), degrees_minutes(e["lon"])),
                       e["elevation_ft"]) for e in t["end"]]
         (_, la0, lo0, _), (_, la1, lo1, _) = self.ends
         la, lo = np.radians((la0 + la1) / 2), np.radians((lo0 + lo1) / 2)
@@ -238,6 +245,33 @@ class Tiles:
                 (h[r + 1, c] * (1 - tx) + h[r + 1, c + 1] * tx) * ty)
 
 
+class Datum:
+    """WGS 84 (G2139) at an epoch to NAD83(2011) and back, by PROJ, with
+    no ballpark transformation (which would change nothing)."""
+
+    def __init__(self, epoch):
+        self.epoch = epoch
+        wgs, nad = osr.SpatialReference(), osr.SpatialReference()
+        wgs.ImportFromEPSG(9754)
+        nad.ImportFromEPSG(6319)
+        for srs in (wgs, nad):
+            srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        options = osr.CoordinateTransformationOptions()
+        options.SetBallparkAllowed(False)
+        self.to_nad = osr.CoordinateTransformation(wgs, nad, options)
+        self.to_wgs = osr.CoordinateTransformation(nad, wgs, options)
+
+    def to_nad83(self, lat, lon):
+        """A WGS-84 point's NAD83(2011) latitude and longitude, and what
+        to add to a NAD83 ellipsoid height there to make it WGS-84's."""
+        lon_n, lat_n, z, _ = self.to_nad.TransformPoint(lon, lat, 0.0, self.epoch)
+        return lat_n, lon_n, -z
+
+    def to_wgs84(self, lat, lon):
+        lon_w, lat_w, _, _ = self.to_wgs.TransformPoint(lon, lat, 0.0, self.epoch)
+        return lat_w, lon_w
+
+
 class Raster:
     """A source raster, sampled bilinearly between pixel centres."""
 
@@ -283,6 +317,7 @@ class Sources:
         with open(settings_file, "rb") as f:
             s = tomllib.load(f)
         self.output = base / s["output"]
+        self.datum = Datum(s["datum"]["epoch"])
         cache = base / s["elevation"]["cache"]
         self.rasters, seen = [], set()
         for pattern in s["elevation"]["sources"]:
@@ -301,7 +336,7 @@ class Sources:
             for name in file_list(s["runways"]["airport"], "[runways] airport"):
                 with open(base / name, "rb") as f:
                     airport = tomllib.load(f)
-                runways = [Runway(t, airport.get("name", "")) for t in airport["runway"]]
+                runways = [Runway(t, self.datum, airport.get("name", "")) for t in airport["runway"]]
                 self.runways += runways
                 if "field_elevation_ft" in airport:
                     self.fields.append((airport.get("name", name), airport["field_elevation_ft"],
@@ -314,17 +349,33 @@ class Sources:
         return any(r.outside(lat, lon) <= self.blend + margin for r in self.runways)
 
     def ellipsoidal(self, lat, lon):
-        h = self.orthometric(lat, lon)
-        return None if h is None else h[0] + self.geoid.sample(lat, lon)
+        """The height above WGS-84's ellipsoid at a WGS-84 point, and its
+        source: the sources' H and the geoid's N at its NAD83(2011) point,
+        moved to WGS-84's ellipsoid; or None."""
+        lat_n, lon_n, shift = self.datum.to_nad83(lat, lon)
+        h = self.orthometric(lat_n, lon_n)
+        return None if h is None else (h[0] + self.geoid.sample(lat_n, lon_n) + shift, h[1])
+
+    def height(self, lat, lon):
+        """The ellipsoidal height alone, or None."""
+        h = self.ellipsoidal(lat, lon)
+        return None if h is None else h[0]
 
     def orthometric(self, lat, lon):
-        """(H, source) from the highest-priority source with all four
-        pixels around the point (the compiler's rule), or None."""
+        """(H, source) at a NAD83(2011) point from the highest-priority
+        source with all four pixels around it (the compiler's rule), or
+        None."""
         for r in self.rasters:
             v = r.sample(lat, lon)
             if v is not None:
                 return v, r
         return None
+
+    def navd88(self, height, lat, lon):
+        """A database height at a WGS-84 point as NAVD88: less the WGS-84
+        shift and the geoid at its NAD83(2011) point."""
+        lat_n, lon_n, shift = self.datum.to_nad83(lat, lon)
+        return height - shift - self.geoid.sample(lat_n, lon_n)
 
 
 def report(name, diffs, p99_tol, max_tol):
@@ -346,6 +397,11 @@ def main():
 
     src = Sources(args.settings)
     db = Tiles(src.output)
+    frame = db.manifest.get("frame")
+    if frame is None or frame.get("epoch") != src.datum.epoch:
+        print(f"{src.output}: the manifest's [frame] is {frame}, the settings' epoch "
+              f"{src.datum.epoch}: recompile it")
+        return 1
     rng = random.Random(args.seed)
     # Points over the whole database (the root tiles), beyond the area too,
     # where the backdrop fills in.
@@ -358,7 +414,8 @@ def main():
 
     # 1. The finest level against the sources, at random points and on
     # tile edges (both tiles' values, through their own grids).
-    print(f"finest level ({db.finest}) vs the sources, bilinear, plus GEOID18:")
+    print(f"finest level ({db.finest}) vs the sources, bilinear, plus GEOID18, in WGS-84 at "
+          f"{src.datum.epoch}:")
     diffs, edge_diffs, by_source, skipped, on_runways = [], [], {}, 0, 0
     size = Tiles.size(db.finest)
     samples = db.manifest["layers"]["elevation"]["samples"]
@@ -375,11 +432,11 @@ def main():
         if src.near_runway(lat, lon, margin):
             on_runways += 1  # smoothed: checked below
             continue
-        h = src.orthometric(lat, lon)
+        h = src.ellipsoidal(lat, lon)
         if h is None:
             skipped += 1
             continue
-        expected = h[0] + src.geoid.sample(lat, lon)
+        expected = h[0]
         lv, x, y = db.key_at(db.finest, lat, lon)
         keys = [(lv, x, y)]
         if on_edge:  # the neighbour on the other side of the edge
@@ -444,7 +501,7 @@ def main():
     # them, and across their blend.
     for r in src.runways:
         print(f"runway {r.name} ({r.length:.0f} m x {r.width:.1f} m), smoothed:")
-        fit = RunwayFit(r, src.ellipsoidal)
+        fit = RunwayFit(r, src.height)
         if fit.missing:
             ok = False
             print(f"  {fit.missing} points on it have no source: FAIL")
@@ -467,7 +524,7 @@ def main():
                          (r.width / 2 - 0.5, "right edge")):
             lat, lon = r.latlon(u, np.full_like(u, v))
             got = np.array([db.height(db.finest, a, b) for a, b in zip(lat, lon)])
-            raw = np.array([src.ellipsoidal(a, b) for a, b in zip(lat, lon)])
+            raw = np.array([src.height(a, b) for a, b in zip(lat, lon)])
             dg, dr = np.abs(np.diff(np.diff(got) / 5.0)), np.abs(np.diff(np.diff(raw) / 5.0))
             g30 = np.abs(np.diff(np.diff(got[::6]) / 30.0)).max()
             good = dg.max() <= TOL_SLOPE_CHANGE
@@ -487,7 +544,7 @@ def main():
         steps = np.arange(0.0, src.blend + 5.0 + 1e-9, 0.5)
         for u0, v0, du, dv in lines:
             lat, lon = r.latlon(u0 + du * steps, v0 + dv * steps)
-            diff = np.array([db.height(db.finest, a, b) - src.ellipsoidal(a, b)
+            diff = np.array([db.height(db.finest, a, b) - src.height(a, b)
                              for a, b in zip(lat, lon)])
             jump = max(jump, np.abs(np.diff(diff)).max())
             largest = max(largest, np.abs(diff).max())
@@ -502,7 +559,7 @@ def main():
 
     # 5. The surveyed elevations (the database less the geoid: NAVD88).
     def navd88(lat, lon):
-        return db.height(db.finest, lat, lon) - src.geoid.sample(lat, lon)
+        return src.navd88(db.height(db.finest, lat, lon), lat, lon)
 
     if src.runways:
         print("FAA surveyed elevations (NAVD88):")
