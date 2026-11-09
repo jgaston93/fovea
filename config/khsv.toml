@@ -45,4 +45,8 @@ port = 8004
 listen_address = "127.0.0.1"
 host_address = "127.0.0.1"
 host_port = 8005
-geoid_height_m = -28.25      # GEOID18 at KHSV: the database's heights are ellipsoidal
+# GEOID18 at KHSV above WGS 84 (G2139) at 2026.9, the database's frame
+# (D-037): -28.25 above NAD83(2011), less the 1.30 m between the two
+# ellipsoids here (-29.49 to -29.85 m over the runway ends). The host must
+# use the same constant (D-035: Aerie's ellipsoid_minus_msl_m).
+geoid_height_m = -29.55
