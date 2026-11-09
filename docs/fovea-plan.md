@@ -172,6 +172,8 @@ As chosen (`docs/decisions.md` has each choice and why):
 
 ## Milestones
 
+Integration 1 (`docs/integration-1.md`) goes ahead of the rest of milestone 6: Fovea under the team's simulator, with the host's geoid for MSL altitudes, the database in WGS-84, and HAT/HOT answered over CIGI (moved from milestone 9).
+
 1. Skeleton: CMake project, platform layer, Vulkan init, three borderless windows on three monitors, per-channel off-axis frustums from config, 60 Hz frame clock, frame-time logging, and a measured display sync test.
 2. CIGI eyepoint: build a small scripted CIGI test host, receive its eyepoint over CIGI, and fly a camera over a test grid; log end-to-end latency.
 3. First terrain: compiler builds a small KHSV database (3DEP elevation + NAIP imagery + LOD); runtime streams it at a locked 60 Hz.
