@@ -143,15 +143,20 @@ void CigiAdapter::report_frames(const SceneSnapshot& scene) {
     sof.ig_frame_number = static_cast<std::uint32_t>(newest->frame);
     sof.last_host_frame_number = last_host_frame_;
     std::size_t n = cigi::encode(sof, out_, cigi::swaps(options_.byte_order));
-    // The answers ready: the query thread's while they fit (the rest go
-    // with the next frame's), then those made here, asked no earlier (so an
-    // invalid answer ending a periodic request comes after the last valid
-    // one). The datagram holds them all at the rings' sizes.
+    // The answers ready: the query thread's while they fit (the rest stay
+    // in the ring for the next frame's), then those made here, asked no
+    // earlier (so an invalid answer ending a periodic request comes after
+    // the last valid one), which always fit.
     static_assert(cigi::kStartOfFrameSize + (HeightQueries::kCapacity + kMaxLocalAnswers) *
                                                 cigi::kHatHotExtendedResponseSize <=
                   std::tuple_size_v<decltype(out_)>);
     if (options_.heights != nullptr) {
-        while (const auto a = options_.heights->answers.try_pop()) {
+        const std::size_t reserved = local_answers_.size() * cigi::kHatHotExtendedResponseSize;
+        while (out_.size() - n >= reserved + cigi::kHatHotExtendedResponseSize) {
+            const auto a = options_.heights->answers.try_pop();
+            if (!a) {
+                break;
+            }
             n += encode_answer(*a, std::span(out_).subspan(n));
         }
     }

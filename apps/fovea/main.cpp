@@ -683,6 +683,8 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
                 } catch (const std::exception& e) {
                     (void)std::fprintf(stderr, "fovea: the HAT/HOT query thread failed: %s\n",
                                        e.what());
+                } catch (...) {
+                    (void)std::fprintf(stderr, "fovea: the HAT/HOT query thread failed\n");
                 }
             }
             print_host_stats(*host_adapter);

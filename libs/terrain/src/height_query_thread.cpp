@@ -55,6 +55,11 @@ void HeightQueryThread::run() {
         // Read before draining: a request posted after the drain changes it,
         // so the wait below returns at once rather than missing it.
         const std::uint32_t seen = queries_.posted.load(std::memory_order_acquire);
+        // stop() clears running_ before posting: a stop already counted in
+        // `seen` is seen here, or the wait below would miss it.
+        if (!running_.load(std::memory_order_acquire)) {
+            return;
+        }
         while (const auto r = queries_.requests.try_pop()) {
             const HeightAnswer a = answer_height(terrain_, *r);
             // The asker drains answers every frame: a full ring waits for it.
