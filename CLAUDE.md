@@ -50,6 +50,8 @@ Each library keeps its public headers in `libs/<lib>/include/fovea/<lib>/` and i
 
 CIGI code is written from the CIGI 3.3 ICD and its errata, never from memory: `tools/fetch-cigi-icd.sh` puts them in `docs/reference/` (git-ignored, hash-checked). Cite the ICD section and page for each packet.
 
+Likewise airport lights come from the FAA's standard, AC 150/5340-30J: `tools/fetch-faa-ac.sh` puts it in `docs/reference/`. Cite its paragraph or figure for each dimension and colour.
+
 The lint tools are pinned to CI's versions in a git-ignored venv:
 
 ```sh

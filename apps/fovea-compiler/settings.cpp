@@ -95,6 +95,35 @@ void parse_airport(const std::string& text, const fs::path& f, std::vector<Runwa
         rw.width_m = *width * 0.3048;
         rw.length_m = (*rt)["length_ft"].value_or(0.0) * 0.3048;
         bool ok = true;
+        // The lights' keys (D-033): optional, but of the right type.
+        const auto code = [&](const toml::table& t, const char* key, std::string& out) {
+            if (const auto& n = t[key]; n && !n.is_string()) {
+                bad(*n.node(), std::string(key) + " is a string");
+                ok = false;
+            } else {
+                out = n.value_or(std::string{});
+            }
+        };
+        const auto flag = [&](const toml::table& t, const char* key, bool& out) {
+            if (const auto& n = t[key]; n && !n.is_boolean()) {
+                bad(*n.node(), std::string(key) + " is true or false");
+                ok = false;
+            } else {
+                out = n.value_or(false);
+            }
+        };
+        const auto number = [&](const toml::table& t, const char* key, int most, double& out) {
+            if (const auto& n = t[key]; n) {
+                const auto v = n.value<double>();
+                if (v && *v >= 0.0 && *v <= most) {
+                    out = *v;
+                } else {
+                    bad(*n.node(), std::string(key) + " is from 0 to " + std::to_string(most));
+                    ok = false;
+                }
+            }
+        };
+        code(*rt, "edge_lights", rw.edge_lights);
         for (std::size_t i = 0; i < 2; ++i) {
             const auto* et = (*ends)[i].as_table();
             const auto lat = et != nullptr
@@ -111,7 +140,22 @@ void parse_airport(const std::string& text, const fs::path& f, std::vector<Runwa
                 ok = false;
                 continue;
             }
-            rw.ends[i] = {(*et)["id"].value_or(std::string{}), *lat, *lon, *elev * 0.3048};
+            RunwayEnd& end = rw.ends[i];
+            end.id = (*et)["id"].value_or(std::string{});
+            end.lat_deg = *lat;
+            end.lon_deg = *lon;
+            end.elevation_m = *elev * 0.3048;
+            code(*et, "markings", end.markings);
+            code(*et, "approach_lights", end.approach_lights);
+            code(*et, "vgsi", end.vgsi);
+            flag(*et, "centreline_lights", end.centreline_lights);
+            flag(*et, "touchdown_zone_lights", end.touchdown_zone_lights);
+            flag(*et, "reil", end.reil);
+            number(*et, "glide_path_deg", 10, end.glide_path_deg);
+            number(*et, "threshold_crossing_height_ft", 200, end.threshold_crossing_height_m);
+            number(*et, "displaced_threshold_ft", 20000, end.displaced_threshold_m);
+            end.threshold_crossing_height_m *= 0.3048;
+            end.displaced_threshold_m *= 0.3048;
         }
         if (ok) {
             runways.push_back(std::move(rw));

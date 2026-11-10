@@ -7,8 +7,10 @@
 #
 # The lights (milestone 6 step 8, D-033) are the FAA's NASR airport data,
 # cycle nasr_cycle, as coded there: edge_lights is RWY_LGT_CODE; per end,
-# approach_lights is APCH_LGT_SYSTEM_CODE, vgsi VGSI_CODE (P4R: a 4-box
-# PAPI on the right), and the flags CNTRLN_LGTS_AVBL_FLAG,
+# markings is RWY_MARKING_TYPE_CODE (PIR: precision instrument, which
+# gives the edge lights their yellow caution zone), approach_lights
+# APCH_LGT_SYSTEM_CODE, vgsi VGSI_CODE (P4R: a 4-box PAPI on the right),
+# and the flags CNTRLN_LGTS_AVBL_FLAG,
 # TDZ_LGT_AVBL_FLAG and RWY_END_LGTS_FLAG (REIL). The instrument approach
 # plates agree: ALSF-2 on 18R, MALSR on the others, HIRL on both runways,
 # TDZL and RCLS on 18R and 36L. tools/check-airports.py checks these files
@@ -29,6 +31,7 @@ id = "18R"
 lat = "34-39.167130N"
 lon = "086-46.926028W"
 elevation_ft = 628.4
+markings = "PIR"
 approach_lights = "ALSF2"
 centreline_lights = true
 touchdown_zone_lights = true
@@ -38,6 +41,7 @@ id = "36L"
 lat = "34-37.090260N"
 lon = "086-46.967450W"
 elevation_ft = 611.2
+markings = "PIR"
 approach_lights = "MALSR"
 centreline_lights = true
 touchdown_zone_lights = true
@@ -53,6 +57,7 @@ id = "18L"
 lat = "34-39.185908N"
 lon = "086-45.927885W"
 elevation_ft = 609.3
+markings = "PIR"
 approach_lights = "MALSR"
 vgsi = "P4R"
 glide_path_deg = 3.0
@@ -63,6 +68,7 @@ id = "36R"
 lat = "34-37.537492N"
 lon = "086-45.961032W"
 elevation_ft = 588.6
+markings = "PIR"
 approach_lights = "MALSR"
 vgsi = "P4R"
 glide_path_deg = 3.0
