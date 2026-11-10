@@ -264,7 +264,7 @@ The environment adds three packets: Celestial Sphere Control, Atmosphere Control
 
 ## Step 8: Airport lights and lit windows
 
-- **The lights.** The light files for KHSV and KHUA (from the FAA's published data, checked with the owner), the compiler's `lights` layer (D-033), and the lights drawn after the resolve.
+- **The lights.** Each airport's light systems (from the FAA's NASR data, below), the compiler's `lights` layer (D-033), and the lights drawn after the resolve.
 - **Lit windows.** Emissive materials in `libs/models` and the landmark scripts (lit windows on the terminal and the tower).
 - **Done when:**
   - A compiler test lays out a runway's edge lights at the standard's spacing, and its threshold and end lights at its ends, green outward and red inward.
@@ -283,6 +283,26 @@ The step is split: lit windows are done; the airport lights wait on the light fi
 - **At the desk:** a night flyover held 60 Hz (1 missed frame, 0 validation messages). The owner's look at the warm windows is still to do.
 - **Noticed, not yet taken up:** the dawn run (step 7) showed a strong pink cast before sunrise and a hard line where the fog's top meets the horizon.
 
+### Step 8, the airports' light systems (2026-11-09)
+
+The light systems come from the FAA's NASR airport data (cycle 2026-10-29) rather than being drafted by hand for the owner to check: its runway and runway-end records code each system. `data/airports/khsv.toml` and `khua.toml` carry them as NASR codes them, and `tools/check-airports.py` checks every field of both files (positions to a centimetre, elevations, widths, lengths, lights) against a NASR cycle, so a new cycle's changes show up.
+
+| Runway end | Approach | VGSI | Other |
+|---|---|---|---|
+| KHSV 18R | ALSF-2 | none | centreline, touchdown zone |
+| KHSV 36L | MALSR | none | centreline, touchdown zone |
+| KHSV 18L | MALSR | PAPI, 4 boxes, right | glide path 3°, TCH 73 ft |
+| KHSV 36R | MALSR | PAPI, 4 boxes, right | glide path 3°, TCH 72 ft, threshold displaced 200 ft |
+| KHUA 17 | MALSR | PAPI, 4 boxes, left | glide path 3°, TCH 46 ft |
+| KHUA 35 | none | PAPI, 4 boxes, left | glide path 3°, TCH 50 ft |
+
+All three runways have high-intensity edge lights (HIRL). The second source agrees:
+
+- **KHSV:** the instrument approach plates (d-TPP cycle 2611) give ALSF-2 on 18R and MALSR on the others, HIRL on both runways, and TDZL and RCLS on 18R and 36L.
+- **KHUA:** its plates carry no text to check against, so the check is NASR's lighting remarks, which name MALSR on 17, PAPI on 17 and 35, and HIRL.
+
+No REILs are listed at either airport. The layouts themselves (spacing, colours, the approach systems' bars) come from the FAA's standard (AC 150/5340-30) in code, next.
+
 ## Step 9: Hardware check
 
 - **On the desk.** GPU time and memory with each part on and off (sky and tables, aerial perspective, shadows, clouds, lights) on the KHSV and KHUA routes, at noon, at dusk and at night.
@@ -294,5 +314,5 @@ The step is split: lit windows are done; the airport lights wait on the light fi
 | Needed by | Input |
 |---|---|
 | Plan | ~~D-029 to D-034, and D-014's amendment~~ accepted |
-| Step 8 | The airports' light systems: I'll draft them from the FAA's published data for you to check |
+| Step 8 | ~~The airports' light systems, checked by you~~ Taken from the FAA's NASR data and checked against a second source instead (below); a look at a night approach once they're drawn |
 | Steps 2 to 9 | Time at the desk: the sky, dusk, night, shadows and the lights |

@@ -4,40 +4,67 @@
 # elevations are surveyed, in feet, NAVD88. US Government work, public
 # domain. The compiler smooths the elevation on each runway (D-022), and
 # tools/check-elevation.py checks the database against these.
+#
+# The lights (milestone 6 step 8, D-033) are the FAA's NASR airport data,
+# cycle nasr_cycle, as coded there: edge_lights is RWY_LGT_CODE; per end,
+# approach_lights is APCH_LGT_SYSTEM_CODE, vgsi VGSI_CODE (P4R: a 4-box
+# PAPI on the right), and the flags CNTRLN_LGTS_AVBL_FLAG,
+# TDZ_LGT_AVBL_FLAG and RWY_END_LGTS_FLAG (REIL). The instrument approach
+# plates agree: ALSF-2 on 18R, MALSR on the others, HIRL on both runways,
+# TDZL and RCLS on 18R and 36L. tools/check-airports.py checks these files
+# against a NASR cycle.
 
 name = "KHSV"
+nasr_cycle = "2026-10-29"
 field_elevation_ft = 628.9  # the highest point of the runways
 
 [[runway]]
 name = "18R/36L"
 width_ft = 150.0
 length_ft = 12600.0
+edge_lights = "HIGH"
 
 [[runway.end]]
 id = "18R"
 lat = "34-39.167130N"
 lon = "086-46.926028W"
 elevation_ft = 628.4
+approach_lights = "ALSF2"
+centreline_lights = true
+touchdown_zone_lights = true
 
 [[runway.end]]
 id = "36L"
 lat = "34-37.090260N"
 lon = "086-46.967450W"
 elevation_ft = 611.2
+approach_lights = "MALSR"
+centreline_lights = true
+touchdown_zone_lights = true
 
 [[runway]]
 name = "18L/36R"
 width_ft = 150.0
 length_ft = 10001.0
+edge_lights = "HIGH"
 
 [[runway.end]]
 id = "18L"
 lat = "34-39.185908N"
 lon = "086-45.927885W"
 elevation_ft = 609.3
+approach_lights = "MALSR"
+vgsi = "P4R"
+glide_path_deg = 3.0
+threshold_crossing_height_ft = 73.0
 
 [[runway.end]]
 id = "36R"
 lat = "34-37.537492N"
 lon = "086-45.961032W"
 elevation_ft = 588.6
+approach_lights = "MALSR"
+vgsi = "P4R"
+glide_path_deg = 3.0
+threshold_crossing_height_ft = 72.0
+displaced_threshold_ft = 200.0

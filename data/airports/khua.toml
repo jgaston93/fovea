@@ -5,23 +5,38 @@
 # published as estimated). US Government work, public domain. The compiler
 # smooths the elevation on the runway (D-022), and tools/check-elevation.py
 # checks the database against these.
+#
+# The lights (milestone 6 step 8, D-033) are the FAA's NASR airport data,
+# cycle nasr_cycle, coded as in khsv.toml. NASR's lighting remarks agree:
+# MALSR on 17, PAPI on 17 and 35, HIRL (its approach plates carry no text
+# to check them against). tools/check-airports.py checks this file against
+# a NASR cycle.
 
 name = "KHUA"
+nasr_cycle = "2026-10-29"
 field_elevation_ft = 685.4  # the highest point of the runway
 
 [[runway]]
 name = "17/35"
 width_ft = 150.0
 length_ft = 7300.0
+edge_lights = "HIGH"
 
 [[runway.end]]
 id = "17"
 lat = "34-41.311267N"
 lon = "086-41.220367W"
 elevation_ft = 685.4
+approach_lights = "MALSR"
+vgsi = "P4L"
+glide_path_deg = 3.0
+threshold_crossing_height_ft = 46.0
 
 [[runway.end]]
 id = "35"
 lat = "34-40.128017N"
 lon = "086-40.954533W"
 elevation_ft = 654.9
+vgsi = "P4L"
+glide_path_deg = 3.0
+threshold_crossing_height_ft = 50.0

@@ -33,6 +33,7 @@ python3 tools/fetch-sources.py data/sources/khsv.toml   # terrain sources into d
 blender --background --factory-startup --python data/models/airport_landmarks.py -- data/models  # the landmark models (Blender 5.2, on Windows)
 python3 tools/check-elevation.py data/compile/khsv.toml # check it against the sources, the runways (D-022) and the FAA's survey
 python3 tools/check-imagery.py data/compile/khsv.toml   # its imagery against the sources (PSNR, seams)
+python3 tools/check-airports.py data/airports/*.toml    # the airport files (runways, lights) against the FAA's NASR data
 ./build/debug/apps/fovea/fovea --headless --dump out config/<file>.toml    # any config headless, out/<channel>.png
 ./build/release/apps/fovea/fovea --overlay config/khsv.toml                # the KHSV database on the desk, then:
 ./build/release/tools/cigi-test-host/cigi-test-host tools/cigi-test-host/scripts/khsv-approach.toml  # or khsv-survey.toml (paging), khsv-low.toml (110 m), khsv-airport.toml (the buildings), khsv-dawn.toml (the host sets dawn and fog), khua-low.toml (KHUA)
