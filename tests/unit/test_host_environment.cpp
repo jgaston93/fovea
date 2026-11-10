@@ -19,7 +19,6 @@
 #include "fovea/core/config.hpp"
 #include "fovea/core/scene.hpp"
 #include "fovea/net/cigi_adapter.hpp"
-#include "fovea/net/host_thread.hpp"
 #include "fovea/render/frame_loop.hpp"
 #include "fovea/render/renderer.hpp"
 #include "fovea/render/view.hpp"
@@ -71,8 +70,6 @@ TEST(HostEnvironment, TheHostsVisibilityAndTimeChangeTheImage) {
     CigiAdapterOptions ig_options;
     ig_options.address = kLoopback;
     CigiAdapter adapter(ig_options, &frames);
-    HostThread network(adapter, *scene);
-    network.start();
 
     ChannelConfig ch;
     ch.render_width = 64;
@@ -89,13 +86,16 @@ TEST(HostEnvironment, TheHostsVisibilityAndTimeChangeTheImage) {
     test_host::FlightState still;
     still.position = {0.0, 0.0, 100.0};
     // Frames until the adapter has applied `updates` environment packets in
-    // all, then a few more so the image has them.
+    // all, then a few more so the image has them. The adapter is polled here
+    // rather than on a HostThread: its stats may only be read on the thread
+    // that polls it (a TSan race in the nightly run, #61).
     const auto run_until = [&](std::uint64_t updates) {
         int after = 0;
         for (int i = 0; i < 600 && after < 4; ++i) {
             (void)loop.step();
             session.wait_until(now() + std::chrono::milliseconds(2));
             session.send_frame(still, now());
+            (void)adapter.poll(*scene);
             after += adapter.stats().environment_updates >= updates ? 1 : 0;
         }
         return after == 4;
@@ -119,7 +119,6 @@ TEST(HostEnvironment, TheHostsVisibilityAndTimeChangeTheImage) {
     session.queue_environment(night);
     ASSERT_TRUE(run_until(2));
     const auto midnight = r->read_back_rgba(0);
-    network.stop();
 
     const double by_haze = difference(noon, hazy);
     const double by_night = difference(hazy, midnight);
