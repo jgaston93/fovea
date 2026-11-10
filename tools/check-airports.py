@@ -31,6 +31,7 @@ FEET = 0.3048
 # The NASR fields an end's lights come from, and the airport file's keys.
 # Codes are kept as NASR writes them.
 END_CODES = {
+    "markings": "RWY_MARKING_TYPE_CODE",  # PIR: precision instrument
     "approach_lights": "APCH_LGT_SYSTEM_CODE",
     "vgsi": "VGSI_CODE",
 }

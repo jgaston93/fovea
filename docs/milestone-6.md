@@ -303,6 +303,18 @@ All three runways have high-intensity edge lights (HIRL). The second source agre
 
 No REILs are listed at either airport. The layouts themselves (spacing, colours, the approach systems' bars) come from the FAA's standard (AC 150/5340-30) in code, next.
 
+### Step 8, the layouts (2026-11-10)
+
+`apps/fovea-compiler/lights.cpp` lays each runway's lights out in its own frame from AC 150/5340-30J (*Design and Installation Details for Airport Visual Aids*, 2018), which `tools/fetch-faa-ac.sh` puts in `docs/reference/` (git-ignored, hash-checked), citing its paragraphs and figures as the CIGI code cites the ICD. Each light carries the colour it shows each way along the runway.
+
+- **Edge lights** (2.3.1): 10 ft outside the pavement (the AC's choice for jets), uniform and mirrored, at most 200 ft apart, spaced from the threshold lights' lines. Yellow over the last 2,000 ft (or half the runway) seen toward the far end of an instrument end, which the end's NASR markings code gives (all six are PIR, added to the files and the check).
+- **Threshold and end lights** (2.3.2, Figure A-3): four a side, 10 ft before the end, green outward and red inward. At a displaced threshold (Figure A-5): red at the runway's end, red edge lights toward the approach before it, and the threshold lights at the threshold, outward from the edge line, green.
+- **Centreline** (3.3.1, Figure A-34): every 50 ft from 75 ft in; seen toward either end, alternating red and white over its last 3,000 ft and red over the last 1,000.
+- **Touchdown zone** (3.3.2, Figure A-35): 30 bars of three a side from 100 ft past the threshold, 36 to 46 ft from the centreline, seen only from the approach. White: the AC names the fixture (L-850B), whose colour is in AC 150/5345-46, not fetched.
+- **PAPI** (7.4.4, 7.5.4): on the side named, 50 ft from the edge, units 30 ft apart, aimed per Table 7-2 or 7-3, sited at TCH x cot(the lowest on-course signal) from the threshold. The AC disagrees with itself on that signal (7.5.4.3.3 says 10' below the glide path, Table 7-2 15'); the table's is used. An ILS runway's PAPI is properly sited at the glide slope's touchdown point (7.5.4.2), which NASR doesn't give.
+- **Not laid out:** the approach lights (ALSF-2, MALSR), whose layouts are in FAA JO 6850.2, not this AC; they are listed as skipped. No REILs are listed.
+- **Tests:** each system on made-up runways (spacing, positions, colours each way, the caution zone, a displaced threshold, short runways), and both airport files laid out whole. Ten deliberate mistakes in the layout code (spacing, offsets, colours, the PAPI's side and angle) each fail them.
+
 ## Step 9: Hardware check
 
 - **On the desk.** GPU time and memory with each part on and off (sky and tables, aerial perspective, shadows, clouds, lights) on the KHSV and KHUA routes, at noon, at dusk and at night.

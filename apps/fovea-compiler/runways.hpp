@@ -33,13 +33,24 @@ struct RunwayEnd {
     double lat_deg = 0.0;
     double lon_deg = 0.0;
     double elevation_m = 0.0;  // surveyed, orthometric (NAVD88 for the FAA's)
+    // Its lights (D-033), coded as the FAA's NASR data codes them.
+    std::string markings;         // "PIR" precision instrument, "NPI", "BSC", "VFR"
+    std::string approach_lights;  // "MALSR", "ALSF2"; empty: none
+    std::string vgsi;             // "P4L": a 4-box PAPI on the left; empty: none
+    bool centreline_lights = false;
+    bool touchdown_zone_lights = false;
+    bool reil = false;
+    double glide_path_deg = 0.0;  // the VGSI's
+    double threshold_crossing_height_m = 0.0;
+    double displaced_threshold_m = 0.0;  // the landing threshold's distance from the end
 };
 
 struct Runway {
     std::string name;  // "18R/36L"
     std::array<RunwayEnd, 2> ends;
     double width_m = 0.0;
-    double length_m = 0.0;  // as published, if it is: checked against the ends
+    double length_m = 0.0;    // as published, if it is: checked against the ends
+    std::string edge_lights;  // "HIGH", "MED", "LOW"; empty: none
 };
 
 // "34-39.167130N", "086-46.926028W": degrees, minutes and a hemisphere, as

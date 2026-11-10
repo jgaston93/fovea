@@ -21,6 +21,7 @@ add_library(fovea_compiler_lib STATIC
     datum.cpp
     elevation.cpp
     imagery.cpp
+    lights.cpp
     placements.cpp
     runways.cpp
     settings.cpp

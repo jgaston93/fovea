@@ -1021,8 +1021,12 @@ Runway test_runway() {
     Runway r;
     r.name = "36/18";
     r.width_m = kRunwayWidth;
-    r.ends[0] = {"36", kRunwayLat, kRunwayLon, 0.0};
-    r.ends[1] = {"18", kRunwayLat + kRunwayLength / kMetresPerDegLat, kRunwayLon, 0.0};
+    r.ends[0].id = "36";
+    r.ends[0].lat_deg = kRunwayLat;
+    r.ends[0].lon_deg = kRunwayLon;
+    r.ends[1].id = "18";
+    r.ends[1].lat_deg = kRunwayLat + kRunwayLength / kMetresPerDegLat;
+    r.ends[1].lon_deg = kRunwayLon;
     return r;
 }
 
@@ -1399,6 +1403,27 @@ TEST(CompilerRunways, AirportFileMistakesAreRefused) {
     EXPECT_FALSE(with(airport, "").errors.empty());  // no runways
     EXPECT_FALSE(with("[[runway.end]]\nid = \"36L\"", "[[runway.x]]\nid = \"36L\"").errors.empty());
     EXPECT_EQ(with("width_ft = 150.0", "width_ft = = 150.0").errors.size(), 1U);  // not twice
+    // The lights' keys (D-033): read, and refused when of the wrong type.
+    const auto lit = with("elevation_ft = 611.2\n",
+                          "elevation_ft = 611.2\nmarkings = \"PIR\"\nvgsi = \"P4R\"\n"
+                          "approach_lights = \"MALSR\"\ncentreline_lights = true\n"
+                          "glide_path_deg = 3.0\nthreshold_crossing_height_ft = 72.0\n"
+                          "displaced_threshold_ft = 200.0\n");
+    ASSERT_TRUE(lit.settings.has_value()) << (lit.errors.empty() ? "" : lit.errors[0]);
+    const RunwayEnd& e = lit.settings->runways[0].ends[1];
+    EXPECT_EQ(e.markings, "PIR");
+    EXPECT_EQ(e.vgsi, "P4R");
+    EXPECT_EQ(e.approach_lights, "MALSR");
+    EXPECT_TRUE(e.centreline_lights);
+    EXPECT_FALSE(e.touchdown_zone_lights);
+    EXPECT_DOUBLE_EQ(e.glide_path_deg, 3.0);
+    EXPECT_NEAR(e.threshold_crossing_height_m, 72.0 * 0.3048, 1e-12);
+    EXPECT_NEAR(e.displaced_threshold_m, 200.0 * 0.3048, 1e-12);
+    EXPECT_FALSE(with("width_ft = 150.0\n", "width_ft = 150.0\nedge_lights = 3\n").errors.empty());
+    EXPECT_FALSE(
+        with("elevation_ft = 611.2\n", "elevation_ft = 611.2\nreil = \"Y\"\n").errors.empty());
+    EXPECT_FALSE(with("elevation_ft = 611.2\n", "elevation_ft = 611.2\nglide_path_deg = -3.0\n")
+                     .errors.empty());
     // Several airports: a list of files.
     std::ofstream(dir / "airport.toml") << airport;
     {

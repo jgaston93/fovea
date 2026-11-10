@@ -51,6 +51,13 @@
 //   lat = "34-39.167130N"           # degrees-minutes and a hemisphere
 //   lon = "086-46.926028W"
 //   elevation_ft = 628.4            # surveyed, orthometric
+//
+// and, optionally, their lights (D-033, lights.hpp) as the FAA's NASR data
+// codes them: a runway's edge_lights ("HIGH", "MED", "LOW"); an end's
+// markings ("PIR"), approach_lights ("MALSR"), vgsi ("P4L"),
+// centreline_lights, touchdown_zone_lights and reil (true or false),
+// glide_path_deg, threshold_crossing_height_ft and displaced_threshold_ft.
+// tools/check-airports.py checks them against NASR.
 
 #include <cstdint>
 #include <filesystem>
