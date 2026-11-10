@@ -45,6 +45,11 @@ END_NUMBERS = {  # key: (NASR field, tolerance)
     "threshold_crossing_height_ft": ("THR_CROSSING_HGT", 0.5),
     "displaced_threshold_ft": ("DISPLACED_THR_LEN", 0.5),
 }
+# Every key a file may use; any other (a misspelling) is reported, since a
+# missing light key reads as "none" and would pass wherever NASR has none.
+AIRPORT_KEYS = {"name", "nasr_cycle", "field_elevation_ft", "runway"}
+RUNWAY_KEYS = {"name", "width_ft", "length_ft", "edge_lights", "end"}
+END_KEYS = {"id", "lat", "lon"} | set(END_CODES) | set(END_FLAGS) | set(END_NUMBERS)
 
 
 def nasr_url(cycle):
@@ -94,8 +99,23 @@ def check_airport(path, nasr_runways, nasr_ends, problems):
     def differ(where, what, ours, theirs):
         problems.append(f"{path.name}: {where}: {what} is {ours!r}, NASR has {theirs!r}")
 
+    def unknown(where, table, known):
+        for key in sorted(set(table) - known):
+            problems.append(f"{path.name}: {where}: unknown key {key!r}")
+
+    # Every runway and end NASR lists for the airport must be in the file.
+    for kind, rows, ours in (
+        ("runway", nasr_runways, {rw["name"] for rw in airport["runway"]}),
+        ("end", nasr_ends, {e["id"] for rw in airport["runway"] for e in rw["end"]}),
+    ):
+        for apt, id in sorted(rows):
+            if apt == ident and id not in ours:
+                problems.append(f"{path.name}: NASR has {kind} {id}, the file doesn't")
+
+    unknown("airport", airport, AIRPORT_KEYS)
     for rw in airport["runway"]:
         name = rw["name"]
+        unknown(name, rw, RUNWAY_KEYS)
         n = nasr_runways.get((ident, name))
         if n is None:
             problems.append(f"{path.name}: runway {name}: not in NASR")
@@ -107,6 +127,7 @@ def check_airport(path, nasr_runways, nasr_ends, problems):
             differ(name, "edge_lights", rw.get("edge_lights"), n["RWY_LGT_CODE"])
         for end in rw["end"]:
             where = f"{name} end {end['id']}"
+            unknown(where, end, END_KEYS)
             e = nasr_ends.get((ident, end["id"]))
             if e is None:
                 problems.append(f"{path.name}: {where}: not in NASR")
