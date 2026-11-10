@@ -46,6 +46,9 @@ constexpr double kPapiFromEdge = 50.0 * kFoot;
 constexpr double kPapiSpacing = 30.0 * kFoot;
 // The standard visual glide path (7.5.4.3.4), when none is given.
 constexpr double kStandardGlidePath = 3.0;
+// The lowest on-course signal, minutes of arc below the glide path, for
+// siting (7.5.4.3.3).
+constexpr double kLowestOnCourse = 10.0;
 
 double radians(double deg) {
     return deg * std::numbers::pi / 180.0;
@@ -94,6 +97,11 @@ public:
         if (s < end.displaced_threshold_m) {
             return LightColour::red;  // before the threshold: red toward the approach
         }
+        if (length_ - s < rw_.ends[1 - i].displaced_threshold_m) {
+            // Before the far end's displaced threshold: yellow, on any
+            // runway (2.3.2.2.2 item 2, Figure A-5).
+            return LightColour::yellow;
+        }
         const bool caution = (rw_.edge_lights == "HIGH" || rw_.edge_lights == "MED") &&
                              instrument(end) &&
                              length_ - s <= std::min(kCautionZone, 0.5 * length_);
@@ -138,10 +146,9 @@ public:
     void threshold(std::size_t i) {
         const RunwayEnd& end = rw_.ends[i];
         const std::size_t other = 1 - i;
-        // Four a side on instrument runways with HIRL or MIRL, three on
-        // visual runways with MIRL or LIRL (2.3.2.2.1 items 5 and 6).
-        const bool four =
-            rw_.edge_lights == "HIGH" || (rw_.edge_lights == "MED" && instrument(end));
+        // Four a side on instrument runways with HIRL or MIRL (2.3.2.2.1
+        // item 6), three on visual runways (item 5; Figure A-3 note 1).
+        const bool four = rw_.edge_lights != "LOW" && instrument(end);
         const int count = four ? 4 : 3;
         const double at_end = along(i, -kThresholdSetback);
         const double d = end.displaced_threshold_m;
@@ -200,6 +207,8 @@ public:
                 const double s = from(i, light.at.along_m);
                 const double remaining = length_ - s;
                 LightColour c = LightColour::white;
+                // Over a longer displaced area they are on a circuit of their
+                // own, to be turned off for landings (3.3.1.3.2): lit here.
                 if (d > 0.0 && d <= kCentrelineBlanked && s < d) {
                     c = LightColour::none;
                 } else if (remaining <= kCentrelineRed) {
@@ -262,13 +271,13 @@ public:
             four ? std::span<const double>(kFour) : std::span<const double>(kTwo);
         // The distance from the threshold that gives the threshold crossing
         // height (7.5.4.3.1): TCH x cot(the lowest on-course signal), the
-        // third unit's angle for four units (7.5.4.4.3), the farthest's for
-        // two (7.5.4.4.4). 7.5.4.3.3 puts the third unit 10' below the
-        // glide path, Table 7-2 15'; this takes the table's, which the units
-        // are aimed by. A runway with an ILS sites its PAPI at the glide
+        // third unit's for four units, 10' below the glide path (7.5.4.3.3,
+        // worked in 7.5.4.3.6), the farthest's for two (7.5.4.4.4). Table
+        // 7-2 aims the third unit 15' below; the siting paragraph's 10' is
+        // used here, as its example does. A runway with an ILS sites its PAPI at the glide
         // slope's touchdown point instead (7.5.4.2), which NASR doesn't
         // give; and the gradient correction (7.5.4.7.6) is left out.
-        const double lowest = glide + aims[four ? 2 : 1] / 60.0;
+        const double lowest = glide - kLowestOnCourse / 60.0;
         const double distance = end.threshold_crossing_height_m / std::tan(radians(lowest));
         const double a = along(i, end.displaced_threshold_m + distance);
         const double side = v[2] == 'R' ? right(i) : -right(i);
@@ -302,6 +311,10 @@ private:
 
 RunwayLayout layout_lights(const Runway& runway, double length_m) {
     RunwayLayout out;
+    if (runway.ends[0].displaced_threshold_m + runway.ends[1].displaced_threshold_m >= length_m) {
+        out.skipped.push_back(runway.name + ": its displaced thresholds overlap: no lights");
+        return out;
+    }
     Layout layout(runway, length_m, out);
     layout.edges();
     layout.centreline();

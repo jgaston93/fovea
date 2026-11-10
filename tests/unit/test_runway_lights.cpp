@@ -128,7 +128,7 @@ TEST(RunwayLights, EdgeLightsTurnYellowInTheCautionZone) {
     }
 }
 
-// 2.3.2.1.2, 2.3.2.2.2, Figure A-5: a threshold displaced 200 ft from the
+// 2.3.2.1.2, 2.3.2.2.2, Figure A-5: a threshold displaced 400 ft from the
 // second end. Before it the edge lights are red toward its approach, its
 // lights stand at the threshold, green toward the approach and outward from
 // the edge line, and the runway's end there is red both ways.
@@ -165,6 +165,34 @@ TEST(RunwayLights, ADisplacedThresholdIsGreenWithRedBeforeIt) {
     }
     EXPECT_EQ(at_end, 8U);
     EXPECT_EQ(at_threshold, 8U);
+    // Red and yellow on a visual runway too (2.3.2.2.2 item 2), whose bars
+    // have three a side (2.3.2.2.1 item 5).
+    rw.ends[0].markings = "VFR";
+    rw.ends[1].markings = "VFR";
+    const RunwayLayout visual = layout_lights(rw, length);
+    for (const RunwayLight& l : of(visual, LightType::edge)) {
+        EXPECT_EQ(l.colour[0], l.at.along_m > threshold_at ? yellow : white) << l.at.along_m;
+    }
+    EXPECT_EQ(of(visual, LightType::threshold).size(), 6U + 6U + 6U);
+    // Centreline lights are blanked toward the approach over it (3.3.1.3.1),
+    // and the touchdown zone starts from it (3.3.2.2).
+    rw.ends[1].centreline_lights = true;
+    rw.ends[1].touchdown_zone_lights = true;
+    const RunwayLayout lit = layout_lights(rw, length);
+    for (const RunwayLight& l : of(lit, LightType::centreline)) {
+        EXPECT_EQ(l.colour[1] == none, l.at.along_m > threshold_at) << l.at.along_m;
+        EXPECT_NE(l.colour[0], none);
+    }
+    double nearest = length;
+    for (const RunwayLight& l : of(lit, LightType::touchdown_zone)) {
+        nearest = std::min(nearest, threshold_at - l.at.along_m);
+    }
+    EXPECT_NEAR(nearest, 100.0 * kFt, 1e-6);
+    // Thresholds displaced past each other are refused.
+    rw.ends[0].displaced_threshold_m = length - displaced;
+    const RunwayLayout overlap = layout_lights(rw, length);
+    EXPECT_TRUE(overlap.lights.empty());
+    EXPECT_EQ(overlap.skipped.size(), 1U);
 }
 
 // 3.3.1, Figure A-34: every 50 ft from 75 ft in from each end; seen toward
@@ -247,7 +275,7 @@ TEST(RunwayLights, PapiIsSitedForItsThresholdCrossingHeight) {
     // Landing on the first end, left is negative across; the inboard unit
     // is aimed 35' above the glide path, then 15' above, 15' and 35' below.
     std::ranges::sort(first, std::greater{}, [](const RunwayLight& l) { return l.at.across_m; });
-    const double d1 = 73.0 * kFt / std::tan((3.0 - 15.0 / 60.0) * std::numbers::pi / 180.0);
+    const double d1 = 73.0 * kFt / std::tan((3.0 - 10.0 / 60.0) * std::numbers::pi / 180.0);
     const std::vector<double> aims = {35.0, 15.0, -15.0, -35.0};
     for (std::size_t k = 0; k < 4; ++k) {
         EXPECT_NEAR(first[k].at.along_m, d1, 1e-6);
@@ -259,11 +287,16 @@ TEST(RunwayLights, PapiIsSitedForItsThresholdCrossingHeight) {
     // Landing on the second end, right is negative across too; measured
     // from its displaced threshold.
     std::ranges::sort(second, std::greater{}, [](const RunwayLight& l) { return l.at.across_m; });
-    const double d2 = 50.0 * kFt / std::tan((3.0 - 15.0 / 60.0) * std::numbers::pi / 180.0);
+    const double d2 = 50.0 * kFt / std::tan((3.0 - 10.0 / 60.0) * std::numbers::pi / 180.0);
     EXPECT_NEAR(second[0].at.along_m, length - 200.0 * kFt - d2, 1e-6);
     EXPECT_NEAR(second[0].at.across_m, -125.0 * kFt, 1e-9);
     EXPECT_NEAR(second[0].papi_angle_deg, 3.25, 1e-12);
     EXPECT_NEAR(second[1].papi_angle_deg, 2.75, 1e-12);
+    // The AC's worked example (7.5.4.3.6): TCH 45 ft, 3 degrees: 909.26 ft
+    // (its 2 degrees 50' rounded to 2.833; exactly, 909.25).
+    rw.ends[0].threshold_crossing_height_m = 45.0 * kFt;
+    const auto example = of(layout_lights(rw, length), LightType::papi);
+    EXPECT_NEAR(example.front().at.along_m / kFt, 909.26, 0.02);
     // What isn't laid out is said.
     rw.ends[0].vgsi = "VAS4";
     rw.ends[1].approach_lights = "MALSR";
