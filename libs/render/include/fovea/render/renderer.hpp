@@ -159,6 +159,7 @@ struct TerrainLoad {
     std::size_t tiles = 0;
     std::size_t placements = 0;
     std::size_t models = 0;  // distinct models placed
+    std::size_t lights = 0;  // airport lights (milestone 6 step 8)
     std::size_t bytes = 0;   // heights and imagery uploaded
     double seconds = 0.0;
     std::vector<std::string> problems;  // tiles skipped or drawn without imagery, and why

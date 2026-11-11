@@ -332,6 +332,28 @@ The compiler bakes the layouts into the database's `lights` layer (D-018, D-033)
 
 Next: drawing the points after the resolve (D-028), then the night approach at the desk.
 
+### Step 8, drawing the lights (2026-11-10)
+
+`libs/render/src/vk/lights.cpp` and `shaders/lights.slang` draw the database's lights layer after the resolve, beside the stars (D-028, D-033).
+
+- **Loading:** the lights come from the root tiles with the placements (#48), into one storage buffer of offsets from their mean point, placed relative to the eye in double on the CPU.
+- **Each light, in its vertex shader:**
+  - **Colour:** the layer's colour for the side the eye is on: colour[0] when the eye is behind the light along its runway's heading. A PAPI unit is white above its angle and red below, blended over 3′.
+  - **Brightness:** its candela toward the eye over the distance squared, through the aerial perspective and the fog, rain and snow bands, into its pixels' radiance (the stars' units, cos³ off-axis so it matches across a seam).
+  - **Beam:** about 15° (edge and threshold lights) or 10° either side of the runway's line, centred 4° up; edge lights keep 5% all round for circling.
+  - **Size:** at least a pixel, or as many as a 0.4 m fixture covers when near (a disc, its light shared among its pixels), with `largePoints` where the GPU has it.
+- **Approximate photometry:** the AC gives positions and colours, not intensities, which are in AC 150/5345-46 (not used yet). The candela (2,500 edge and threshold, 1,000 in-pavement, 6,000 PAPI) and the colour filters' transmission are approximate, for a middle step at night.
+- **Depth:** tested against the resolved depth from a point moved toward the eye, so it stays on its pixel. The resolved depth is a pixel's nearest sample, and at a grazing angle a pixel of ground reaches far nearer than the light: from 6 m up, a pixel at 450 m spans 380 to 550 m. A fixed margin hid lights 450 m off in the first test. The margin is now 1 m plus 2% of the distance plus the pixel's reach over the ground (two pixel widths over the sine of the angle the eye looks down at it), and never more than half the distance, so a hill between still hides a light.
+- **The stars' point pipeline** and pixel solid angle are shared with the lights (`make_point_pipeline`, `pixel_solid_angle` in `stars.hpp`).
+- **Test** (`TerrainRender.AirportLightsShowAtNightWhereAndAsTheyShould`, on lavapipe with validation), at midnight on flat ground:
+  - each of six lights within a pixel of its point;
+  - a threshold light green from the approach and red from beyond;
+  - a PAPI unit white from 4.2° and red from 0.8°;
+  - a light 30 m off covering at least 9 pixels, far ones 1 or 2;
+  - in fog, each light dimmer the farther it is, and the farthest (3.5 km) lost.
+  The night's exposure saturates clear-air lights to white in 8 bits, so the inverse square shows only through the fog. Swapping the sides, the old fixed depth margin, inverting the PAPI, leaving out the fog, or keeping every light one pixel each fails it.
+- **Not yet:** the desk look at a night approach into KHSV, which needs the database rebuilt with the lights layer.
+
 ## Step 9: Hardware check
 
 - **On the desk.** GPU time and memory with each part on and off (sky and tables, aerial perspective, shadows, clouds, lights) on the KHSV and KHUA routes, at noon, at dusk and at night.

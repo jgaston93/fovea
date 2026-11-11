@@ -14,6 +14,19 @@
 
 namespace fovea {
 
+// The solid angle of a pixel on the axis of a view with matrix
+// `ecef_to_clip` (off it, cos^3 of the angle less), in steradians.
+double pixel_solid_angle(const Mat4& ecef_to_clip, VkExtent2D extent);
+
+// A pipeline drawing points, single-sampled, added to `colour` where they
+// pass a reverse-Z test against `depth`, which they don't write: the stars'
+// and the lights' (lights.hpp). Takes vertex and fragment modules with
+// "main" entry points; `what` names it in errors. Throws
+// std::runtime_error.
+VkPipeline make_point_pipeline(VkDevice device, VkPipelineLayout layout, VkShaderModule vertex,
+                               VkShaderModule fragment, VkFormat colour, VkFormat depth,
+                               const char* what);
+
 class StarsGpu {
 public:
     // The pipeline draws into `colour` with `depth` to test against; the

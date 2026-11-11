@@ -308,6 +308,9 @@ bool load_terrain(fovea::Renderer& renderer, const fovea::DisplayConfig& config)
         std::printf("  %zu placements of %zu models, loaded as they're paged in\n", load.placements,
                     load.models);
     }
+    if (load.lights > 0) {
+        std::printf("  %zu airport lights\n", load.lights);
+    }
     const std::size_t shown = std::min<std::size_t>(load.problems.size(), 10);
     for (std::size_t i = 0; i < shown; ++i) {
         std::printf("  %s\n", load.problems[i].c_str());

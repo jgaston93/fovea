@@ -37,6 +37,9 @@ struct GpuContext {
     // set (the frame set has them too).
     VkImageView shadow_maps = VK_NULL_HANDLE;
     VkSampler shadow_sampler = VK_NULL_HANDLE;
+    // The largest point size it draws, pixels: 1 without largePoints
+    // (the lights, step 8).
+    float max_point_size = 1.0F;
 };
 
 // What each view's shaders light with: mirrored as ViewLighting in

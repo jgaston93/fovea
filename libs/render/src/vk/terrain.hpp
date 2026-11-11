@@ -27,6 +27,7 @@
 #include "fovea/render/terrain_lod.hpp"
 #include "fovea/terrain/database.hpp"
 #include "gpu_context.hpp"
+#include "lights.hpp"
 #include "models.hpp"
 
 namespace fovea {
@@ -47,6 +48,8 @@ struct TerrainShaders {
     VkShaderModule fragment = VK_NULL_HANDLE;
     VkShaderModule shadow_vertex = VK_NULL_HANDLE;  // step 5
     ModelShaders models;
+    VkShaderModule lights_vertex = VK_NULL_HANDLE;  // milestone 6 step 8
+    VkShaderModule lights_fragment = VK_NULL_HANDLE;
 };
 
 class TerrainGpu {
@@ -92,6 +95,11 @@ public:
     void draw_shadow(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
                      std::uint32_t cascade, const SceneView& view, const Mat4& to_map,
                      bool terrain_casts);
+    // Draws the airport lights (milestone 6 step 8), if the database has
+    // any, inside a rendering pass on the view's resolved target and depth.
+    // No allocation.
+    void draw_lights(VkCommandBuffer cmd, const SceneView& view, VkExtent2D extent,
+                     std::uint32_t lighting_offset);
 
     // This frame's numbers so far (reset by begin_frame).
     const TerrainStats& stats() const { return stats_; }
@@ -161,8 +169,9 @@ private:
     std::vector<bool> has_last_eye_;
 
     TerrainStats stats_;
-    std::unique_ptr<ModelGpu> models_;  // with placements (milestone 4 step 3)
-    std::unique_ptr<Pager> pager_;      // after models_: stopped before it goes
+    std::unique_ptr<ModelGpu> models_;   // with placements (milestone 4 step 3)
+    std::unique_ptr<LightsGpu> lights_;  // with a lights layer (milestone 6 step 8)
+    std::unique_ptr<Pager> pager_;       // after models_: stopped before it goes
 
     VkSampler sampler_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;

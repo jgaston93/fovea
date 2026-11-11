@@ -39,6 +39,7 @@
 #include "shaders/kCsMultiScattering.hpp"
 #include "shaders/kCsSkyView.hpp"
 #include "shaders/kCsTransmittance.hpp"
+#include "shaders/kFsLights.hpp"
 #include "shaders/kFsModel.hpp"
 #include "shaders/kFsModelShadow.hpp"
 #include "shaders/kFsResolve.hpp"
@@ -47,6 +48,7 @@
 #include "shaders/kFsTerrain.hpp"
 #include "shaders/kFsTonemap.hpp"
 #include "shaders/kVsFullscreen.hpp"
+#include "shaders/kVsLights.hpp"
 #include "shaders/kVsModel.hpp"
 #include "shaders/kVsModelShadow.hpp"
 #include "shaders/kVsStars.hpp"
@@ -510,13 +512,15 @@ struct Renderer::Impl {
                 frame_layout,
                 frame_set,
                 shadows ? shadows->maps() : VK_NULL_HANDLE,
-                shadows ? shadows->sampler() : VK_NULL_HANDLE};
+                shadows ? shadows->sampler() : VK_NULL_HANDLE,
+                max_point_size};
     }
 
     // Terrain, once loaded (milestone 3 step 5).
     std::unique_ptr<TerrainGpu> terrain;
     bool bc_textures = false;               // textureCompressionBC enabled
     float max_anisotropy = 0.0F;            // 0: samplerAnisotropy not enabled
+    float max_point_size = 1.0F;            // 1: largePoints not enabled
     VkSemaphore timeline = VK_NULL_HANDLE;  // signalled with frame_number + 1 by each frame
 
     // Timing: two timestamps per output per frame in flight.
@@ -729,18 +733,23 @@ void Renderer::Impl::create_device(bool present) {
         }
     }
 
-    // Optional: BC textures (terrain imagery, D-017) and anisotropic
-    // filtering, where the GPU has them.
+    // Optional: BC textures (terrain imagery, D-017), anisotropic
+    // filtering and points wider than a pixel (near airport lights, step
+    // 8), where the GPU has them.
     VkPhysicalDeviceFeatures have{};
     vkGetPhysicalDeviceFeatures(physical.physical_device, &have);
     VkPhysicalDeviceFeatures want{};
     want.textureCompressionBC = have.textureCompressionBC;
     want.samplerAnisotropy = have.samplerAnisotropy;
+    want.largePoints = have.largePoints;
     if (physical.enable_features_if_present(want)) {
         bc_textures = want.textureCompressionBC == VK_TRUE;
         max_anisotropy = want.samplerAnisotropy == VK_TRUE
                              ? physical.properties.limits.maxSamplerAnisotropy
                              : 0.0F;
+        max_point_size = want.largePoints == VK_TRUE
+                             ? std::max(1.0F, physical.properties.limits.pointSizeRange[1])
+                             : 1.0F;
     }
 
     auto built = vkb::DeviceBuilder(physical).build();
@@ -1662,11 +1671,15 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
     sdep.imageMemoryBarrierCount = static_cast<std::uint32_t>(sbs.size());
     sdep.pImageMemoryBarriers = sbs.data();
     vkCmdPipelineBarrier2(cmd, &sdep);
-    // The stars only test the depth: it isn't stored again (STORE would be
-    // a write the barrier above doesn't order).
+    // The stars and the airport lights (step 8) only test the depth: it
+    // isn't stored again (STORE would be a write the barrier above doesn't
+    // order).
     begin_pass(cmd, t.view, t.extent, t.depth_view, VK_ATTACHMENT_LOAD_OP_LOAD,
                VK_ATTACHMENT_STORE_OP_NONE, VK_ATTACHMENT_LOAD_OP_LOAD);
     stars->record(cmd, view, sky, t.extent, lighting_offset(slot, i));
+    if (terrain) {
+        terrain->draw_lights(cmd, view, t.extent, lighting_offset(slot, i));
+    }
     vkCmdEndRendering(cmd);
     transition(cmd, t.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -2207,12 +2220,14 @@ TerrainLoad Renderer::load_terrain(std::unique_ptr<TerrainDatabase> database,
     vkUpdateDescriptorSets(m.device.device, static_cast<std::uint32_t>(sws.size()), sws.data(), 0,
                            nullptr);
     const GpuContext gpu = m.gpu_context();
-    const std::array<VkShaderModule, 7> modules = {
-        m.make_module(kVsTerrain),    m.make_module(kFsTerrain), m.make_module(kVsTerrainShadow),
-        m.make_module(kVsModel),      m.make_module(kFsModel),   m.make_module(kVsModelShadow),
-        m.make_module(kFsModelShadow)};
-    const TerrainShaders shaders{modules[0], modules[1], modules[2],
-                                 ModelShaders{modules[3], modules[4], modules[5], modules[6]}};
+    const std::array<VkShaderModule, 9> modules = {
+        m.make_module(kVsTerrain),     m.make_module(kFsTerrain), m.make_module(kVsTerrainShadow),
+        m.make_module(kVsModel),       m.make_module(kFsModel),   m.make_module(kVsModelShadow),
+        m.make_module(kFsModelShadow), m.make_module(kVsLights),  m.make_module(kFsLights)};
+    const TerrainShaders shaders{
+        modules[0], modules[1],
+        modules[2], ModelShaders{modules[3], modules[4], modules[5], modules[6]},
+        modules[7], modules[8]};
     const auto release = [&] {
         for (VkShaderModule s : modules) {
             vkDestroyShaderModule(m.device.device, s, nullptr);

@@ -140,6 +140,7 @@ When Fovea exits, it prints what the host link did: messages received and reject
 
 - **Entities:** drawing entities other than the eyepoint, attached entities and articulated parts (milestone 9, #20). Line of sight and other terrain queries over CIGI (milestone 9).
 - **Weather:** drawing cloud layers (#73), and regional weather.
+- **Airport lights:** they are always on, at one brightness. A host can't switch them or set their intensity step yet, and approach lighting systems aren't drawn.
 - **Other packets:** view and sensor control, component control and the remaining packets, which are skipped.
 - **Recording:** recording and replaying CIGI traffic (#29).
 - **Control plane:** a control and stats channel separate from CIGI (milestone 12).
