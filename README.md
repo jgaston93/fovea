@@ -82,4 +82,4 @@ See the [integration guide](docs/integration-guide.md): the CIGI packets Fovea h
 
 Fovea uses public data and generic models only. The data stays its providers'. Credit them as `ATTRIBUTION.md` lists wherever a database built from it is shown or shared.
 
-The code's license hasn't been chosen yet (#23).
+Fovea's code is licensed under the [Apache License 2.0](LICENSE) (D-004). The libraries it builds with keep their own licenses, all compatible, listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
