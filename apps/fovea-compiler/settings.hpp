@@ -29,6 +29,8 @@
 //   file = "../placements/khsv.toml"  # their [[placement]]s (placements.hpp); or a list
 //   models = "../models"            # where their .glb files are
 //   level = 12                      # whose tiles hold them: the root level, for now (#48)
+//   [lights]                        # optional: the runways' lights (D-033, lights.hpp)
+//   level = 12                      # whose tiles hold them: the root level, for now
 //   [[credit]]                      # the manifest's [[source]] entries
 //   layer = "elevation"
 //   name = "USGS 3DEP 1 m DEM"
@@ -102,6 +104,11 @@ struct CompileSettings {
         std::optional<std::uint8_t> level;  // the root level if not given
     };
     std::optional<Placements> placements;
+
+    struct Lights {
+        std::optional<std::uint8_t> level;  // the root level if not given
+    };
+    std::optional<Lights> lights;
 };
 
 struct SettingsResult {

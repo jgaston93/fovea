@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "fovea/terrain/database.hpp"
+#include "lights.hpp"
 #include "placements.hpp"
 #include "settings.hpp"
 
@@ -56,6 +57,7 @@ struct CompileResult {
     std::optional<ImageryReport> imagery;       // with [imagery] in the settings
     std::vector<RunwayReport> runways;          // with [runways]
     std::optional<PlacementReport> placements;  // with [placements]
+    std::optional<LightsReport> lights;         // with [lights]
 };
 
 // The root level's tiles touching the area, as a rectangle.

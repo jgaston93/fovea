@@ -316,6 +316,21 @@ No REILs are listed at either airport. The layouts themselves (spacing, colours,
 - **Tests:** each system on made-up runways (spacing, positions, colours each way, the caution zone, a displaced threshold with centreline and touchdown zone lights, short runways), and both airport files laid out whole. Deliberate mistakes in the layout code (spacing, offsets, colours, the PAPI's side and angle, the displaced threshold's blanking and offsets) each fail them.
 - **Review fixes:** the displaced area's edge lights are yellow the other way on any runway, not only in an instrument end's caution zone; visual ends get three threshold lights a side whatever the edge lights; the PAPI is sited 10' below the glide path, not 15'; overlapping displaced thresholds are refused.
 
+### Step 8, the lights layer (2026-11-10)
+
+The compiler bakes the layouts into the database's `lights` layer (D-018, D-033), with a `[lights]` section in the compile settings (`data/compile/khsv.toml` has one).
+
+- **Format** (`tile_file.hpp`): 36 bytes a light, giving its latitude, longitude and ellipsoidal height, the runway's true heading there, its type, its colour each way along that heading, and a PAPI unit's angle. The reader refuses a value out of range, a light dark both ways, a PAPI angle on another type, and bytes left over. The manifest gains `[layers.lights] level`.
+- **Where:** the root tiles, as for placements (#48). Each light stands on the finest level's ground as built (the smoothed runway on the pavement), sampled as placements are (`finest_heights.hpp`). A fixture's own height (centimetres) isn't added. The heading is taken at each light, in its own north, so it differs from the runway's midpoint heading by about 0.01° a kilometre as the meridians converge.
+- **Report:** the compiler prints how many lights went into how many tiles, and each system it didn't lay out.
+- **Tests:**
+  - The layer round-trips and refuses every truncation and bad value.
+  - A runway's points and headings back on the Earth.
+  - A synthetic compile: every root tile's lights add up to the layout. Each light sits on the finest ground to a micrometre and faces along the runway. The edge lights are 10 ft outside the pavement, and the PAPI is on the left, its highest unit nearest the runway.
+  - Breaking the heading (the midpoint's, or the axes swapped) or the height fails them.
+
+Next: drawing the points after the resolve (D-028), then the night approach at the desk.
+
 ## Step 9: Hardware check
 
 - **On the desk.** GPU time and memory with each part on and off (sky and tables, aerial perspective, shadows, clouds, lights) on the KHSV and KHUA routes, at noon, at dusk and at night.

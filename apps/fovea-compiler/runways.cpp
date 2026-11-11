@@ -262,6 +262,21 @@ RunwayPoint RunwaySurface::to_runway(double lat_deg, double lon_deg) const {
     return {l.x * axis_north_ + l.y * axis_east_, -l.x * axis_east_ + l.y * axis_north_};
 }
 
+Geodetic RunwaySurface::to_geodetic(const RunwayPoint& p) const {
+    Geodetic g = ecef_to_geodetic(to_ecef(p.along_m, p.across_m));
+    g.alt_m = 0.0;  // the frame is a plane, rising off the ellipsoid away from the first end
+    return g;
+}
+
+double RunwaySurface::heading_deg(double lat_deg, double lon_deg) const {
+    // The axis in that point's own north and east: meridians converge, so
+    // it differs from the midpoint's by a hundredth of a degree a km here.
+    const DVec3 axis = glm::transpose(to_local_) * DVec3(axis_north_, axis_east_, 0.0);
+    const DVec3 there = glm::transpose(ned_to_ecef(lat_deg, lon_deg)) * axis;
+    const double h = glm::degrees(std::atan2(there.y, there.x));
+    return h < 0.0 ? h + 360.0 : h;
+}
+
 bool RunwaySurface::touches(const GeoBounds& b) const {
     return reach_.west_deg <= b.east_deg && reach_.east_deg >= b.west_deg &&
            reach_.south_deg <= b.north_deg && reach_.north_deg >= b.south_deg;

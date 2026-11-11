@@ -271,6 +271,78 @@ TEST(TileFile, PlacementsLayerRoundTripsAndRefusesNonsense) {
     EXPECT_FALSE(decode_placements(v2).has_value());
 }
 
+TEST(TileFile, LightsLayerRoundTripsAndRefusesNonsense) {
+    using enum LightColour;
+    const std::vector<TileLight> lights = {
+        {34.6372, -86.7751, 190.25, 179.5F, 0.0F, LightType::edge, {white, yellow}},
+        {-12.0, 179.9999, -3.0, 359.75F, 3.25F, LightType::papi, {red, none}},
+        {0.0, 0.0, 0.0, 0.0F, 0.0F, LightType::threshold, {none, green}},
+    };
+    const TileLayer layer = *encode_lights(lights);
+    EXPECT_EQ(layer.name, "lights");
+    EXPECT_EQ(layer.data.size(), 4U + 3U * 36U);
+    const auto back = decode_lights(layer);
+    ASSERT_TRUE(back.has_value());
+    ASSERT_EQ(back->size(), 3U);
+    EXPECT_EQ((*back)[0].lat_deg, 34.6372);
+    EXPECT_EQ((*back)[0].lon_deg, -86.7751);
+    EXPECT_EQ((*back)[0].height_m, 190.25);
+    EXPECT_EQ((*back)[0].heading_deg, 179.5F);
+    EXPECT_EQ((*back)[0].colour[1], yellow);
+    EXPECT_EQ((*back)[1].type, LightType::papi);
+    EXPECT_EQ((*back)[1].papi_angle_deg, 3.25F);
+    EXPECT_EQ((*back)[1].colour[1], none);
+    EXPECT_EQ((*back)[2].colour[1], green);
+    EXPECT_TRUE(decode_lights(*encode_lights({}))->empty());
+
+    // Every truncation, extra bytes, and bad values are refused.
+    for (std::size_t n = 0; n < layer.data.size(); ++n) {
+        TileLayer cut = layer;
+        cut.data.resize(n);
+        EXPECT_FALSE(decode_lights(cut).has_value()) << n;
+    }
+    TileLayer extra = layer;
+    extra.data.push_back(0);
+    EXPECT_FALSE(decode_lights(extra).has_value());
+    TileLayer counted = layer;
+    counted.data[0] = 200;  // more than are there
+    EXPECT_FALSE(decode_lights(counted).has_value());
+    const TileLight ok{0, 0, 0, 0.0F, 0.0F, LightType::edge, {white, white}};
+    const auto changed = [&](auto change) {
+        TileLight l = ok;
+        change(l);
+        return l;
+    };
+    for (const TileLight& bad : {
+             changed([](TileLight& l) { l.lat_deg = 91; }),
+             changed([](TileLight& l) { l.lon_deg = -181; }),
+             changed([](TileLight& l) { l.height_m = std::nan(""); }),
+             changed([](TileLight& l) { l.heading_deg = 360.0F; }),
+             changed([](TileLight& l) { l.heading_deg = -1.0F; }),
+             changed([](TileLight& l) { l.colour = {none, none}; }),  // dark both ways
+             changed([](TileLight& l) { l.colour[0] = static_cast<LightColour>(5); }),
+             changed([](TileLight& l) { l.type = static_cast<LightType>(5); }),
+             changed([](TileLight& l) { l.papi_angle_deg = 3.0F; }),  // not a PAPI
+             changed([](TileLight& l) {
+                 l.type = LightType::papi;
+                 l.papi_angle_deg = 90.0F;
+             }),
+         }) {
+        EXPECT_FALSE(encode_lights({&bad, 1}).has_value());  // never written
+    }
+    // Nor read: a good layer changed after it was written.
+    const TileLayer one = *encode_lights({&ok, 1});
+    for (const auto& [at, value] : std::vector<std::pair<std::size_t, std::uint8_t>>{
+             {4 + 32, 5}, {4 + 33, 5}, {4 + 34, 9}, {4 + 35, 1}}) {
+        TileLayer bad = one;
+        bad.data[at] = value;
+        EXPECT_FALSE(decode_lights(bad).has_value()) << at;
+    }
+    TileLayer v2 = layer;
+    v2.format = 2;
+    EXPECT_FALSE(decode_lights(v2).has_value());
+}
+
 TEST(TerrainDatabase, ManifestRoundTripsAndIsChecked) {
     DatabaseManifest m;
     m.name = "test";
@@ -308,6 +380,15 @@ TEST(TerrainDatabase, ManifestRoundTripsAndIsChecked) {
     std::string text = manifest_text(m);
     text.replace(text.find("level = 10\n\n[[level]]"), 10, "level = 31");
     EXPECT_FALSE(parse_manifest(text, "m.toml").manifest.has_value());
+    EXPECT_FALSE(placed.manifest->lights.has_value());
+    m.lights = DatabaseManifest::Lights{11};
+    const ManifestResult lit = parse_manifest(manifest_text(m), "m.toml");
+    ASSERT_TRUE(lit.manifest.has_value()) << lit.errors[0];
+    ASSERT_TRUE(lit.manifest->lights.has_value());
+    EXPECT_EQ(lit.manifest->lights->level, 11);
+    std::string dark = manifest_text(m);
+    dark.replace(dark.find("level = 11\n"), 10, "level = -1");
+    EXPECT_FALSE(parse_manifest(dark, "m.toml").manifest.has_value());
 
     EXPECT_FALSE(parse_manifest("schema = 2\n[layers.elevation]\nformat = \"float32\"\nsamples = "
                                 "17\n[[level]]\nlevel = 1\nx = [0, 0]\ny = [0, 0]\n",

@@ -8,45 +8,13 @@
 
 #include <toml++/toml.hpp>
 
+#include "finest_heights.hpp"
 #include "fovea/core/geodesy.hpp"
 #include "fovea/models/model.hpp"
 
 namespace fovea::compiler {
 
 namespace fs = std::filesystem;
-
-namespace {
-
-// The finest level as built, sampled as the runtime's queries would.
-class FinestHeights {
-public:
-    FinestHeights(fs::path part, std::uint8_t level) : part_(std::move(part)), level_(level) {}
-
-    std::optional<double> at(double lat_deg, double lon_deg) {
-        const TileKey key = tile_at(lat_deg, lon_deg, level_);
-        auto found = grids_.find(key);
-        if (found == grids_.end()) {
-            std::unique_ptr<ElevationGrid> grid;
-            const TileResult r = read_tile(part_ / tile_path(key), key);
-            const TileLayer* l = r.tile ? r.tile->find(kElevationLayer) : nullptr;
-            if (auto g = l != nullptr ? decode_elevation(*l) : std::nullopt) {
-                grid = std::make_unique<ElevationGrid>(std::move(*g));
-            }
-            found = grids_.emplace(key, std::move(grid)).first;
-        }
-        if (!found->second) {
-            return std::nullopt;
-        }
-        return found->second->sample(tile_bounds(key), lat_deg, lon_deg);
-    }
-
-private:
-    fs::path part_;
-    std::uint8_t level_;
-    std::unordered_map<TileKey, std::unique_ptr<ElevationGrid>> grids_;
-};
-
-}  // namespace
 
 PlacementFileResult parse_placement_file(const std::string& text, const fs::path& file) {
     PlacementFileResult r;

@@ -64,6 +64,10 @@ blend_m = 20.0
 file = ["../placements/khsv.toml", "../placements/khua.toml"]
 models = "../models"
 
+# The runways' lights (milestone 6 step 8, D-033), laid out from the
+# airport files by AC 150/5340-30J, in the root tiles.
+[lights]
+
 [[credit]]
 layer = "elevation"
 name = "FAA airport data (KHSV and KHUA runways)"
