@@ -22,7 +22,7 @@ All shaders are written in Slang and compiled ahead of time to SPIR-V with `slan
 
 ## D-004 Repository license: Apache-2.0
 
-**Status:** Proposed. This must be accepted before the first public push.
+**Status:** Accepted (2026-11-10). `LICENSE` is the license's text and `NOTICE` names the copyright holder; `THIRD_PARTY_NOTICES.md` lists the libraries Fovea builds with, each checked as compatible.
 
 Apache-2.0 is permissive like MIT and also includes an explicit patent grant, which matters for simulation and defense-adjacent users. Third-party data has its own licenses, which are tracked separately in the attribution file.
 
