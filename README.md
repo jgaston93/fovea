@@ -21,8 +21,7 @@ Fovea is in active development. The first database covers Huntsville Internation
 
 **Next:**
 - **Airport lights:** they are laid out in the database and are being drawn next.
-- **Clouds:** cloud layers (#73).
-- **Later:** entities and the rest are in the [milestones](docs/fovea-plan.md#milestones).
+- **Later:** cloud layers (#73), entities and the rest, as the [milestones](docs/fovea-plan.md#milestones) order them.
 
 Each milestone's record is in `docs/milestone-*.md`. Open work is in the GitHub issues.
 
@@ -37,7 +36,7 @@ cmake --preset release && cmake --build --preset release && ctest --preset relea
 - **Linux:** the build also needs `libx11-dev libxext-dev libxrandr-dev` for SDL. The compiler is built only when GDAL 3.8 or later is installed (`libgdal-dev`).
 - **Windows:** configure from a Visual Studio developer prompt with `CC=cl CXX=cl`, using the same presets.
 
-The presets are `debug`, `release`, `relwithdebinfo`, `asan`, `asan-fast` and `tsan`. Warnings are errors on every compiler.
+The presets are `debug`, `release`, `relwithdebinfo`, `asan`, `asan-fast`, `tsan` and `fuzz` (the CIGI codec's fuzz target). Warnings are errors on every compiler.
 
 ## Building a database
 
@@ -58,10 +57,12 @@ The settings format is documented in `apps/fovea-compiler/settings.hpp`.
 ./build/release/apps/fovea/fovea --list-monitors                          # monitors, in config index order
 ./build/release/apps/fovea/fovea --overlay config/khsv.toml               # the KHSV database, with a timing overlay
 ./build/release/tools/cigi-test-host/cigi-test-host tools/cigi-test-host/scripts/khsv-approach.toml
-./build/release/apps/fovea/fovea --headless --dump out config/khsv.toml   # offscreen, a PNG per channel
+./build/release/apps/fovea/fovea --headless --frames 600 --dump out config/khsv.toml  # offscreen, a PNG per channel
 ```
 
-A config file describes the display channels, the environment, the database and the host link. `config/channels.example.toml` documents every key.
+A headless run ignores `[host]`: it stands the views at `[reference_scene]`'s origin and writes the last of its frames, so give it enough frames (`--frames`) for the finer tiles to page in.
+
+A config file describes the display channels, the environment, the database and the host link. `config/channels.example.toml` documents its keys.
 
 `cigi-test-host` is a scripted CIGI host for trying Fovea without a simulator. Its scripts are in `tools/cigi-test-host/scripts/`.
 
