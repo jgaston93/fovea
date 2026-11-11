@@ -1,0 +1,46 @@
+# A night approach to KHSV runway 36L (milestone 6 step 8): the approach of
+# khsv-approach.toml at 03:00 UTC on 21 March 2026 (22:00 local daylight
+# time, the sun about 36 degrees down), in clear air, to see the airport's
+# lights: the edge, threshold and end lights, the centreline and touchdown
+# zone lights. 36L has no PAPI in the FAA's data, and its MALSR isn't laid
+# out yet. Run Fovea with
+# config/khsv.toml, then:
+#   cigi-test-host tools/cigi-test-host/scripts/khsv-night.toml
+
+[ig]
+address = "127.0.0.1"
+port = 8004
+
+[host]
+port = 8005
+rate_hz = 60.0
+
+[start]
+lat = 34.564088
+lon = -86.783860
+alt = 515.7      # 15 m over the threshold plus 6 km at 3 degrees
+heading = 0.9
+speed = 70.0
+
+[flight]
+loop = false
+
+[[segment]]
+kind = "straight"
+duration = 85.7  # 6 km at 70 m/s
+speed = 70.0
+climb = -3.67    # 3 degrees at 70 m/s
+date = 2026-03-21
+time = 03:00:00  # UTC
+visibility = 30000.0
+
+[[segment]]
+kind = "straight"
+duration = 55.0  # the length of the runway
+speed = 70.0
+
+[[segment]]
+kind = "straight"
+duration = 40.0  # climbing away at about 5 degrees
+speed = 70.0
+climb = 6.0

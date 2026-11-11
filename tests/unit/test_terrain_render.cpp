@@ -1159,6 +1159,18 @@ TEST(TerrainRender, AirportLightsShowAtNightWhereAndAsTheyShould) {
     // the PAPI unit white, 4.2 degrees above it.
     EXPECT_GT(clear[0].colour[1], clear[0].colour[0] + 100.0);
     EXPECT_GT(std::min({clear[5].colour[0], clear[5].colour[1], clear[5].colour[2]}), 200.0);
+    // Each point by its light (include/points.slang), not every one white:
+    // the edge lights 0.7 to 3.5 km off dimmer the farther they are.
+    EXPECT_GE(sum(clear[1].colour), sum(clear[2].colour));
+    EXPECT_GT(sum(clear[2].colour), sum(clear[3].colour) + 60.0);
+    EXPECT_GT(sum(clear[3].colour), sum(clear[4].colour) + 60.0);
+    // An edge light seen from the side, outside its beam, 700 m off as the
+    // first edge light is above: there, but dimmer than head on.
+    const SceneView beside = view_at(at(800.0, 700.0), 40.0, -3.0, 270.0, 10.0);
+    const Seen side = seen(draw_lights(dir, beside, kSize, {}, s.lights.size(), 1), beside, 2);
+    EXPECT_LE(std::abs(side.at.x + 0.5 - side.expected.x), 1.0);
+    EXPECT_GT(sum(side.colour), 150.0);
+    EXPECT_LT(sum(side.colour), sum(clear[1].colour) - 150.0);
 
     // The wall hides the light behind it: no brighter than the wall.
     const Seen hidden = seen(px, south, 7);
@@ -1189,8 +1201,9 @@ TEST(TerrainRender, AirportLightsShowAtNightWhereAndAsTheyShould) {
     EXPECT_GE(close.lit, 9);
     EXPECT_LE(clear[4].lit, 2);
 
-    // Through fog from 100 to 160 m up, 800 m visibility: the farther a
-    // light, the dimmer; the farthest, 3.5 km off, lost.
+    // Through fog from 100 to 160 m up, 800 m visibility: each light
+    // dimmer than in clear air, the farther the dimmer; the farthest,
+    // 3.5 km off, lost.
     const std::array<WeatherLayer, 1> fog = {
         WeatherLayer{WeatherKind::fog, 100.0, 60.0, 1.0, 800.0}};
     const auto foggy = draw_lights(dir, south, kSize, fog, s.lights.size(), 1);
@@ -1199,8 +1212,8 @@ TEST(TerrainRender, AirportLightsShowAtNightWhereAndAsTheyShould) {
         through[i] = sum(seen(foggy, south, i).colour);
     }
     EXPECT_LT(through[3], sum(clear[3].colour) - 100.0);
-    EXPECT_GE(through[2], through[3]);
-    EXPECT_GT(through[3], through[4] + 200.0);
+    EXPECT_GT(through[2], through[3] + 60.0);
+    EXPECT_GT(through[3], through[4] + 40.0);
     EXPECT_LT(through[4], 60.0);
     if (const char* dump = std::getenv("FOVEA_DUMP_LIGHTS")) {
         (void)write_bytes_atomically(dump, encode_png(RgbaImage{kSize, kSize, px}));

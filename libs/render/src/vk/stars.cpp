@@ -24,7 +24,7 @@ constexpr auto kCatalog = std::to_array<CatalogStar>({
 struct StarPush {
     Mat4 j2000_to_clip{1.0F};
     std::array<float, 3> up{};
-    float inv_pixel_solid_angle = 0.0F;
+    float unused = 0.0F;
 };
 static_assert(sizeof(StarPush) == 80, "must match StarPush in stars.slang");
 
@@ -234,7 +234,7 @@ void StarsGpu::release() {
 }
 
 void StarsGpu::record(VkCommandBuffer cmd, const SceneView& view, const SkyBodies& sky,
-                      VkExtent2D extent, std::uint32_t lighting_offset) {
+                      std::uint32_t lighting_offset) {
     const Geodetic eye = ecef_to_geodetic(view.eye_ecef);
     const DVec3 up_ecef = ned_to_ecef(eye.lat_deg, eye.lon_deg) * DVec3(0.0, 0.0, -1.0);
     const DVec3 up = glm::transpose(sky.j2000_to_ecef) * up_ecef;
@@ -243,8 +243,6 @@ void StarsGpu::record(VkCommandBuffer cmd, const SceneView& view, const SkyBodie
     StarPush push;
     push.j2000_to_clip = view.ecef_to_clip * rotation;
     push.up = {static_cast<float>(up.x), static_cast<float>(up.y), static_cast<float>(up.z)};
-    push.inv_pixel_solid_angle =
-        static_cast<float>(1.0 / pixel_solid_angle(view.ecef_to_clip, extent));
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     const std::array<VkDescriptorSet, 2> sets = {set_, gpu_.frame_set};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0,

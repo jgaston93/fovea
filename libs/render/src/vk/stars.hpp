@@ -15,7 +15,8 @@
 namespace fovea {
 
 // The solid angle of a pixel on the axis of a view with matrix
-// `ecef_to_clip` (off it, cos^3 of the angle less), in steradians.
+// `ecef_to_clip` (off it, cos^3 of the angle less), in steradians: the
+// lights' (lights.hpp) size in pixels.
 double pixel_solid_angle(const Mat4& ecef_to_clip, VkExtent2D extent);
 
 // A pipeline drawing points, single-sampled, added to `colour` where they
@@ -39,7 +40,7 @@ public:
 
     // Draws one view's stars inside a rendering pass on its resolved target
     // and depth, lit by its block of the frame set. No allocation.
-    void record(VkCommandBuffer cmd, const SceneView& view, const SkyBodies& sky, VkExtent2D extent,
+    void record(VkCommandBuffer cmd, const SceneView& view, const SkyBodies& sky,
                 std::uint32_t lighting_offset);
 
 private:
