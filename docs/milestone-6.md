@@ -326,8 +326,9 @@ The compiler bakes the layouts into the database's `lights` layer (D-018, D-033)
 - **Tests:**
   - The layer round-trips and refuses every truncation and bad value.
   - A runway's points and headings back on the Earth.
-  - A synthetic compile: every root tile's lights add up to the layout. Each light sits on the finest ground to a micrometre and faces along the runway. The edge lights are 10 ft outside the pavement, and the PAPI is on the left, its highest unit nearest the runway.
+  - A synthetic compile with a north-east runway across both root tiles: every root tile's lights add up to the layout. Each light sits on the finest ground to a micrometre and faces along the runway, checked against the axis in its own north and east. The edge lights are 10 ft outside the pavement, and the PAPI is on the left, its highest unit nearest the runway. A placement shares a tile with lights and both layers read back. A runway whose lights reach past the database is refused.
   - Breaking the heading (the midpoint's, or the axes swapped) or the height fails them.
+- **Review fixes:** a missing finest tile under a light gets its own error, not "outside the database". `[lights]` refuses unknown keys, a non-table and a non-integer level.
 
 Next: drawing the points after the resolve (D-028), then the night approach at the desk.
 

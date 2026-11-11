@@ -1509,26 +1509,47 @@ TEST(CompilerRunways, AirportFileMistakesAreRefused) {
 
 // Airport lights (milestone 6 step 8, D-033): a runway's layout, baked
 // into the root tiles' lights layer, each light on the ground as built,
-// facing along the runway.
+// facing along the runway. The runway runs north-east across both root
+// tiles, one of which also holds a placement.
 TEST(CompilerLights, StandOnTheGroundInTheRootTiles) {
     GDALAllRegister();
     const Scene scene("lights", true);
     const double lat0 = scene.extent.south_deg + 0.001;
     const double lat1 = scene.extent.north_deg - 0.001;
-    const double lon = scene.extent.west_deg + 0.0008;
-    const auto end = [&](const char* id, double lat, const std::string& extra) {
-        return "[[runway.end]]\nid = \"" + std::string(id) + "\"\nlat = \"" + dm(lat, true) +
-               "\"\nlon = \"" + dm(lon, false) +
-               "\"\nelevation_ft = 0.0\nmarkings = \"PIR\"\ncentreline_lights = true\n" + extra;
+    const double mid_lon = (scene.extent.west_deg + scene.extent.east_deg) / 2;  // the tiles' seam
+    const double lon0 = mid_lon - 0.003;
+    const double lon1 = mid_lon + 0.003;
+    const auto write_airport = [&](double north_lat) {
+        const auto end = [&](const char* id, double lat, double lon, const std::string& extra) {
+            return "[[runway.end]]\nid = \"" + std::string(id) + "\"\nlat = \"" + dm(lat, true) +
+                   "\"\nlon = \"" + dm(lon, false) +
+                   "\"\nelevation_ft = 0.0\nmarkings = \"PIR\"\ncentreline_lights = true\n" + extra;
+        };
+        std::ofstream(scene.dir / "airport.toml")
+            << "[[runway]]\nname = \"03/21\"\nwidth_ft = 100.0\nedge_lights = \"HIGH\"\n"
+            << end("03", lat0, lon0,
+                   "vgsi = \"P4L\"\nglide_path_deg = 3.0\nthreshold_crossing_height_ft = 50.0\n"
+                   "approach_lights = \"MALSR\"\n")
+            << end("21", north_lat, lon1, "");
     };
-    std::ofstream(scene.dir / "airport.toml")
-        << "[[runway]]\nname = \"36/18\"\nwidth_ft = 100.0\nedge_lights = \"HIGH\"\n"
-        << end("36", lat0,
-               "vgsi = \"P4L\"\nglide_path_deg = 3.0\nthreshold_crossing_height_ft = 50.0\n"
-               "approach_lights = \"MALSR\"\n")
-        << end("18", lat1, "");
+    write_airport(lat1);
+    fs::create_directories(scene.dir / "models");
+    const auto box = test::make_glb([] {
+        test::GlbSpec g = test::glb_box(2.0F, 2.0F, 2.0F);
+        g.extras = R"({"fovea_material": 1})";
+        return g;
+    }());
+    std::ofstream(scene.dir / "models" / "shed.glb", std::ios::binary)
+        .write(reinterpret_cast<const char*>(box.data()), static_cast<std::streamsize>(box.size()));
+    const double shed_lat = lat0 + 0.001;
+    const double shed_lon = lon0 - 0.002;  // in the western tile, with the runway's south end
+    std::ofstream(scene.dir / "placed.toml")
+        << std::setprecision(12) << "[[placement]]\nmodel = \"shed\"\nlat = " << shed_lat
+        << "\nlon = " << shed_lon << "\nheading = 0.0\n";
     const std::string settings =
-        scene.settings() + "[runways]\nairport = \"airport.toml\"\n[lights]\n";
+        scene.settings() +
+        "[runways]\nairport = \"airport.toml\"\n[placements]\nfile = \"placed.toml\"\nmodels = "
+        "\"models\"\n[lights]\n";
     const auto r = scene.build(settings);
     ASSERT_TRUE(r.ok) << (r.errors.empty() ? "" : r.errors[0]);
     ASSERT_TRUE(r.lights.has_value());
@@ -1537,7 +1558,8 @@ TEST(CompilerLights, StandOnTheGroundInTheRootTiles) {
     ASSERT_EQ(r.lights->skipped.size(), 1U);  // the MALSR (FAA JO 6850.2)
     EXPECT_NE(r.lights->skipped[0].find("MALSR"), std::string::npos) << r.lights->skipped[0];
 
-    // Every root tile's lights together are the layout's, each in its tile.
+    // Every root tile's lights together are the layout's, each in its
+    // tile; both tiles hold some, and the shed's keeps its placement.
     std::vector<TileLight> all;
     std::size_t tiles = 0;
     const LevelTiles& roots = r.manifest.levels[0];
@@ -1546,6 +1568,10 @@ TEST(CompilerLights, StandOnTheGroundInTheRootTiles) {
             const TileKey key{Scene::kRoot, x, y};
             const TileResult t = read_tile(scene.dir / "db" / tile_path(key), key);
             ASSERT_TRUE(t.tile.has_value());
+            if (const TileLayer* placed = t.tile->find(kPlacementsLayer)) {
+                EXPECT_EQ(decode_placements(*placed)->size(), 1U);
+                EXPECT_NE(t.tile->find(kLightsLayer), nullptr);
+            }
             const TileLayer* layer = t.tile->find(kLightsLayer);
             if (layer == nullptr) {
                 continue;
@@ -1559,6 +1585,7 @@ TEST(CompilerLights, StandOnTheGroundInTheRootTiles) {
             }
         }
     }
+    EXPECT_EQ(tiles, 2U);
     EXPECT_EQ(tiles, r.lights->tiles);
     ASSERT_EQ(all.size(), r.lights->lights);
     const auto loaded = parse_settings(settings, "settings.toml", scene.dir);
@@ -1566,37 +1593,51 @@ TEST(CompilerLights, StandOnTheGroundInTheRootTiles) {
     EXPECT_EQ(all.size(),
               layout_lights(loaded.settings->runways[0], r.runways[0].length_m).lights.size());
 
-    // On the finest level's ground, facing north (from 36, the first end,
-    // toward 18).
-    double centre = 0.0;
-    int centreline = 0;
+    // The axis, from the centreline's first and last lights.
+    const auto ecef = [](const TileLight& l) {
+        return geodetic_to_ecef({l.lat_deg, l.lon_deg, 0.0});
+    };
+    const TileLight* first = nullptr;
+    const TileLight* last = nullptr;
     for (const TileLight& l : all) {
+        if (l.type == LightType::centreline) {
+            first = first == nullptr || l.lat_deg < first->lat_deg ? &l : first;
+            last = last == nullptr || l.lat_deg > last->lat_deg ? &l : last;
+        }
+    }
+    ASSERT_NE(first, nullptr);
+    const DVec3 origin = ecef(*first);
+    const DVec3 axis = glm::normalize(ecef(*last) - origin);
+    const DMat3 to_ned = glm::transpose(ned_to_ecef(first->lat_deg, first->lon_deg));
+    std::vector<std::pair<double, float>> papi;  // metres right of the centreline, angle
+    for (const TileLight& l : all) {
+        // On the finest level's ground.
         const TileKey fine = tile_at(l.lat_deg, l.lon_deg, 16);
         const double ground =
             read_grid(scene.dir / "db", fine).sample(tile_bounds(fine), l.lat_deg, l.lon_deg);
         EXPECT_NEAR(l.height_m, ground, 1e-6);
-        EXPECT_LT(std::min(l.heading_deg, 360.0F - l.heading_deg), 0.01F) << l.heading_deg;
-        if (l.type == LightType::centreline) {
-            centre += l.lon_deg;
-            ++centreline;
-        }
-    }
-    ASSERT_GT(centreline, 0);
-    centre /= centreline;
-    // Across: edge lights 10 ft outside the 100 ft pavement (AC 150/5340-30J
-    // 2.3.1), the PAPI on the left of 36, landing north: to the west, its
-    // highest unit nearest the runway (Table 7-2).
-    std::vector<std::pair<double, float>> papi;  // metres east of the centreline, angle
-    for (const TileLight& l : all) {
-        const double east = (l.lon_deg - centre) * kMetresPerDegLon;
+        // Facing along the axis in its own north and east (from 03, the
+        // first end, toward 21): about 55 degrees, turning a little east.
+        const DVec3 there = glm::transpose(ned_to_ecef(l.lat_deg, l.lon_deg)) * axis;
+        const double heading = glm::degrees(std::atan2(there.y, there.x));
+        EXPECT_NEAR(l.heading_deg, heading, 2e-3);
+        // Across: right of the axis, level.
+        const DVec3 d = to_ned * (ecef(l) - origin);
+        const DVec3 u = to_ned * axis;
+        const double right = (-u.y * d.x + u.x * d.y) / std::hypot(u.x, u.y);
         if (l.type == LightType::edge) {
-            EXPECT_NEAR(std::abs(east), 60.0 * 0.3048, 0.05);
+            // 10 ft outside the 100 ft pavement (AC 150/5340-30J 2.3.1).
+            EXPECT_NEAR(std::abs(right), 60.0 * 0.3048, 0.02);
         } else if (l.type == LightType::centreline) {
-            EXPECT_NEAR(east, 0.0, 0.01);
+            EXPECT_NEAR(right, 0.0, 0.02);
         } else if (l.type == LightType::papi) {
-            papi.emplace_back(east, l.papi_angle_deg);
+            papi.emplace_back(right, l.papi_angle_deg);
         }
     }
+    EXPECT_GT(first->heading_deg, 50.0F);
+    EXPECT_LT(first->heading_deg, 60.0F);
+    // The PAPI on the left of 03: its highest unit nearest the runway
+    // (Table 7-2).
     ASSERT_EQ(papi.size(), 4U);
     std::sort(papi.begin(), papi.end());
     EXPECT_LT(papi.back().first, -15.0);
@@ -1604,12 +1645,27 @@ TEST(CompilerLights, StandOnTheGroundInTheRootTiles) {
         EXPECT_GT(papi[i].second, papi[i - 1].second);
     }
 
-    // Lights need runways, and the root level for now.
-    for (const char* bad :
-         {"[lights]\n", "[runways]\nairport = \"airport.toml\"\n[lights]\nlevel = 16\n"}) {
-        const auto refused = parse_settings(scene.settings() + bad, "settings.toml", scene.dir);
-        EXPECT_FALSE(refused.settings.has_value()) << bad;
+    // A runway whose end lights reach past the database is refused.
+    write_airport(scene.extent.north_deg - 1e-6);
+    const auto past =
+        scene.build(scene.settings() + "[runways]\nairport = \"airport.toml\"\n[lights]\n");
+    EXPECT_FALSE(past.ok);
+    ASSERT_FALSE(past.errors.empty());
+    EXPECT_NE(past.errors[0].find("outside the database"), std::string::npos) << past.errors[0];
+    EXPECT_FALSE(fs::exists(scene.dir / "db.part"));
+
+    // Lights need runways, the root level for now, and only the keys known.
+    const std::string with_runways = scene.settings() + "[runways]\nairport = \"airport.toml\"\n";
+    for (const std::string& bad :
+         {scene.settings() + "[lights]\n", with_runways + "[lights]\nlevel = 16\n",
+          with_runways + "[lights]\nlevel = -1\n", with_runways + "[lights]\nlevel = 15.0\n",
+          with_runways + "[lights]\nlevle = 15\n", "lights = true\n" + with_runways}) {
+        EXPECT_FALSE(parse_settings(bad, "settings.toml", scene.dir).settings.has_value()) << bad;
     }
+    const auto root =
+        parse_settings(with_runways + "[lights]\nlevel = 15\n", "settings.toml", scene.dir);
+    ASSERT_TRUE(root.settings.has_value()) << root.errors[0];
+    EXPECT_EQ(root.settings->lights->level, Scene::kRoot);
 }
 
 // Placements (milestone 4 step 4, D-026): a box set at an angle on sloping

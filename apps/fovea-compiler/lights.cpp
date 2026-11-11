@@ -342,8 +342,13 @@ bool bake_lights(std::span<const RunwaySurface> runways, const std::filesystem::
             const Geodetic g = surface.to_geodetic(light.at);
             const TileKey key = tile_at(g.lat_deg, g.lon_deg, level);
             const auto ground = heights.at(g.lat_deg, g.lon_deg);
-            if (!manifest.has_tile(key) || !ground) {
+            if (!manifest.has_tile(key)) {
                 errors.push_back("runway " + rw.name + ": a light is outside the database");
+                return false;
+            }
+            if (!ground) {
+                errors.push_back("runway " + rw.name +
+                                 ": no finest-level tile reads under a light");
                 return false;
             }
             // One a hair under 360 that rounds to it as a float is 0.
