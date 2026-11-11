@@ -104,4 +104,5 @@ Modules are compiled in behind stable interfaces and enabled through config. Don
 - Never commit terrain databases or raw source data. Commit source manifests, download scripts and compiler settings instead.
 - Keep a data attribution file listing each source, its license and any required notice.
 - Win32-only APIs belong only in the thin platform layer, with one exception: the UDP socket file in `libs/net` (`udp_socket.cpp`, D-014) uses Winsock.
+- Keep `README.md` and `docs/integration-guide.md` current: a pull request that changes what a user or a host sees (commands, config keys, CIGI packets handled, HAT/HOT, database layers, status) updates them in the same pull request.
 - `main` is the default branch: do work on feature branches, merged by pull request, never directly on `main`. GitHub branch protection (since 2026-11-06, when the repository went public) requires a pull request, blocks force pushes and deletion, and keeps history linear; no approval or status checks are required. Pushes that change only Markdown, `docs/` or a license file skip CI; a newer push to a pull request cancels its older CI run.
