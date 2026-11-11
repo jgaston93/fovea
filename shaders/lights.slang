@@ -164,12 +164,17 @@ LightVertex vs_lights(uint id: SV_VulkanVertexID) {
     const float through = air * band_transmittance(mu, dist);
 
     // Its pixels: at least one, or as many as a 0.4 m fixture covers, the
-    // light shared among them. A pixel off the view's axis spans less of
-    // the view (cos^3 of the angle off it, cos = w / dist), so a light
-    // shows the same on either side of a seam between displays.
+    // light shared among them. A whole number across: a point covers the
+    // pixel centres inside it, so a fractional size would light 1, 2 or 4
+    // pixels as it moves and its light would swing with them. At most 16:
+    // a point leaves the view whole when its centre does. A pixel off the
+    // view's axis spans less of the view (cos^3 of the angle off it, cos =
+    // w / dist), so a light shows the same on either side of a seam
+    // between displays.
     const float off_axis = o.position.w / dist;
     const float pixel = push.pixel_angle * off_axis * sqrt(off_axis);
-    const float size = clamp(0.4 / (dist * pixel), 1.0, push.max_size);
+    const float size =
+        floor(clamp(0.4 / (dist * pixel), 1.0, min(push.max_size, 16.0)) + 0.5);
     o.size = size;
     o.round = size > 2.5 ? 1.0 : 0.0;
     const float area = size * size * (o.round > 0.5 ? 0.785398 : 1.0);
@@ -181,12 +186,14 @@ LightVertex vs_lights(uint id: SV_VulkanVertexID) {
     // is a pixel's nearest, and seen at a grazing angle a pixel of ground
     // reaches far nearer than its middle (from 6 m up, a pixel at 450 m
     // spans 380 to 550 m). Its reach toward the eye, over the light's own
-    // ground: the pixel's width over the sine of the angle the eye looks
-    // down at it (from the light, the eye's elevation); and far off the
-    // ground may be drawn coarse, a little above it. No more than half the
-    // way: a hill between the eye and the light still hides it.
-    const float grazing = 2.0 * size * dist * pixel / max(elevation, 1e-3);
-    const float margin = min(1.0 + 0.02 * dist + grazing, 0.5 * dist);
+    // ground: about the pixel's width over the sine of the angle the eye
+    // looks down at it (from the light, the eye's elevation), twice the
+    // half that lies nearer; and far off the ground may be drawn coarse,
+    // a little above it. At most a quarter of the way: what stands in the
+    // nearer three quarters (a hill, a hangar) hides the light, and what
+    // stands closer to it than that, seen from low, may not.
+    const float grazing = size * dist * pixel / max(elevation, 1e-3);
+    const float margin = min(1.0 + 0.02 * dist + grazing, 0.25 * dist);
     const float4 nearer = mul(push.ecef_to_clip, float4(rel * (1.0 - margin / dist), 1.0));
     o.position.z = min(nearer.z / nearer.w, 1.0) * o.position.w;  // not past the near plane
     return o;
