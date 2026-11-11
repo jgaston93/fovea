@@ -414,14 +414,23 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
         s.placements = std::move(pl);
     }
 
-    if (const auto lights = root["lights"]; lights.is_table()) {
+    if (const auto lights = root["lights"]; lights && !lights.is_table()) {
+        error(lights.node()->source(), "[lights] is a table");
+    } else if (lights) {
         CompileSettings::Lights li;
+        // A misspelt key would be ignored, leaving its default.
+        for (const auto& [key, value] : *lights.node()->as_table()) {
+            if (key.str() != "level") {
+                error(value.source(), "[lights] has no key '" + std::string(key.str()) + "'");
+            }
+        }
         if (s.runways.empty()) {
             error(lights.node()->source(), "[lights] needs [runways] to lay them out on");
         }
         // As placements (#48): the runtime will draw the root tiles' first.
         if (const auto* l = lights.node()->as_table()->get("level")) {
-            const auto level = l->value<std::int64_t>();
+            // An integer: value<> would take 15.0 too.
+            const auto level = l->is_integer() ? l->value<std::int64_t>() : std::nullopt;
             if (!level || *level != s.root_level) {
                 error(l->source(), "[lights] level must be the root level, for now");
             } else {
