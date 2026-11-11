@@ -1676,7 +1676,7 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
     // order).
     begin_pass(cmd, t.view, t.extent, t.depth_view, VK_ATTACHMENT_LOAD_OP_LOAD,
                VK_ATTACHMENT_STORE_OP_NONE, VK_ATTACHMENT_LOAD_OP_LOAD);
-    stars->record(cmd, view, sky, t.extent, lighting_offset(slot, i));
+    stars->record(cmd, view, sky, lighting_offset(slot, i));
     if (terrain) {
         terrain->draw_lights(cmd, view, t.extent, lighting_offset(slot, i));
     }

@@ -1,8 +1,8 @@
 // Airport lights (milestone 6 step 8, D-033): the database's lights layer,
 // drawn after the resolve into the HDR target as points at least a pixel
 // across (D-028: a light smaller than a pixel isn't multisampled), tested
-// against the resolved depth. Each puts its illuminance at the eye into its
-// pixels: its intensity toward the eye by its beam, over the distance
+// against the resolved depth. Each shows by its illuminance at the eye
+// (include/points.slang): its intensity toward the eye by its beam, over the distance
 // squared, through the air, the fog, rain and snow. Its colour is the one
 // the layer gives for the side the eye is on, and a PAPI unit's is white
 // above its angle and red below.
@@ -15,6 +15,7 @@
 #include "include/atmosphere.slang"
 #define FRAME_SET 1
 #include "include/frame.slang"
+#include "include/points.slang"
 [[vk::binding(3, 1)]] ConstantBuffer<Atmosphere> atmosphere;
 
 // Mirrors GpuLight in lights.cpp.
@@ -33,7 +34,6 @@ struct LightPush {
     float4x4 ecef_to_clip;  // the view's, for points relative to the eye
     float3 origin;          // the lights' origin relative to the eye
     float pixel_angle;      // a pixel's width on the view's axis, radians
-    float inv_pixel_solid_angle;
     float max_size;         // the largest point size the GPU draws, pixels
 };
 [[vk::push_constant]] ConstantBuffer<LightPush> push;
@@ -90,7 +90,7 @@ float lift_m(uint type) {
 struct LightVertex {
     float4 position : SV_Position;
     float size : SV_PointSize;
-    [[vk::location(0)]] float3 colour;  // its radiance in each of its pixels, before exposure
+    [[vk::location(0)]] float3 colour;  // its illuminance at the eye over its pixels, before exposure
     [[vk::location(1)]] nointerpolation float round;  // 1: a disc, 0: the whole square
 };
 
@@ -169,8 +169,8 @@ LightVertex vs_lights(uint id: SV_VulkanVertexID) {
     // pixels as it moves and its light would swing with them. At most 16:
     // a point leaves the view whole when its centre does. A pixel off the
     // view's axis spans less of the view (cos^3 of the angle off it, cos =
-    // w / dist), so a light shows the same on either side of a seam
-    // between displays.
+    // w / dist): the size follows it, so a light covers the same on either
+    // side of a seam between displays.
     const float off_axis = o.position.w / dist;
     const float pixel = push.pixel_angle * off_axis * sqrt(off_axis);
     const float size =
@@ -178,8 +178,7 @@ LightVertex vs_lights(uint id: SV_VulkanVertexID) {
     o.size = size;
     o.round = size > 2.5 ? 1.0 : 0.0;
     const float area = size * size * (o.round > 0.5 ? 0.785398 : 1.0);
-    o.colour = tint * lux * kUnitsPerLux * through * push.inv_pixel_solid_angle /
-               (off_axis * off_axis * off_axis * area);
+    o.colour = tint * lux * kUnitsPerLux * through / area;
 
     // Tested against the terrain nearer than it stands, moved along the
     // line to the eye so it stays on the same pixels: the resolved depth
@@ -205,5 +204,5 @@ float4 fs_lights(LightPixel i) : SV_Target {
         discard;
     }
     const ViewSky s = view_sky[lighting.view];
-    return float4(min(i.colour * s.exposure, float3(60000.0)), 0.0);
+    return float4(point_radiance(i.colour * s.exposure), 0.0);
 }
