@@ -8,6 +8,14 @@
 // about 4.5 times dimmer, and only points at least as bright as the white
 // point reach white. The light is exposed first (D-031), so by day it's
 // lost against the sky as before.
+//
+// - A point over several pixels shows by its light over each, as a
+//   surface does once it's seen whole: growing from one pixel to four, it
+//   shows larger, each pixel a little dimmer, not a quarter as bright.
+// - Points add where they overlap, and over a lit background, so two
+//   together show brighter than the curve would give their sum.
+// - The reference scene's `exposure_ev` scales the tone map's input after
+//   this, so away from 0 it bends the curve.
 
 // The exposed illuminance (illuminance in the scene's units times the
 // exposure) at which a point shows white: about what a runway edge light
