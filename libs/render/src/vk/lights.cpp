@@ -172,8 +172,7 @@ void LightsGpu::record(VkCommandBuffer cmd, const SceneView& view, VkExtent2D ex
     LightPush push;
     push.ecef_to_clip = view.ecef_to_clip;
     push.origin = floats(origin_ - view.eye_ecef);
-    push.pixel_angle =
-        static_cast<float>(std::sqrt(pixel_solid_angle(view.ecef_to_clip, extent)));
+    push.pixel_angle = static_cast<float>(std::sqrt(pixel_solid_angle(view.ecef_to_clip, extent)));
     push.max_size = gpu_.max_point_size;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     const std::array<VkDescriptorSet, 2> sets = {set_, gpu_.frame_set};
