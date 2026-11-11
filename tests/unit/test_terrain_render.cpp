@@ -72,6 +72,8 @@ struct Spec {
     // models/.
     std::vector<Placement> placements;
     std::vector<std::pair<std::string, std::vector<std::uint8_t>>> models;
+    // Airport lights (milestone 6 step 8): in the root tile too.
+    std::vector<TileLight> lights;
 };
 
 fs::path write_db(const std::string& name, const Spec& s) {
@@ -145,11 +147,17 @@ fs::path write_db(const std::string& name, const Spec& s) {
             if (lv == s.root && !s.placements.empty()) {
                 tile.layers.push_back(*encode_placements(s.placements));
             }
+            if (lv == s.root && !s.lights.empty()) {
+                tile.layers.push_back(*encode_lights(s.lights));
+            }
             EXPECT_TRUE(write_tile(dir / tile_path(key), tile));
         }
     }
     if (!s.placements.empty()) {
         m.placements = DatabaseManifest::Placements{s.root};
+    }
+    if (!s.lights.empty()) {
+        m.lights = DatabaseManifest::Lights{s.root};
     }
     for (const auto& [model, bytes] : s.models) {
         EXPECT_TRUE(write_bytes_atomically(dir / model_path(model), bytes));
@@ -1024,6 +1032,154 @@ TEST(TerrainRender, AFogLayerHidesWhatIsInItAndNotWhatIsAbove) {
         const double b = brightness(foggy, kSize, on_post(up));
         std::printf("%.0f m up the post: clear %.0f, fog %.0f\n", up, a, b);
         EXPECT_NEAR(a, b, 3.0) << "fog above its top";
+    }
+}
+
+// Airport lights (milestone 6 step 8, D-033): at night, from a database's
+// lights layer, each drawn where its point projects, at least a pixel,
+// dimmer with distance and through fog, and the colour its side shows: a
+// threshold light green to an aircraft landing over it, red beyond it
+// (AC 150/5340-30J 2.3.2), and a PAPI unit white above its angle and red
+// below.
+std::vector<std::uint8_t> draw_lights(const fs::path& dir, const SceneView& v, std::uint32_t size,
+                                      std::span<const WeatherLayer> layers = {},
+                                      std::size_t lights = 0) {
+    auto r = make_renderer(size, size);
+    if (!r) {
+        return {};
+    }
+    r->set_sky(sky_bodies(julian_date(2026, 6, 21, 5.0 * 3600.0)));  // midnight at KHSV
+    r->set_weather(layers);
+    const TerrainLoad load = r->load_terrain(open_db(dir));
+    EXPECT_EQ(load.lights, lights);
+    (void)settle(*r, {v});
+    EXPECT_EQ(r->validation_messages(), 0U);
+    return r->read_back_rgba(0);
+}
+
+// The brightest pixel within `reach` of `at`, and its place.
+std::pair<glm::ivec2, double> brightest_near(const std::vector<std::uint8_t>& px, std::uint32_t w,
+                                             glm::dvec2 at, int reach) {
+    std::pair<glm::ivec2, double> best{{0, 0}, -1.0};
+    for (int y = static_cast<int>(at.y) - reach; y <= static_cast<int>(at.y) + reach; ++y) {
+        for (int x = static_cast<int>(at.x) - reach; x <= static_cast<int>(at.x) + reach; ++x) {
+            if (x < 0 || y < 0 || x >= static_cast<int>(w) || y >= static_cast<int>(w)) {
+                continue;
+            }
+            const double b = brightness(px, w, {x + 0.5, y + 0.5});
+            if (b > best.second) {
+                best = {{x, y}, b};
+            }
+        }
+    }
+    return best;
+}
+
+TEST(TerrainRender, AirportLightsShowAtNightWhereAndAsTheyShould) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    const DMat3 ned = ned_to_ecef(lat0, lon0);
+    const DVec3 base = geodetic_to_ecef({lat0, lon0, 120.0});
+    const auto at = [&](double north_m, double east_m) {
+        return ecef_to_geodetic(base + ned * DVec3(north_m, east_m, 0.0));
+    };
+    using enum LightColour;
+    const auto light = [&](double north_m, double east_m, LightType type,
+                           std::array<LightColour, 2> colour, float papi = 0.0F) {
+        const Geodetic g = at(north_m, east_m);
+        return TileLight{g.lat_deg, g.lon_deg, 120.0, 0.0F, papi, type, colour};
+    };
+    // A runway heading north: a threshold light at the origin, white edge
+    // lights 400 m to 3.2 km on, and a PAPI unit beside it at 3 degrees.
+    s.lights = {light(0.0, 0.0, LightType::threshold, {green, red}),
+                light(400.0, 0.0, LightType::edge, {white, white}),
+                light(800.0, 0.0, LightType::edge, {white, white}),
+                light(1600.0, 0.0, LightType::edge, {white, white}),
+                light(3200.0, 0.0, LightType::edge, {white, white}),
+                light(250.0, -30.0, LightType::papi, {red, none}, 3.0F)};
+    const fs::path dir = write_db("lights", s);
+    constexpr std::uint32_t kSize = 128;
+    // Where a light shows: its point, lifted as an elevated fixture stands
+    // (lights.slang), the brightest pixel within one of it, its colour,
+    // and how many pixels around it are lit.
+    struct Seen {
+        glm::dvec2 expected;
+        glm::ivec2 at;
+        std::array<double, 3> colour;
+        int lit = 0;
+    };
+    const auto seen = [&](const std::vector<std::uint8_t>& image, const SceneView& v,
+                          std::size_t i) {
+        const TileLight& l = s.lights[i];
+        Seen r;
+        r.expected = project(v, {l.lat_deg, l.lon_deg, l.height_m + 0.35}, kSize, kSize);
+        r.at = brightest_near(image, kSize, r.expected, 1).first;
+        r.colour = colour_at(image, kSize, r.at.x, r.at.y);
+        for (int y = r.at.y - 4; y <= r.at.y + 4; ++y) {
+            for (int x = r.at.x - 4; x <= r.at.x + 4; ++x) {
+                r.lit += x >= 0 && y >= 0 && x < int{kSize} && y < int{kSize} &&
+                         brightness(image, kSize, {x + 0.5, y + 0.5}) > 120.0;
+            }
+        }
+        std::printf("light %zu: at %.1f, %.1f, brightest %d, %d (%.0f %.0f %.0f), %d lit\n", i,
+                    r.expected.x, r.expected.y, r.at.x, r.at.y, r.colour[0], r.colour[1],
+                    r.colour[2], r.lit);
+        return r;
+    };
+    const auto sum = [](const std::array<double, 3>& c) { return c[0] + c[1] + c[2]; };
+
+    // From 300 m south of the threshold, 40 m up, looking north: each
+    // light within a pixel of its point, bright on the dark ground.
+    const SceneView south = view_at(at(-300.0, 0.0), 40.0, -2.0, 0.0, 10.0);
+    const auto px = draw_lights(dir, south, kSize, {}, s.lights.size());
+    if (px.empty()) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    EXPECT_LT(brightness(px, kSize, {64.5, 120.5}), 30.0) << "the ground isn't dark";
+    std::array<Seen, 6> clear;
+    for (std::size_t i = 0; i < s.lights.size(); ++i) {
+        clear[i] = seen(px, south, i);
+        EXPECT_LE(std::abs(clear[i].at.x + 0.5 - clear[i].expected.x), 1.0) << i;
+        EXPECT_LE(std::abs(clear[i].at.y + 0.5 - clear[i].expected.y), 1.0) << i;
+        EXPECT_GT(sum(clear[i].colour), 400.0) << i;
+    }
+    // The threshold light green, landing over it (AC 150/5340-30J 2.3.2);
+    // the PAPI unit white, 4.2 degrees above it.
+    EXPECT_GT(clear[0].colour[1], clear[0].colour[0] + 100.0);
+    EXPECT_GT(std::min({clear[5].colour[0], clear[5].colour[1], clear[5].colour[2]}), 200.0);
+
+    // Beyond the threshold, looking back south: red.
+    const SceneView north = view_at(at(300.0, 0.0), 40.0, -5.0, 180.0, 10.0);
+    const Seen back = seen(draw_lights(dir, north, kSize, {}, s.lights.size()), north, 0);
+    EXPECT_GT(back.colour[0], back.colour[1] + 100.0);
+    // 8 m up, 0.8 degrees above the PAPI unit: red.
+    const SceneView low = view_at(at(-300.0, 0.0), 8.0, 0.0, 0.0, 10.0);
+    const Seen under = seen(draw_lights(dir, low, kSize, {}, s.lights.size()), low, 5);
+    EXPECT_GT(under.colour[0], under.colour[1] + 100.0);
+
+    // 30 m from the threshold light: several pixels, where far lights
+    // are one or two.
+    const SceneView near = view_at(at(-30.0, 0.0), 3.0, -3.0, 0.0, 10.0);
+    const Seen close = seen(draw_lights(dir, near, kSize, {}, s.lights.size()), near, 0);
+    EXPECT_GE(close.lit, 9);
+    EXPECT_LE(clear[4].lit, 2);
+
+    // Through fog from 100 to 160 m up, 800 m visibility: the farther a
+    // light, the dimmer; the farthest, 3.5 km off, lost.
+    const std::array<WeatherLayer, 1> fog = {
+        WeatherLayer{WeatherKind::fog, 100.0, 60.0, 1.0, 800.0}};
+    const auto foggy = draw_lights(dir, south, kSize, fog, s.lights.size());
+    std::array<double, 5> through{};
+    for (std::size_t i = 1; i <= 4; ++i) {
+        through[i] = sum(seen(foggy, south, i).colour);
+    }
+    EXPECT_LT(through[3], sum(clear[3].colour) - 100.0);
+    EXPECT_GE(through[2], through[3]);
+    EXPECT_GT(through[3], through[4] + 200.0);
+    EXPECT_LT(through[4], 60.0);
+    if (const char* dump = std::getenv("FOVEA_DUMP_LIGHTS")) {
+        (void)write_bytes_atomically(dump, encode_png(RgbaImage{kSize, kSize, px}));
     }
 }
 

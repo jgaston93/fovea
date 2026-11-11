@@ -282,6 +282,7 @@ struct PreparedTile {
     ImageryImage imagery;
     std::array<Control, std::size_t{kControls} * kControls> controls{};
     std::vector<Placement> placements;  // in a tile at the placements' level
+    std::vector<TileLight> lights;      // in a tile at the lights' level
 };
 
 struct PrepareContext {
@@ -291,6 +292,7 @@ struct PrepareContext {
     bool bc1 = false;
     float max_root_error = 0.0F;  // skirts hang a tile's error and this, and a metre
     int placement_level = -1;     // whose tiles hold placements (none: -1)
+    int light_level = -1;         // whose tiles hold airport lights (none: -1)
 };
 
 std::size_t align16(std::size_t n) {
@@ -360,6 +362,16 @@ PreparedTile prepare_tile(const TerrainDatabase& db, const TileKey& key, const P
             } else {
                 p.problem += (p.problem.empty() ? "" : "; ") + to_string(key) +
                              ": its placements layer doesn't decode";
+            }
+        }
+    }
+    if (static_cast<int>(key.level) == c.light_level) {
+        if (const TileLayer* ll = read.tile->find(kLightsLayer)) {
+            if (auto lit = decode_lights(*ll)) {
+                p.lights = std::move(*lit);
+            } else {
+                p.problem += (p.problem.empty() ? "" : "; ") + to_string(key) +
+                             ": its lights layer doesn't decode";
             }
         }
     }
@@ -888,6 +900,10 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
     if (m.placements && m.placements->level == m.levels.front().level) {
         ctx.placement_level = m.placements->level;
     }
+    // Lights likewise (milestone 6 step 8).
+    if (m.lights && m.lights->level == m.levels.front().level) {
+        ctx.light_level = m.lights->level;
+    }
 
     t->cache_ = std::make_unique<TileCache>(capacity, options.budget_bytes);
     t->heights_.resize(capacity);
@@ -1202,6 +1218,27 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
         }
     }
 
+    // The airport lights (milestone 6 step 8): from the roots too.
+    if (m.lights && m.lights->level != top.level) {
+        report.problems.push_back("lights at level " + std::to_string(m.lights->level) +
+                                  ", not the roots' (" + std::to_string(top.level) +
+                                  "): not drawn yet");
+    }
+    std::vector<TileLight> lights;
+    for (PreparedTile& p : roots) {
+        lights.insert(lights.end(), p.lights.begin(), p.lights.end());
+    }
+    if (!lights.empty()) {
+        // Optional like the models: the terrain draws without them.
+        try {
+            t->lights_ = std::make_unique<LightsGpu>(
+                gpu, lights, colour, depth, shaders.lights_vertex, shaders.lights_fragment);
+            report.lights = lights.size();
+        } catch (const std::exception& e) {
+            report.problems.push_back(std::string("lights: ") + e.what() + " (none drawn)");
+        }
+    }
+
     report.tiles = roots.size();
     report.seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -1437,6 +1474,13 @@ void TerrainGpu::draw(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t out
     if (models_) {
         stats_.placements_drawn +=
             models_->record(cmd, slot, o, view, lighting_offset, stats_.placements_dropped);
+    }
+}
+
+void TerrainGpu::draw_lights(VkCommandBuffer cmd, const SceneView& view, VkExtent2D extent,
+                             std::uint32_t lighting_offset) {
+    if (lights_) {
+        lights_->record(cmd, view, extent, lighting_offset);
     }
 }
 

@@ -10,6 +10,7 @@ add_library(fovea_render STATIC
     src/terrain_cache.cpp
     src/terrain_lod.cpp
     src/view.cpp
+    src/vk/lights.cpp
     src/vk/models.cpp
     src/vk/overlay_ui.cpp
     src/vk/renderer.cpp
@@ -70,5 +71,8 @@ fovea_add_shader(fovea_render "${sky_shader}" cs_aerial compute kCsAerial)
 # The stars (milestone 6 step 4).
 fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/stars.slang" vs_stars vertex kVsStars)
 fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/stars.slang" fs_stars fragment kFsStars)
+# The airport lights (milestone 6 step 8).
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/lights.slang" vs_lights vertex kVsLights)
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/lights.slang" fs_lights fragment kFsLights)
 # Just the generated shader headers: what clang-tidy needs from a build.
 add_custom_target(fovea_shaders DEPENDS ${FOVEA_SHADER_HEADERS})

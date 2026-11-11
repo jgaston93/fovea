@@ -16,11 +16,12 @@ Fovea is in active development. The first database covers Huntsville Internation
 - **Terrain:** streamed with levels of detail, with smoothed runways and placed glTF landmarks.
 - **Image quality:** MSAA.
 - **Sky and light:** physically based sky and aerial perspective, sun, moon and stars at any date and time, shadows, and lit windows at night.
+- **Airport lights:** runway edge, threshold and end, centreline and touchdown zone lights and PAPIs, laid out from the FAA's data and standard (AC 150/5340-30J) and drawn as points with their colours by side and through the air and fog.
 - **Weather:** visibility and ground fog.
 - **Host control:** a host drives the eyepoint, time and weather over CIGI, and asks for terrain heights (HAT/HOT).
 
 **Next:**
-- **Airport lights:** they are laid out in the database and are being drawn next.
+- **Airport lights:** approach lighting systems (MALSR, ALSF-2), whose layouts are in FAA JO 6850.2, and the fixtures' photometry from AC 150/5345-46 in place of today's approximate intensities.
 - **Later:** cloud layers (#73), entities and the rest, as the [milestones](docs/fovea-plan.md#milestones) order them.
 
 Each milestone's record is in `docs/milestone-*.md`. Open work is in the GitHub issues.
