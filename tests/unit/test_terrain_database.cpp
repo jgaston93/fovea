@@ -332,11 +332,15 @@ TEST(TileFile, LightsLayerRoundTripsAndRefusesNonsense) {
     }
     // Nor read: a good layer changed after it was written.
     const TileLayer one = *encode_lights({&ok, 1});
-    for (const auto& [at, value] : std::vector<std::pair<std::size_t, std::uint8_t>>{
-             {4 + 32, 5}, {4 + 33, 5}, {4 + 34, 9}, {4 + 35, 1}}) {
+    struct Byte {
+        std::size_t at;
+        std::uint8_t value;
+    };
+    // The type, the colours (each out of range) and the zero byte.
+    for (const Byte& b : {Byte{36, 5}, Byte{37, 5}, Byte{38, 9}, Byte{39, 1}}) {
         TileLayer bad = one;
-        bad.data[at] = value;
-        EXPECT_FALSE(decode_lights(bad).has_value()) << at;
+        bad.data[b.at] = b.value;
+        EXPECT_FALSE(decode_lights(bad).has_value()) << b.at;
     }
     TileLayer v2 = layer;
     v2.format = 2;
