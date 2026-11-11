@@ -12,6 +12,7 @@
 //     CRC-32 of the data u32, data offset u64, data size u64, 8 zero bytes
 //   layer data, each starting on an 8-byte boundary
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -153,5 +154,47 @@ std::optional<TileLayer> encode_placements(std::span<const Placement> placements
 // Nothing if malformed: a bad name, a point or heading out of range, or
 // bytes left over.
 std::optional<std::vector<Placement>> decode_placements(const TileLayer& layer);
+
+// The lights layer (D-033): airport lights in the tile, each a point on
+// the ground (an ellipsoidal height: the finest level's, as the compiler
+// found it), its system, and the colour it shows each way along its
+// runway: colour[0] to an aircraft travelling on `heading_deg` (from the
+// runway's first end toward its second), colour[1] to one travelling the
+// other way. A PAPI unit is white above its angle and red below.
+//   data: count u32, then each (36 bytes): latitude f64, longitude f64,
+//   height f64, heading f32 (degrees clockwise from true north), PAPI
+//   angle f32 (degrees above level; 0 for other lights), type u8, colours
+//   u8 x 2, 1 zero byte.
+inline constexpr std::string_view kLightsLayer = "lights";
+inline constexpr std::uint32_t kLightsV1 = 1;
+
+enum class LightColour : std::uint8_t { none = 0, white = 1, yellow = 2, red = 3, green = 4 };
+
+enum class LightType : std::uint8_t {
+    edge = 0,       // and edge lights at a displaced threshold
+    threshold = 1,  // threshold and runway end lights
+    centreline = 2,
+    touchdown_zone = 3,
+    papi = 4,
+};
+
+struct TileLight {
+    double lat_deg = 0.0;
+    double lon_deg = 0.0;
+    double height_m = 0.0;
+    float heading_deg = 0.0F;
+    float papi_angle_deg = 0.0F;
+    LightType type = LightType::edge;
+    std::array<LightColour, 2> colour{};
+};
+
+// A point on the Earth, a finite height within 100 km of the ellipsoid, a
+// heading from 0 up to 360, a known type and colours, lit at least one
+// way, and a PAPI angle from 0 up to 90 (0 unless a PAPI).
+bool valid_light(const TileLight& light);
+// Nothing if any light isn't valid (the reader would refuse the layer).
+std::optional<TileLayer> encode_lights(std::span<const TileLight> lights);
+// Nothing if malformed: a value out of range, or bytes left over.
+std::optional<std::vector<TileLight>> decode_lights(const TileLayer& layer);
 
 }  // namespace fovea

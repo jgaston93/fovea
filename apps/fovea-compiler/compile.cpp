@@ -613,6 +613,16 @@ CompileResult compile(const CompileSettings& s, unsigned jobs,
         m.placements = DatabaseManifest::Placements{level};
         result.placements = report;
     }
+    if (s.lights) {
+        const std::uint8_t level = s.lights->level.value_or(s.root_level);
+        LightsReport report;
+        if (!bake_lights(runways, part, m, level, s.finest_level, report, result.errors)) {
+            fs::remove_all(part, ec);
+            return result;
+        }
+        m.lights = DatabaseManifest::Lights{level};
+        result.lights = std::move(report);
+    }
     if (!write_manifest(part, m)) {
         return fail((part / "manifest.toml").string() + ": cannot write");
     }

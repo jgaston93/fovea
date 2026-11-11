@@ -23,6 +23,7 @@
 #include <string>
 #include <vector>
 
+#include "fovea/core/geodesy.hpp"
 #include "fovea/core/math.hpp"
 #include "fovea/terrain/tile_key.hpp"
 
@@ -83,6 +84,12 @@ public:
     bool touches(const GeoBounds& b) const;
     const GeoBounds& reach() const { return reach_; }
     RunwayPoint to_runway(double lat_deg, double lon_deg) const;
+    // A point of the runway's frame (on the ellipsoid, height 0).
+    Geodetic to_geodetic(const RunwayPoint& p) const;
+    // The true heading of the runway, from its first end toward its
+    // second, at a point near it: degrees clockwise from north, from 0 up
+    // to 360.
+    double heading_deg(double lat_deg, double lon_deg) const;
     // The fitted surface (ellipsoidal) at a point of the rectangle; points
     // outside take its nearest point's.
     double surface(double along_m, double across_m) const;

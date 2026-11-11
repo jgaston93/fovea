@@ -84,6 +84,9 @@ std::string manifest_text(const DatabaseManifest& m) {
     if (m.placements) {
         s << "\n[layers.placements]\nlevel = " << int{m.placements->level} << "\n";
     }
+    if (m.lights) {
+        s << "\n[layers.lights]\nlevel = " << int{m.lights->level} << "\n";
+    }
     for (const SourceInfo& src : m.sources) {
         s << "\n[[source]]\nlayer = " << toml_string(src.layer)
           << "\nname = " << toml_string(src.name) << "\ncredit = " << toml_string(src.credit)
@@ -173,6 +176,14 @@ ManifestResult parse_manifest(const std::string& text, const std::string& source
             error(placements->source(), "[layers.placements] needs level from 0 to 30");
         } else {
             m.placements = DatabaseManifest::Placements{static_cast<std::uint8_t>(*level)};
+        }
+    }
+    if (const auto* lights = root["layers"]["lights"].as_table()) {
+        const auto level = (*lights)["level"].value<std::int64_t>();
+        if (!level || *level < 0 || *level > kMaxTileLevel) {
+            error(lights->source(), "[layers.lights] needs level from 0 to 30");
+        } else {
+            m.lights = DatabaseManifest::Lights{static_cast<std::uint8_t>(*level)};
         }
     }
     if (const auto* list = root["source"].as_array()) {

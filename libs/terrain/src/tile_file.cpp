@@ -19,6 +19,7 @@ constexpr std::size_t kNameSize = 16;
 // More layers than any tile will hold: a damaged count can't make the
 // reader allocate gigabytes.
 constexpr std::uint32_t kMaxLayers = 256;
+constexpr std::size_t kLightSize = 36;  // the lights layer's, each
 
 // Little-endian on every machine.
 template <typename T>
@@ -419,6 +420,72 @@ std::optional<std::vector<Placement>> decode_placements(const TileLayer& l) {
     }
     if (at != in.size()) {
         return std::nullopt;
+    }
+    return out;
+}
+
+bool valid_light(const TileLight& l) {
+    const auto known = [](LightColour c) { return c <= LightColour::green; };
+    const bool papi = l.type == LightType::papi;
+    // NaNs fail every comparison: each is checked for first.
+    return !std::isnan(l.lat_deg) && std::abs(l.lat_deg) <= 90.0 && !std::isnan(l.lon_deg) &&
+           std::abs(l.lon_deg) <= 180.0 && std::isfinite(l.height_m) &&
+           std::abs(l.height_m) < 1e5 && !std::isnan(l.heading_deg) && l.heading_deg >= 0.0F &&
+           l.heading_deg < 360.0F && l.type <= LightType::papi && known(l.colour[0]) &&
+           known(l.colour[1]) &&
+           (l.colour[0] != LightColour::none || l.colour[1] != LightColour::none) &&
+           !std::isnan(l.papi_angle_deg) &&
+           (papi ? l.papi_angle_deg >= 0.0F && l.papi_angle_deg < 90.0F : l.papi_angle_deg == 0.0F);
+}
+
+std::optional<TileLayer> encode_lights(std::span<const TileLight> lights) {
+    if (!std::all_of(lights.begin(), lights.end(), valid_light)) {
+        return std::nullopt;
+    }
+    TileLayer l;
+    l.name = std::string(kLightsLayer);
+    l.format = kLightsV1;
+    l.data.assign(4 + lights.size() * kLightSize, 0);
+    put(l.data, 0, static_cast<std::uint32_t>(lights.size()));
+    std::size_t at = 4;
+    for (const TileLight& t : lights) {
+        put(l.data, at, t.lat_deg);
+        put(l.data, at + 8, t.lon_deg);
+        put(l.data, at + 16, t.height_m);
+        put(l.data, at + 24, t.heading_deg);
+        put(l.data, at + 28, t.papi_angle_deg);
+        l.data[at + 32] = static_cast<std::uint8_t>(t.type);
+        l.data[at + 33] = static_cast<std::uint8_t>(t.colour[0]);
+        l.data[at + 34] = static_cast<std::uint8_t>(t.colour[1]);
+        at += kLightSize;
+    }
+    return l;
+}
+
+std::optional<std::vector<TileLight>> decode_lights(const TileLayer& l) {
+    if (l.format != kLightsV1 || l.data.size() < 4) {
+        return std::nullopt;
+    }
+    const std::span<const std::uint8_t> in(l.data);
+    const auto count = get<std::uint32_t>(in, 0);
+    // Checked before reserving: a damaged count can't allocate gigabytes.
+    if ((in.size() - 4) % kLightSize != 0 || (in.size() - 4) / kLightSize != count) {
+        return std::nullopt;
+    }
+    std::vector<TileLight> out(count);
+    std::size_t at = 4;
+    for (TileLight& t : out) {
+        t.lat_deg = get<double>(in, at);
+        t.lon_deg = get<double>(in, at + 8);
+        t.height_m = get<double>(in, at + 16);
+        t.heading_deg = get<float>(in, at + 24);
+        t.papi_angle_deg = get<float>(in, at + 28);
+        t.type = static_cast<LightType>(in[at + 32]);
+        t.colour = {static_cast<LightColour>(in[at + 33]), static_cast<LightColour>(in[at + 34])};
+        if (!valid_light(t) || in[at + 35] != 0) {
+            return std::nullopt;
+        }
+        at += kLightSize;
     }
     return out;
 }

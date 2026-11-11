@@ -59,6 +59,8 @@ struct SourceInfo {
 //   [layers.imagery] format = "bc7", texels = 512  (if the database has imagery)
 //   [layers.placements] level = 12   (if it has placements: in that level's
 //                                     tiles; their models in models/)
+//   [layers.lights] level = 12       (if it has airport lights: in that
+//                                     level's tiles)
 //   [[source]] layer, name, credit          (any number)
 //   [[level]] level, x = [first, last], y = [first, last]
 // Further layers (the geoid, D-020) add [layers.<name>] tables; a reader
@@ -80,6 +82,11 @@ struct DatabaseManifest {
         std::uint8_t level = 0;
     };
     std::optional<Placements> placements;
+    // The level whose tiles hold the airport lights (D-033).
+    struct Lights {
+        std::uint8_t level = 0;
+    };
+    std::optional<Lights> lights;
     // The frame its coordinates and heights are in (D-037): kDatabaseFrame,
     // the only one read. None: compiled before D-037, NAD83(2011) taken as
     // WGS-84, about a metre off.

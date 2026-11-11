@@ -16,22 +16,18 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
+#include <span>
 #include <string>
 #include <vector>
 
+#include "fovea/terrain/database.hpp"
+#include "fovea/terrain/tile_file.hpp"
 #include "runways.hpp"
 
 namespace fovea::compiler {
 
-enum class LightColour : std::uint8_t { none, white, yellow, red, green };
-
-enum class LightType : std::uint8_t {
-    edge,       // and edge lights at a displaced threshold
-    threshold,  // threshold and runway end lights
-    centreline,
-    touchdown_zone,
-    papi,
-};
+// LightColour and LightType are the lights layer's (tile_file.hpp).
 
 struct RunwayLight {
     RunwayPoint at;  // on the ground
@@ -51,5 +47,21 @@ struct RunwayLayout {
 
 // `length_m`: the runway's, between its ends (RunwaySurface::length_m).
 RunwayLayout layout_lights(const Runway& runway, double length_m);
+
+// What baking them did.
+struct LightsReport {
+    std::size_t lights = 0;
+    std::size_t tiles = 0;             // that hold some
+    std::vector<std::string> skipped;  // every runway's, as layout_lights gives them
+};
+
+// Lays out each runway's lights and bakes them into the lights layer of
+// the tiles at `level` holding them, in the database being built at `part`
+// (its finest level, `finest`, written already), each on the ground there
+// as built: a fixture's own height (centimetres) isn't added. Errors name
+// the runway: a light outside the database.
+bool bake_lights(std::span<const RunwaySurface> runways, const std::filesystem::path& part,
+                 const DatabaseManifest& manifest, std::uint8_t level, std::uint8_t finest,
+                 LightsReport& report, std::vector<std::string>& errors);
 
 }  // namespace fovea::compiler

@@ -4,6 +4,9 @@
 #include <cmath>
 #include <numbers>
 #include <span>
+#include <unordered_map>
+
+#include "finest_heights.hpp"
 
 namespace fovea::compiler {
 
@@ -324,6 +327,50 @@ RunwayLayout layout_lights(const Runway& runway, double length_m) {
         layout.unsupported(i);
     }
     return out;
+}
+
+bool bake_lights(std::span<const RunwaySurface> runways, const std::filesystem::path& part,
+                 const DatabaseManifest& manifest, std::uint8_t level, std::uint8_t finest,
+                 LightsReport& report, std::vector<std::string>& errors) {
+    FinestHeights heights(part, finest);
+    std::unordered_map<TileKey, std::vector<TileLight>> by_tile;
+    for (const RunwaySurface& surface : runways) {
+        const Runway& rw = surface.runway();
+        RunwayLayout layout = layout_lights(rw, surface.length_m());
+        report.skipped.insert(report.skipped.end(), layout.skipped.begin(), layout.skipped.end());
+        for (const RunwayLight& light : layout.lights) {
+            const Geodetic g = surface.to_geodetic(light.at);
+            const TileKey key = tile_at(g.lat_deg, g.lon_deg, level);
+            const auto ground = heights.at(g.lat_deg, g.lon_deg);
+            if (!manifest.has_tile(key) || !ground) {
+                errors.push_back("runway " + rw.name + ": a light is outside the database");
+                return false;
+            }
+            // One a hair under 360 that rounds to it as a float is 0.
+            auto heading = static_cast<float>(surface.heading_deg(g.lat_deg, g.lon_deg));
+            heading = heading >= 360.0F ? 0.0F : heading;
+            by_tile[key].push_back({g.lat_deg, g.lon_deg, *ground, heading,
+                                    static_cast<float>(light.papi_angle_deg), light.type,
+                                    light.colour});
+            ++report.lights;
+        }
+    }
+    for (const auto& [key, lights] : by_tile) {
+        const std::filesystem::path file = part / tile_path(key);
+        TileResult r = read_tile(file, key);
+        const auto layer = encode_lights(lights);
+        if (!r.tile || !layer) {
+            errors.push_back(file.string() + ": cannot add its lights");
+            return false;
+        }
+        r.tile->layers.push_back(*layer);
+        if (!write_tile(file, *r.tile)) {
+            errors.push_back(file.string() + ": cannot write");
+            return false;
+        }
+    }
+    report.tiles = by_tile.size();
+    return true;
 }
 
 }  // namespace fovea::compiler

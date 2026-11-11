@@ -28,6 +28,7 @@
 #include "fovea/core/geodesy.hpp"
 #include "fovea/terrain/database.hpp"
 #include "fovea/terrain/tile_file.hpp"
+#include "lights.hpp"
 #include "runways.hpp"
 #include "settings.hpp"
 #include "support/glb.hpp"
@@ -1117,6 +1118,51 @@ TEST(CompilerRunways, TheFitFollowsTheGradeAndTheCrownThroughNoiseAndBumps) {
     EXPECT_LT(runway_fit_error(*c, clean), 0.002);
 }
 
+// A runway's frame back on the Earth (D-033's lights): its points, and its
+// true heading where they are, which turns as the meridians converge.
+TEST(CompilerRunways, PointsAndHeadingsAreTheRunways) {
+    Runway rw = test_runway();
+    // 3 km toward the east-north-east.
+    rw.ends[1].lat_deg = kRunwayLat + 1000.0 / kMetresPerDegLat;
+    rw.ends[1].lon_deg = kRunwayLon + 2800.0 / kMetresPerDegLon;
+    const PointHeights flat = [](std::span<const double> lat, std::span<const double>,
+                                 std::vector<float>& out, std::string&) {
+        out.assign(lat.size(), 180.0F);
+        return true;
+    };
+    std::string error;
+    const auto s = RunwaySurface::fit(rw, 20.0, flat, error);
+    ASSERT_TRUE(s.has_value()) << error;
+    for (const RunwayPoint p :
+         {RunwayPoint{0.0, 0.0}, RunwayPoint{1234.5, -30.0}, RunwayPoint{s->length_m(), 22.86}}) {
+        const Geodetic g = s->to_geodetic(p);
+        const RunwayPoint back = s->to_runway(g.lat_deg, g.lon_deg);
+        EXPECT_NEAR(back.along_m, p.along_m, 1e-4);  // set down on the ellipsoid: micrometres
+        EXPECT_NEAR(back.across_m, p.across_m, 1e-4);
+    }
+    const Geodetic first = s->to_geodetic({0.0, 0.0});
+    EXPECT_NEAR(first.lat_deg, kRunwayLat, 1e-9);
+    EXPECT_NEAR(first.lon_deg, kRunwayLon, 1e-9);
+    // Each end's heading: the other end's direction in its own north and
+    // east, and the far end's the reverse of the near one's, turned by the
+    // meridians' convergence (about 0.017 degrees over 2.8 km east here).
+    const auto toward = [](double lat0, double lon0, double lat1, double lon1) {
+        const DVec3 d = glm::transpose(ned_to_ecef(lat0, lon0)) *
+                        (geodetic_to_ecef({lat1, lon1, 0.0}) - geodetic_to_ecef({lat0, lon0, 0.0}));
+        const double h = glm::degrees(std::atan2(d.y, d.x));
+        return h < 0.0 ? h + 360.0 : h;
+    };
+    const RunwayEnd& a = rw.ends[0];
+    const RunwayEnd& b = rw.ends[1];
+    const double at_a = s->heading_deg(a.lat_deg, a.lon_deg);
+    const double at_b = s->heading_deg(b.lat_deg, b.lon_deg);
+    EXPECT_NEAR(at_a, toward(a.lat_deg, a.lon_deg, b.lat_deg, b.lon_deg), 1e-3);
+    EXPECT_NEAR(at_b, toward(b.lat_deg, b.lon_deg, a.lat_deg, a.lon_deg) - 180.0, 1e-3);
+    EXPECT_GT(at_b - at_a, 0.012);
+    EXPECT_GT(at_a, 69.0);  // east-north-east
+    EXPECT_LT(at_a, 71.0);
+}
+
 TEST(CompilerRunways, SomethingAcrossTheWholeRunwayDoesNotStopTheFit) {
     // 3 m high over the full width for 80 m, wider than a station's window:
     // the fit takes it as the ground there (its samples are never all left
@@ -1263,20 +1309,22 @@ TEST(CompilerRunways, RefusesBadRunwaysAndMissingHeights) {
 // Through the compiler, on rough ground: the runway's tiles change, the
 // rest don't, neighbours still share their edges and the coarser tiles'
 // errors still bound their children.
+// Degrees as the FAA writes them: "34-39.167130N".
+std::string dm(double deg, bool latitude) {
+    const double a = std::abs(deg);
+    char text[32];
+    (void)std::snprintf(text, sizeof text, latitude ? "%02d-%09.6f%c" : "%03d-%09.6f%c",
+                        static_cast<int>(a), (a - std::floor(a)) * 60.0,
+                        latitude ? (deg < 0 ? 'S' : 'N') : (deg < 0 ? 'W' : 'E'));
+    return std::string(text);
+}
+
 TEST(CompilerRunways, TheCompilerSmoothsTheFinestLevelOnly) {
     GDALAllRegister();
     const Scene scene("runways", true);
     const double lat0 = scene.extent.south_deg + 0.001;
     const double lat1 = scene.extent.north_deg - 0.001;
     const double lon = scene.extent.west_deg + 0.0008;  // over the new DEM, clear of its hole
-    const auto dm = [](double deg, bool latitude) {
-        const double a = std::abs(deg);
-        char text[32];
-        (void)std::snprintf(text, sizeof text, latitude ? "%02d-%09.6f%c" : "%03d-%09.6f%c",
-                            static_cast<int>(a), (a - std::floor(a)) * 60.0,
-                            latitude ? (deg < 0 ? 'S' : 'N') : (deg < 0 ? 'W' : 'E'));
-        return std::string(text);
-    };
     {
         std::ofstream(scene.dir / "airport.toml")
             << "[[runway]]\nname = \"36/18\"\nwidth_ft = 100.0\n"
@@ -1457,6 +1505,111 @@ TEST(CompilerRunways, AirportFileMistakesAreRefused) {
     EXPECT_FALSE(parse_settings(bad_blend, "s.toml", dir).errors.empty());
     fs::remove(dir / "airport.toml");
     EXPECT_FALSE(parse_settings(good, "s.toml", dir).errors.empty());  // unreadable
+}
+
+// Airport lights (milestone 6 step 8, D-033): a runway's layout, baked
+// into the root tiles' lights layer, each light on the ground as built,
+// facing along the runway.
+TEST(CompilerLights, StandOnTheGroundInTheRootTiles) {
+    GDALAllRegister();
+    const Scene scene("lights", true);
+    const double lat0 = scene.extent.south_deg + 0.001;
+    const double lat1 = scene.extent.north_deg - 0.001;
+    const double lon = scene.extent.west_deg + 0.0008;
+    const auto end = [&](const char* id, double lat, const std::string& extra) {
+        return "[[runway.end]]\nid = \"" + std::string(id) + "\"\nlat = \"" + dm(lat, true) +
+               "\"\nlon = \"" + dm(lon, false) +
+               "\"\nelevation_ft = 0.0\nmarkings = \"PIR\"\ncentreline_lights = true\n" + extra;
+    };
+    std::ofstream(scene.dir / "airport.toml")
+        << "[[runway]]\nname = \"36/18\"\nwidth_ft = 100.0\nedge_lights = \"HIGH\"\n"
+        << end("36", lat0,
+               "vgsi = \"P4L\"\nglide_path_deg = 3.0\nthreshold_crossing_height_ft = 50.0\n"
+               "approach_lights = \"MALSR\"\n")
+        << end("18", lat1, "");
+    const std::string settings =
+        scene.settings() + "[runways]\nairport = \"airport.toml\"\n[lights]\n";
+    const auto r = scene.build(settings);
+    ASSERT_TRUE(r.ok) << (r.errors.empty() ? "" : r.errors[0]);
+    ASSERT_TRUE(r.lights.has_value());
+    ASSERT_TRUE(r.manifest.lights.has_value());
+    EXPECT_EQ(r.manifest.lights->level, Scene::kRoot);
+    ASSERT_EQ(r.lights->skipped.size(), 1U);  // the MALSR (FAA JO 6850.2)
+    EXPECT_NE(r.lights->skipped[0].find("MALSR"), std::string::npos) << r.lights->skipped[0];
+
+    // Every root tile's lights together are the layout's, each in its tile.
+    std::vector<TileLight> all;
+    std::size_t tiles = 0;
+    const LevelTiles& roots = r.manifest.levels[0];
+    for (std::uint32_t x = roots.x0; x <= roots.x1; ++x) {
+        for (std::uint32_t y = roots.y0; y <= roots.y1; ++y) {
+            const TileKey key{Scene::kRoot, x, y};
+            const TileResult t = read_tile(scene.dir / "db" / tile_path(key), key);
+            ASSERT_TRUE(t.tile.has_value());
+            const TileLayer* layer = t.tile->find(kLightsLayer);
+            if (layer == nullptr) {
+                continue;
+            }
+            ++tiles;
+            const auto lights = decode_lights(*layer);
+            ASSERT_TRUE(lights.has_value());
+            for (const TileLight& l : *lights) {
+                EXPECT_EQ(tile_at(l.lat_deg, l.lon_deg, Scene::kRoot), key);
+                all.push_back(l);
+            }
+        }
+    }
+    EXPECT_EQ(tiles, r.lights->tiles);
+    ASSERT_EQ(all.size(), r.lights->lights);
+    const auto loaded = parse_settings(settings, "settings.toml", scene.dir);
+    ASSERT_TRUE(loaded.settings.has_value());
+    EXPECT_EQ(all.size(),
+              layout_lights(loaded.settings->runways[0], r.runways[0].length_m).lights.size());
+
+    // On the finest level's ground, facing north (from 36, the first end,
+    // toward 18).
+    double centre = 0.0;
+    int centreline = 0;
+    for (const TileLight& l : all) {
+        const TileKey fine = tile_at(l.lat_deg, l.lon_deg, 16);
+        const double ground =
+            read_grid(scene.dir / "db", fine).sample(tile_bounds(fine), l.lat_deg, l.lon_deg);
+        EXPECT_NEAR(l.height_m, ground, 1e-6);
+        EXPECT_LT(std::min(l.heading_deg, 360.0F - l.heading_deg), 0.01F) << l.heading_deg;
+        if (l.type == LightType::centreline) {
+            centre += l.lon_deg;
+            ++centreline;
+        }
+    }
+    ASSERT_GT(centreline, 0);
+    centre /= centreline;
+    // Across: edge lights 10 ft outside the 100 ft pavement (AC 150/5340-30J
+    // 2.3.1), the PAPI on the left of 36, landing north: to the west, its
+    // highest unit nearest the runway (Table 7-2).
+    std::vector<std::pair<double, float>> papi;  // metres east of the centreline, angle
+    for (const TileLight& l : all) {
+        const double east = (l.lon_deg - centre) * kMetresPerDegLon;
+        if (l.type == LightType::edge) {
+            EXPECT_NEAR(std::abs(east), 60.0 * 0.3048, 0.05);
+        } else if (l.type == LightType::centreline) {
+            EXPECT_NEAR(east, 0.0, 0.01);
+        } else if (l.type == LightType::papi) {
+            papi.emplace_back(east, l.papi_angle_deg);
+        }
+    }
+    ASSERT_EQ(papi.size(), 4U);
+    std::sort(papi.begin(), papi.end());
+    EXPECT_LT(papi.back().first, -15.0);
+    for (std::size_t i = 1; i < papi.size(); ++i) {
+        EXPECT_GT(papi[i].second, papi[i - 1].second);
+    }
+
+    // Lights need runways, and the root level for now.
+    for (const char* bad :
+         {"[lights]\n", "[runways]\nairport = \"airport.toml\"\n[lights]\nlevel = 16\n"}) {
+        const auto refused = parse_settings(scene.settings() + bad, "settings.toml", scene.dir);
+        EXPECT_FALSE(refused.settings.has_value()) << bad;
+    }
 }
 
 // Placements (milestone 4 step 4, D-026): a box set at an angle on sloping

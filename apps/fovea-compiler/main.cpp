@@ -100,6 +100,12 @@ int main(int argc, char** argv) {
             }
             std::printf("\n");
         }
+        if (const auto& l = result.lights) {
+            std::printf("lights: %zu in %zu tiles\n", l->lights, l->tiles);
+            for (const auto& why : l->skipped) {
+                std::printf("  not laid out: %s\n", why.c_str());
+            }
+        }
         std::printf("wrote %s\n", s.output.string().c_str());
     } catch (const std::exception& e) {
         (void)std::fprintf(stderr, "fovea-compiler: %s\n", e.what());

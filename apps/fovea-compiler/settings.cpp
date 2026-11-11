@@ -414,6 +414,23 @@ SettingsResult parse_settings(const std::string& text, const std::string& source
         s.placements = std::move(pl);
     }
 
+    if (const auto lights = root["lights"]; lights.is_table()) {
+        CompileSettings::Lights li;
+        if (s.runways.empty()) {
+            error(lights.node()->source(), "[lights] needs [runways] to lay them out on");
+        }
+        // As placements (#48): the runtime will draw the root tiles' first.
+        if (const auto* l = lights.node()->as_table()->get("level")) {
+            const auto level = l->value<std::int64_t>();
+            if (!level || *level != s.root_level) {
+                error(l->source(), "[lights] level must be the root level, for now");
+            } else {
+                li.level = static_cast<std::uint8_t>(*level);
+            }
+        }
+        s.lights = li;
+    }
+
     for (const auto& dir : dirs) {
         std::error_code ec;
         for (const auto& entry : fs::directory_iterator(dir, ec)) {
