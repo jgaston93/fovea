@@ -1043,7 +1043,7 @@ TEST(TerrainRender, AFogLayerHidesWhatIsInItAndNotWhatIsAbove) {
 // below.
 std::vector<std::uint8_t> draw_lights(const fs::path& dir, const SceneView& v, std::uint32_t size,
                                       std::span<const WeatherLayer> layers = {},
-                                      std::size_t lights = 0) {
+                                      std::size_t lights = 0, std::uint32_t models = 0) {
     auto r = make_renderer(size, size);
     if (!r) {
         return {};
@@ -1052,7 +1052,7 @@ std::vector<std::uint8_t> draw_lights(const fs::path& dir, const SceneView& v, s
     r->set_weather(layers);
     const TerrainLoad load = r->load_terrain(open_db(dir));
     EXPECT_EQ(load.lights, lights);
-    (void)settle(*r, {v});
+    settle_models(*r, {v}, models);
     EXPECT_EQ(r->validation_messages(), 0U);
     return r->read_back_rgba(0);
 }
@@ -1086,18 +1086,29 @@ TEST(TerrainRender, AirportLightsShowAtNightWhereAndAsTheyShould) {
     };
     using enum LightColour;
     const auto light = [&](double north_m, double east_m, LightType type,
-                           std::array<LightColour, 2> colour, float papi = 0.0F) {
+                           std::array<LightColour, 2> colour, float papi = 0.0F,
+                           float heading = 0.0F) {
         const Geodetic g = at(north_m, east_m);
-        return TileLight{g.lat_deg, g.lon_deg, 120.0, 0.0F, papi, type, colour};
+        return TileLight{g.lat_deg, g.lon_deg, 120.0, heading, papi, type, colour};
     };
     // A runway heading north: a threshold light at the origin, white edge
     // lights 400 m to 3.2 km on, and a PAPI unit beside it at 3 degrees.
+    // Then a threshold light of a runway heading north-east, and an edge
+    // light behind a wall.
     s.lights = {light(0.0, 0.0, LightType::threshold, {green, red}),
                 light(400.0, 0.0, LightType::edge, {white, white}),
                 light(800.0, 0.0, LightType::edge, {white, white}),
                 light(1600.0, 0.0, LightType::edge, {white, white}),
                 light(3200.0, 0.0, LightType::edge, {white, white}),
-                light(250.0, -30.0, LightType::papi, {red, none}, 3.0F)};
+                light(250.0, -30.0, LightType::papi, {red, none}, 3.0F),
+                light(300.0, 300.0, LightType::threshold, {green, red}, 0.0F, 45.0F),
+                light(400.0, 60.0, LightType::edge, {white, white})};
+    // The wall: 20 m wide and 30 m tall, 150 m before that light on the
+    // 702 m line from the eye below (at 250 m north, 9 m up): inside a
+    // quarter of the way, outside the 48 m the light's depth is moved.
+    const Geodetic wall = at(250.0, 60.0 * 550.0 / 700.0);
+    s.placements = {{"wall", wall.lat_deg, wall.lon_deg, 120.0, 0.0F}};
+    s.models = {{"wall", box_glb(10.0F, 30.0F, 1.0F, {0.2F, 0.2F, 0.2F, 1.0F}, "")}};
     const fs::path dir = write_db("lights", s);
     constexpr std::uint32_t kSize = 128;
     // Where a light shows: its point, lifted as an elevated fixture stands
@@ -1132,13 +1143,13 @@ TEST(TerrainRender, AirportLightsShowAtNightWhereAndAsTheyShould) {
     // From 300 m south of the threshold, 40 m up, looking north: each
     // light within a pixel of its point, bright on the dark ground.
     const SceneView south = view_at(at(-300.0, 0.0), 40.0, -2.0, 0.0, 10.0);
-    const auto px = draw_lights(dir, south, kSize, {}, s.lights.size());
+    const auto px = draw_lights(dir, south, kSize, {}, s.lights.size(), 1);
     if (px.empty()) {
         GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
     }
     EXPECT_LT(brightness(px, kSize, {64.5, 120.5}), 30.0) << "the ground isn't dark";
     std::array<Seen, 6> clear;
-    for (std::size_t i = 0; i < s.lights.size(); ++i) {
+    for (std::size_t i = 0; i < clear.size(); ++i) {
         clear[i] = seen(px, south, i);
         EXPECT_LE(std::abs(clear[i].at.x + 0.5 - clear[i].expected.x), 1.0) << i;
         EXPECT_LE(std::abs(clear[i].at.y + 0.5 - clear[i].expected.y), 1.0) << i;
@@ -1149,19 +1160,32 @@ TEST(TerrainRender, AirportLightsShowAtNightWhereAndAsTheyShould) {
     EXPECT_GT(clear[0].colour[1], clear[0].colour[0] + 100.0);
     EXPECT_GT(std::min({clear[5].colour[0], clear[5].colour[1], clear[5].colour[2]}), 200.0);
 
+    // The wall hides the light behind it: no brighter than the wall.
+    const Seen hidden = seen(px, south, 7);
+    EXPECT_LT(sum(hidden.colour), 60.0) << "a light shows through the wall";
+
+    // The north-east runway's threshold light, 26.6 degrees right of
+    // north from the eye, 18 degrees off its runway's line on the
+    // approach side: green. (An axis turned the wrong way, north-west,
+    // would put the eye 72 degrees off it, all but outside its beam.)
+    const SceneView toward = view_at(at(-300.0, 0.0), 40.0, -2.0, 26.57, 10.0);
+    const Seen angled = seen(draw_lights(dir, toward, kSize, {}, s.lights.size(), 1), toward, 6);
+    EXPECT_GT(angled.colour[1], angled.colour[0] + 100.0);
+    EXPECT_GT(sum(angled.colour), 300.0);
+
     // Beyond the threshold, looking back south: red.
     const SceneView north = view_at(at(300.0, 0.0), 40.0, -5.0, 180.0, 10.0);
-    const Seen back = seen(draw_lights(dir, north, kSize, {}, s.lights.size()), north, 0);
+    const Seen back = seen(draw_lights(dir, north, kSize, {}, s.lights.size(), 1), north, 0);
     EXPECT_GT(back.colour[0], back.colour[1] + 100.0);
     // 8 m up, 0.8 degrees above the PAPI unit: red.
     const SceneView low = view_at(at(-300.0, 0.0), 8.0, 0.0, 0.0, 10.0);
-    const Seen under = seen(draw_lights(dir, low, kSize, {}, s.lights.size()), low, 5);
+    const Seen under = seen(draw_lights(dir, low, kSize, {}, s.lights.size(), 1), low, 5);
     EXPECT_GT(under.colour[0], under.colour[1] + 100.0);
 
     // 30 m from the threshold light: several pixels, where far lights
     // are one or two.
     const SceneView near = view_at(at(-30.0, 0.0), 3.0, -3.0, 0.0, 10.0);
-    const Seen close = seen(draw_lights(dir, near, kSize, {}, s.lights.size()), near, 0);
+    const Seen close = seen(draw_lights(dir, near, kSize, {}, s.lights.size(), 1), near, 0);
     EXPECT_GE(close.lit, 9);
     EXPECT_LE(clear[4].lit, 2);
 
@@ -1169,7 +1193,7 @@ TEST(TerrainRender, AirportLightsShowAtNightWhereAndAsTheyShould) {
     // light, the dimmer; the farthest, 3.5 km off, lost.
     const std::array<WeatherLayer, 1> fog = {
         WeatherLayer{WeatherKind::fog, 100.0, 60.0, 1.0, 800.0}};
-    const auto foggy = draw_lights(dir, south, kSize, fog, s.lights.size());
+    const auto foggy = draw_lights(dir, south, kSize, fog, s.lights.size(), 1);
     std::array<double, 5> through{};
     for (std::size_t i = 1; i <= 4; ++i) {
         through[i] = sum(seen(foggy, south, i).colour);
