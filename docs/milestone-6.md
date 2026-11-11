@@ -339,7 +339,7 @@ Next: drawing the points after the resolve (D-028), then the night approach at t
 - **Loading:** the lights come from the root tiles with the placements (#48), into one storage buffer of offsets from their mean point, placed relative to the eye in double on the CPU.
 - **Each light, in its vertex shader:**
   - **Colour:** the layer's colour for the side the eye is on: colour[0] when the eye is behind the light along its runway's heading. A PAPI unit is white above its angle and red below, blended over 3′.
-  - **Brightness:** its candela toward the eye over the distance squared, through the aerial perspective and the fog, rain and snow bands, into its pixels' radiance (the stars' units, cos³ off-axis so it matches across a seam).
+  - **Brightness:** its candela toward the eye over the distance squared, through the aerial perspective and the fog, rain and snow bands, into its pixels' radiance (the stars' units, cos³ off-axis so it matches across a seam). Since 2026-11-11 a point shows by its illuminance instead (below).
   - **Beam:** about 15° (edge and threshold lights) or 10° either side of the runway's line, centred 4° up; edge lights keep 5% all round for circling.
   - **Size:** a whole number of pixels, at least one, or as many as a 0.4 m fixture covers when near (a disc past 2.5, its light shared among its pixels), at most 16, with `largePoints` where the GPU has it.
 - **Approximate photometry:** the AC gives positions and colours, not intensities, which are in AC 150/5345-46 (not used yet). The candela (2,500 edge and threshold, 1,000 in-pavement, 6,000 PAPI) and the colour filters' transmission are approximate, for a middle step at night.
@@ -360,7 +360,17 @@ Next: drawing the points after the resolve (D-028), then the night approach at t
   - The depth margin's grazing term is halved and capped at a quarter of the distance, not half: from 6 m up at 2 km it had let anything within 700 m in front of a light fail to hide it.
   - Overlapping saturated lights can add past the HDR target's range; the tone map already clamps that (`reference_scene.slang`), so it shows white.
 - **KHSV:** rebuilt with the layer (3.3 minutes): 980 lights in 4 root tiles; the five approach lighting systems are listed as not laid out.
-- **Not yet:** the desk look at a night approach into KHSV.
+- **Not yet:** the desk look at a night approach into KHSV (below).
+
+### Step 8, the night approach and how bright points show (2026-11-11)
+
+- **On the desk:** a night approach into KHSV 36L (`khsv-night.toml`, new: `khsv-approach.toml` at 22:00 local on 21 March, the sun 36° down, 30 km visibility). 60 Hz, 7 of 11,985 frames missed, no validation messages. The owner found the lights alright, but the parallel runway's (18L/36R, 1.5 km east, seen 20 to 60° off its line, at the edge lights' 5% all round) brighter than expected.
+- **Why:** every point was white. At night's exposure (about 2,200) a point's light put into one pixel is about a thousand times what takes it to white: the screenshot's 36L lights, 36R's and the stars were all 255. A light twenty times dimmer showed the same.
+- **How bright a point shows** (D-038, `shaders/include/points.slang`): the lights and stars pass on the illuminance they give the eye, not a pixel's radiance; after the exposure, a point shows by the square root of that over a white point (0.05 exposed: a 2,500 cd edge light head on from 3.3 km at a moonless night's exposure), through the ACES fit's inverse, so the tone map takes it there with its hue. Twenty times less light shows about 4.5 times dimmer. Near lights still reach white; by day the exposure still loses them. The cos³ correction across seams is gone from the brightness, as a point's illuminance doesn't depend on its pixel (its size keeps it).
+- **The desk, again** (Windows, NVIDIA): 3.5 km out, 36L's lights about 210 (the nearest 253), 36R's about 143; 1.2 km out, 36L's 253, 36R's about 140. The brightest stars about 57 over a sky of 17, where they were 255: a runway light 3 km off gives about thirty times Sirius's light.
+- **Test:** the lights test now also finds the edge lights 0.7 to 3.5 km off dimmer the farther they are in clear air (253, 253, about 200, about 145), and an edge light seen from the side, 700 m off, there but dimmer than one head on at that distance (189 against 253). Through fog the margins are smaller, as lights no longer saturate first.
+- **HAT/HOT on the desk:** with KHSV, from a scripted host (Python, the codec's layouts): HOT at the four runway ends within 0.06 m of the FAA's elevations, HAT from 100 m over them 99.94 to 100.05, the extended answers the same with the ground's normal about 1° off vertical, Valid 0 outside the database, a periodic request every 10th frame answered 7 times in a second and stopped by period 0; none lost, none rejected.
+- **Not yet:** the owner's look at the new brightness on the desk.
 
 ## Step 9: Hardware check
 

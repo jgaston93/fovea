@@ -1,4 +1,4 @@
-// How bright a point of light shows: the stars and the airport lights
+// How bright a point of light shows (D-038): the stars and the airport lights
 // (milestone 6 step 8). A point's light, spread over a pixel, is far more
 // than a display can show at night's exposure: a 2,500 cd light 5 km off
 // gives the eye about 1e-4 lux, a thousand times what takes a pixel to

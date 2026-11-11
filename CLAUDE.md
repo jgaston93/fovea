@@ -36,7 +36,7 @@ python3 tools/check-imagery.py data/compile/khsv.toml   # its imagery against th
 python3 tools/check-airports.py data/airports/*.toml    # the airport files (runways, lights) against the FAA's NASR data
 ./build/debug/apps/fovea/fovea --headless --dump out config/<file>.toml    # any config headless, out/<channel>.png
 ./build/release/apps/fovea/fovea --overlay config/khsv.toml                # the KHSV database on the desk, then:
-./build/release/tools/cigi-test-host/cigi-test-host tools/cigi-test-host/scripts/khsv-approach.toml  # or khsv-survey.toml (paging), khsv-low.toml (110 m), khsv-airport.toml (the buildings), khsv-dawn.toml (the host sets dawn and fog), khua-low.toml (KHUA)
+./build/release/tools/cigi-test-host/cigi-test-host tools/cigi-test-host/scripts/khsv-approach.toml  # or khsv-survey.toml (paging), khsv-low.toml (110 m), khsv-airport.toml (the buildings), khsv-dawn.toml (the host sets dawn and fog), khsv-night.toml (the airport's lights), khua-low.toml (KHUA)
 FOVEA_UPDATE_GOLDEN=1 ctest --preset debug -R Golden                       # rewrite tests/data/golden (on lavapipe)
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json FOVEA_REQUIRE_VULKAN=1 ctest --preset debug  # GPU tests on lavapipe
 CC=clang CXX=clang++ cmake --preset debug -B build/clang-debug --fresh     # Clang build
