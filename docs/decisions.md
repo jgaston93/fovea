@@ -245,3 +245,9 @@ A query thread with its own `TerrainDatabase` reader answers HAT/HOT requests, w
 **Status:** Accepted (2026-11-09)
 
 The compiler converts positions and ellipsoidal heights from NAD83(2011), the sources' frame, to WGS-84 (a current realization, at an epoch written in the manifest), with PROJ through GDAL. It refuses to compile if PROJ offers only a ballpark transformation, which would leave the coordinates unchanged. The runtime and hosts are WGS-84 already; the frames differ by about a metre at KHSV (#37).
+
+## D-038 Points of light show by their illuminance, through a brightness curve
+
+**Status:** Proposed (2026-11-11)
+
+Stars and airport lights (D-028, D-033) pass on the illuminance they give the eye, through the air. After the exposure (D-031), a point shows by the square root of it over a white point, a 2,500 cd light head on from about 3 km at a moonless night's exposure, taken back through the tone map's inverse so it shows at that brightness with its hue. A point's light in one pixel is far beyond what a display shows at night, so drawing it as radiance clipped every star and light to white; a light seen outside its beam showed as bright as one inside it. The curve keeps their order and lets the dimmer ones show dimmer. A glow for the brightest, and photometry from AC 150/5345-46, may follow.

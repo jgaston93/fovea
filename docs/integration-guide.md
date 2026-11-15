@@ -121,7 +121,7 @@ A host asks for the terrain's height under a point with HAT/HOT Request (4.1.24,
 ./build/release/tools/cigi-test-host/cigi-test-host tools/cigi-test-host/scripts/khsv-approach.toml
 ```
 
-- **Scripts:** `tools/cigi-test-host/scripts/` has an approach to KHSV 36L, low passes over KHSV and KHUA, a dawn flight in which the host sets the time and fog, and others. Each script's header says what it shows.
+- **Scripts:** `tools/cigi-test-host/scripts/` has an approach to KHSV 36L, low passes over KHSV and KHUA, a dawn flight in which the host sets the time and fog, a night approach to see the airport's lights, and others. Each script's header says what it shows.
 - **Matching addresses:** the script's `[ig] address` must reach Fovea. Fovea's `[host] port` must be the script's `[ig] port`, and its `host_port` the script's `[host] port`.
 
 ## Checking a connection

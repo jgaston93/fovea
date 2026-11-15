@@ -30,10 +30,9 @@ struct LightPush {
     Mat4 ecef_to_clip{1.0F};
     std::array<float, 3> origin{};
     float pixel_angle = 0.0F;
-    float inv_pixel_solid_angle = 0.0F;
     float max_size = 1.0F;
 };
-static_assert(sizeof(LightPush) == 88, "must match LightPush in lights.slang");
+static_assert(sizeof(LightPush) == 84, "must match LightPush in lights.slang");
 
 [[noreturn]] void fail(const std::string& what) {
     throw std::runtime_error(what);
@@ -170,12 +169,10 @@ void LightsGpu::release() {
 
 void LightsGpu::record(VkCommandBuffer cmd, const SceneView& view, VkExtent2D extent,
                        std::uint32_t lighting_offset) {
-    const double solid_angle = pixel_solid_angle(view.ecef_to_clip, extent);
     LightPush push;
     push.ecef_to_clip = view.ecef_to_clip;
     push.origin = floats(origin_ - view.eye_ecef);
-    push.pixel_angle = static_cast<float>(std::sqrt(solid_angle));
-    push.inv_pixel_solid_angle = static_cast<float>(1.0 / solid_angle);
+    push.pixel_angle = static_cast<float>(std::sqrt(pixel_solid_angle(view.ecef_to_clip, extent)));
     push.max_size = gpu_.max_point_size;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     const std::array<VkDescriptorSet, 2> sets = {set_, gpu_.frame_set};

@@ -2,12 +2,13 @@
 // after the resolve into the HDR target as single-pixel points (D-028:
 // lights smaller than a pixel aren't multisampled), where the resolved
 // depth is still the sky's (0, reverse-Z), so terrain and models hide them.
-// Each star puts its illuminance, through the air, into its pixel: bright
-// against a night sky, lost in a day sky by the exposure alone.
+// Each star shows by its illuminance, through the air (include/points.slang):
+// bright against a night sky, lost in a day sky by the exposure alone.
 
 #include "include/atmosphere.slang"
 #define FRAME_SET 1
 #include "include/frame.slang"
+#include "include/points.slang"
 [[vk::binding(3, 1)]] ConstantBuffer<Atmosphere> atmosphere;
 
 // Right ascension and declination (J2000, degrees), V magnitude, B-V.
@@ -17,14 +18,14 @@
 struct StarPush {
     float4x4 j2000_to_clip;  // directions in J2000 to the view's clip space
     float3 up;               // the eye's up, in J2000
-    float inv_pixel_solid_angle;
+    float unused;
 };
 [[vk::push_constant]] ConstantBuffer<StarPush> push;
 
 struct StarVertex {
     float4 position : SV_Position;
     float size : SV_PointSize;
-    [[vk::location(0)]] float3 colour;  // its radiance in its pixel, before exposure
+    [[vk::location(0)]] float3 colour;  // its illuminance at the eye, before exposure
 };
 
 // What the fragment shader takes of it (the point's size is the vertex
@@ -79,20 +80,15 @@ StarVertex vs_stars(uint id: SV_VulkanVertexID) {
     const float3 through =
         transmittance_table.SampleLevel(transmittance_uv(atmosphere, lighting.eye_radius, mu), 0.0)
             .rgb;
-    // A pixel off the view's axis spans less sky (cos^3 of the angle off
-    // it, which w is for a unit direction): its star is brighter there, so
-    // the star shows the same on either side of a seam between displays.
-    const float w = max(o.position.w, 1e-3);
     // Through the fog, rain and snow too (step 6); none under rain's or
     // snow's overcast.
     const float clear = precipitation_above(lighting.eye_height_m) > 0.5 ? 0.0 : 1.0;
-    o.colour = star_colour(s.w) * e * through * band_transmittance(mu, 1e9) * clear *
-               push.inv_pixel_solid_angle / (w * w * w);
+    o.colour = star_colour(s.w) * e * through * band_transmittance(mu, 1e9) * clear;
     return o;
 }
 
 [shader("fragment")]
 float4 fs_stars(StarPixel i) : SV_Target {
     const ViewSky s = view_sky[lighting.view];
-    return float4(min(i.colour * s.exposure, float3(60000.0)), 0.0);
+    return float4(point_radiance(i.colour * s.exposure), 0.0);
 }
