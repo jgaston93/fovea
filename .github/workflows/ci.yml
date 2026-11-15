@@ -38,7 +38,7 @@ jobs:
           - { compiler: gcc, cc: gcc, cxx: g++, preset: release }
           # ASan+UBSan at -O1, assertions on: faster than the strict -Og
           # build the nightly runs.
-          - { compiler: gcc, cc: gcc, cxx: g++, preset: asan-fast }
+          - { compiler: gcc, cc: gcc, cxx: g++, preset: asan-fast, keep_drivers: "1" }
           - { compiler: clang, cc: clang, cxx: clang++, preset: debug }
     env:
       CC: ${{ matrix.cc }}
@@ -51,6 +51,15 @@ jobs:
       FOVEA_REQUIRE_VALIDATION: "1"
       # The terrain compiler and its tests are built, not skipped (D-019).
       FOVEA_REQUIRE_GDAL: "1"
+      # lavapipe keeps process-lifetime caches in its globals and never
+      # frees them (the gallium exec-memory heap, rtasm_execmem.c; on AMD
+      # Zen runners with several L3 caches, util_cpu_caps' L3 masks). The
+      # loader unloads it at vkDestroyInstance, the globals go with it, and
+      # LSan reports the caches as leaked from an unnamed module (#18).
+      # Kept loaded, they stay reachable and nothing needs suppressing;
+      # our own leaks, and the driver's real ones, still report, with
+      # symbols. The loader only honours "1".
+      VK_LOADER_DISABLE_DYNAMIC_LIBRARY_UNLOADING: ${{ matrix.keep_drivers || '0' }}
     steps:
       - uses: actions/checkout@v5
       - name: Install Ninja, ccache, SDL's X11 dependencies, lavapipe and GDAL
