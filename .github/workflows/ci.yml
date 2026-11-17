@@ -147,6 +147,28 @@ jobs:
         run: cmake --preset ${{ matrix.preset }}
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
+      # No build path in what's built (D-038): the PDB's path and the
+      # sources' (__FILE__) are trimmed; the executables are searched for
+      # this machine's checkout and home, as ASCII and UTF-16.
+      - name: No build path in the executables
+        if: matrix.preset == 'release'
+        shell: pwsh
+        run: |
+          $paths = @($env:GITHUB_WORKSPACE, $env:USERPROFILE) | Where-Object { $_ }
+          $exes = Get-ChildItem build/release -Recurse -Filter *.exe | Where-Object { $_.FullName -notmatch '[\\/]_deps[\\/]' }
+          $bad = 0
+          foreach ($exe in $exes) {
+            $bytes = [IO.File]::ReadAllBytes($exe.FullName)
+            $texts = @([Text.Encoding]::ASCII.GetString($bytes), [Text.Encoding]::Unicode.GetString($bytes))
+            foreach ($p in $paths) {
+              if ($texts | Where-Object { $_.IndexOf($p, [StringComparison]::OrdinalIgnoreCase) -ge 0 }) {
+                Write-Output "$($exe.Name) names $p"; $bad = 1
+              }
+            }
+          }
+          if (-not $exes) { Write-Output 'no executables found'; exit 1 }
+          if ($bad) { exit 1 }
+          Write-Output "no build path in $(@($exes).Count) executable(s)"
       - name: Test
         run: ctest --preset ${{ matrix.preset }} --parallel 4
 
