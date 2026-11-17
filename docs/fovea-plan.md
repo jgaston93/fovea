@@ -172,7 +172,7 @@ As chosen (`docs/decisions.md` has each choice and why):
 
 ## Milestones
 
-Integration 1 (`docs/integration-1.md`) goes ahead of the rest of milestone 6: Fovea under the team's simulator (EYAS, through Aerie), with the database in WGS-84 and HAT/HOT answered over CIGI (moved from milestone 9).
+Integration 1 (`docs/integration-1.md`) goes ahead of the rest of milestone 6: Fovea under a host simulator, with the database in WGS-84 and HAT/HOT answered over CIGI (moved from milestone 9).
 
 1. Skeleton: CMake project, platform layer, Vulkan init, three borderless windows on three monitors, per-channel off-axis frustums from config, 60 Hz frame clock, frame-time logging, and a measured display sync test.
 2. CIGI eyepoint: build a small scripted CIGI test host, receive its eyepoint over CIGI, and fly a camera over a test grid; log end-to-end latency.
@@ -202,7 +202,6 @@ Done in milestone 1 (kept as the record):
 
 ## Open questions
 
-- Answered: CIGI 3.3 first (D-013), with packets added as milestones need them (milestone 2's so far; milestones 6 and 9 add theirs); the development GPU is an RTX 5070 Ti; KHSV's landmarks are Fovea's own generic models (D-025).
+- Answered: CIGI 3.3 first (D-013), with packets added as milestones need them (milestone 2's so far; milestones 6 and 9 add theirs); the development GPU is an RTX 5070 Ti; KHSV's landmarks are Fovea's own generic models (D-025); the repository's license is Apache-2.0 (D-004, #23).
 - Physical screen geometry and eye point measurements for the example frustum config (#22).
 - Model sources and licenses for aircraft and vehicle entities.
-- Repository license (#23).

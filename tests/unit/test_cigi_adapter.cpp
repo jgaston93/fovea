@@ -512,7 +512,7 @@ TEST(CigiAdapter, StartOfFrameInEitherByteOrder) {
         options.byte_order = order;
         CigiAdapter adapter(options, &frames);
         Host host(adapter.port());
-        // A big-endian host's IG Control, as Aerie sends it.
+        // A big-endian host's IG Control, as a real host sends it.
         Bytes ig(cigi::kIgControlSize);
         ASSERT_EQ(cigi::encode(operate(0x01020304), ig, cigi::swaps(cigi::ByteOrder::network)),
                   ig.size());

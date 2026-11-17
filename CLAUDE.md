@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Fovea is an open-source, cross-platform Vulkan image generator (IG) for real-time geographic scenes, driven by a host program. Flight simulation over CIGI is its first application, not its definition (D-011): keep vehicle-, domain- and protocol-specific behaviour in adapters and modules, out of core and the renderer. `docs/fovea-plan.md` is the authoritative design handoff, `docs/architecture.md` turns it into concrete structure, and `docs/decisions.md` records design choices (D-xxx). The build, test and CI stack is in place. The skeleton (milestone 1), the CIGI eyepoint (milestone 2) and their tests are in place; open items are GitHub issues by milestone.
+Fovea is an open-source, cross-platform Vulkan image generator (IG) for real-time geographic scenes, driven by a host program. Flight simulation over CIGI is its first application, not its definition (D-011): keep vehicle-, domain- and protocol-specific behaviour in adapters and modules, out of core and the renderer. `docs/fovea-plan.md` is the authoritative design handoff, `docs/architecture.md` turns it into concrete structure, and `docs/decisions.md` records design choices (D-xxx). The build, test and CI stack is in place. Milestones 1 to 5 are done (`docs/milestone-1.md` to `-5.md`), and milestone 6, the environment, is under way (`docs/milestone-6.md`; README's Status); open items are GitHub issues by milestone.
 
 ## Commands
 
@@ -12,7 +12,7 @@ Builds use CMake presets with Ninja. Each preset builds into `build/<preset>`.
 
 ```sh
 cmake --preset debug && cmake --build --preset debug && ctest --preset debug
-# presets: debug, release, relwithdebinfo, asan (ASan+UBSan, -Og), asan-fast (-O1), tsan
+# presets: debug, release, relwithdebinfo, asan (ASan+UBSan, -Og), asan-fast (-O1), tsan, fuzz
 # tsan on WSL/Ubuntu 24.04 needs ASLR off, and runs without the validation layer
 # (not TSan-built, it reports races between its own threads):
 #   VK_LOADER_LAYERS_DISABLE=VK_LAYER_KHRONOS_validation TSAN_OPTIONS=suppressions=$PWD/tools/ci/tsan.supp \
@@ -62,14 +62,12 @@ git ls-files '*.cpp' '*.hpp' | xargs .venv/bin/clang-format --dry-run --Werror
 
 CI (`.github/workflows/ci.yml`) runs GCC debug, release and asan-fast, Clang debug, Rocky Linux 9 with GCC 11, Windows MSVC debug and release, and the format and tidy checks. If a test takes more than about 1 s in Release, add it to `SLOW_TESTS` there. `full-verification.yml` runs nightly.
 
-The first session's tasks are listed in the plan under "First Claude Code session tasks". Milestone 1 is the skeleton: three-window rendering, off-axis frustums from config, a 60 Hz clock, frame-time logging and a display sync test.
-
-## Planned layout and stack
+## Layout and stack
 
 - `apps/fovea` (runtime IG), `apps/fovea-compiler` (offline terrain compiler), `libs/core`, `libs/terrain`, `libs/models` (glTF models, CPU-only), `libs/render`, `libs/platform`, `libs/net`, `tools/cigi-test-host`, `config/`, `docs/`.
 - C++20, CMake, Vulkan 1.3, volk, VMA, vk-bootstrap, SDL3, toml++, Slang, glm, Dear ImGui, stb_image (see `docs/decisions.md`).
 - GDAL is used **only** in the compiler, never in the runtime.
-- Use one shader toolchain targeting SPIR-V (Slang or GLSL). Pick it before significant shader work starts.
+- Shaders are Slang, compiled to SPIR-V (D-003).
 - Record design choices in `docs/decisions.md`. Summarize the architecture in `docs/architecture.md`.
 
 ## Architecture (big picture)

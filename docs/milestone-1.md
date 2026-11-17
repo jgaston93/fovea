@@ -14,7 +14,7 @@ GitHub's CI runners have no GPU. From step 5 onward, the Linux CI jobs install M
 - Time: a monotonic clock, `LocalTime`, and a fixed-period tick helper.
 - Logging: a lock-free log that the render thread can write to without allocating. A background thread drains it to the console and a file.
 - Containers: `TripleBuffer<T>` (wait-free latest value), `SpscRing<T, N>`, `FrameArena` (a linear allocator reset every frame) and `FixedArray<T, N>`.
-- `tests/support/alloc_counter` from eyas, adapted for MSVC (`_aligned_malloc`). From here on, tests check that render-path code allocates nothing.
+- `tests/support/alloc_counter` from a sibling repo, adapted for MSVC (`_aligned_malloc`). From here on, tests check that render-path code allocates nothing.
 - **Done when:** unit tests cover the geodesy round trip and known reference points (KHSV, the equator, the poles), the axis conventions, and the containers under two threads. This includes a stress test of the triple buffer, which runs under ASan and under a new `tsan` preset (ThreadSanitizer, added to the nightly run).
 - **Math library:** glm 1.0.1 (D-010).
 

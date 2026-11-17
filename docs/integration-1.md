@@ -1,17 +1,17 @@
 # Integration 1: Fovea under a real simulator
 
-The goal: plug Fovea into the team's simulator over CIGI 3.3. The simulator is EYAS, with a glue layer (Aerie) between it and the IG that handles controls and data output. The team's review of the code found two gaps:
+The goal: plug Fovea into the team's simulator over CIGI 3.3. The simulator is a flight model with a host program between it and the IG that handles controls and data output. The team's review of the code found two gaps:
 
 - **No HAT/HOT.** The simulator asks the IG for the height above terrain (HAT) and the height of terrain (HOT), and nothing answers.
 - **The height datum.** CIGI altitudes are above mean sea level (MSL), and Fovea turns them into ellipsoidal heights with a single constant.
 
 ## What the simulator sends (from the team, 2026-11-09)
 
-- **Geoid.** Aerie uses no geoid model. It uses one configured constant, `ellipsoid_minus_msl_m = h_ellipsoid − h_msl`, which is 0 m in its sample config. For the KHSV deployment it is −28.25 m, documented as GEOID18 at KHSV. That is the same value as Fovea's `config/khsv.toml` (`geoid_height_m = -28.25`), so the two agree on MSL exactly, everywhere. Since D-037 moved the database to WGS-84, 1.30 m below NAD83(2011) at KHSV, both must be −29.55 m (step 1). A geoid grid in Fovea would make them disagree away from KHSV, so it isn't wanted for this simulator (#19 stays open for hosts that use a geoid model).
+- **Geoid.** The host uses no geoid model. It uses one configured constant, `ellipsoid_minus_msl_m = h_ellipsoid − h_msl`, which is 0 m in its sample config. For the KHSV deployment it is −28.25 m, documented as GEOID18 at KHSV. That is the same value as Fovea's `config/khsv.toml` (`geoid_height_m = -28.25`), so the two agree on MSL exactly, everywhere. Since D-037 moved the database to WGS-84, 1.30 m below NAD83(2011) at KHSV, both must be −29.55 m (step 1). A geoid grid in Fovea would make them disagree away from KHSV, so it isn't wanted for this simulator (#19 stays open for hosts that use a geoid model).
 - **HAT/HOT.**
-  - One HAT/HOT Request (ID 24, 32 bytes) per Aerie frame, asking for the Extended Response (Request Type 2).
+  - One HAT/HOT Request (ID 24, 32 bytes) per host frame, asking for the Extended Response (Request Type 2).
   - Each request has its own 16-bit ID, and the point is the ownship's current latitude, longitude and MSL altitude.
-  - Aerie's frame is 10 ms by default, so about 100 requests a second, or under two per 60 Hz IG frame. One more request is sent at startup.
+  - Its frame was then 10 ms by default, so about 100 requests a second, or under two per 60 Hz IG frame. One more request is sent at startup.
   - Update Period is 0 (one-shot), and heights are of the terrain only.
 - **Network.** Messages are in network byte order (big-endian). The ports are configurable, and default to the usual CIGI pair: the ICD names none, so these are the 8004 (IG) and 8005 (host) Fovea's configs and test-host scripts already use.
 
@@ -21,7 +21,7 @@ As before, each step is its own pull request, written from the ICD and its errat
 
 ## Where things stand (checked 2026-11-09)
 
-- **Altitudes.** `CigiAdapter` adds `[host] geoid_height_m`, one constant with a default of 0, to every CIGI altitude: entity positions, and weather layer bases since milestone 6 step 7 (`cigi_adapter.hpp`). `config/khsv.toml` sets it to −28.25 m, GEOID18 at KHSV, which is Aerie's own constant (−29.55 m since step 1).
+- **Altitudes.** `CigiAdapter` adds `[host] geoid_height_m`, one constant with a default of 0, to every CIGI altitude: entity positions, and weather layer bases since milestone 6 step 7 (`cigi_adapter.hpp`). `config/khsv.toml` sets it to −28.25 m, GEOID18 at KHSV, which is the host's own constant (−29.55 m since step 1).
 - **The database.** The compiler turns 3DEP's NAVD88 heights into ellipsoidal heights with NOAA's GEOID18 (D-020). D-020 says the database also carries the geoid over its area, but it doesn't yet: the manifest has no geoid layer, and only the compiler reads GEOID18.
 - **Horizontal datum.** The compiler lays tiles out in NAD83(2011), and GEOID18 is relative to the NAD83 ellipsoid. The runtime treats both as WGS-84. They differ by about a metre at KHSV (#37).
 - **Terrain queries.** `libs/terrain` already answers `height_at(lat, lon)` (ellipsoidal, from the finest tile that reads cleanly), ray intersection and line of sight, on the CPU with no Vulkan (`terrain_query.hpp`). Nothing calls them over CIGI.
@@ -31,7 +31,7 @@ As before, each step is its own pull request, written from the ICD and its errat
 
 ### D-035 MSL is the host's: one constant, shared (accepted)
 
-A CIGI altitude is converted to and from ellipsoidal height with `[host] geoid_height_m`, the same constant the host uses (Aerie's `ellipsoid_minus_msl_m`). This applies to entity positions, weather layer bases, and HAT/HOT altitudes and heights. Fovea and the host then agree on MSL everywhere, which matters more than either agreeing with the true geoid. A geoid grid (#19) waits for a host that uses a geoid model; the database would then carry that model's grid, as D-020 intended.
+A CIGI altitude is converted to and from ellipsoidal height with `[host] geoid_height_m`, the same constant the host uses (the host's `ellipsoid_minus_msl_m`). This applies to entity positions, weather layer bases, and HAT/HOT altitudes and heights. Fovea and the host then agree on MSL everywhere, which matters more than either agreeing with the true geoid. A geoid grid (#19) waits for a host that uses a geoid model; the database would then carry that model's grid, as D-020 intended.
 
 ### D-036 HAT/HOT are answered off the render thread, from the database's finest data (accepted)
 
@@ -58,7 +58,7 @@ The compiler converts positions and ellipsoidal heights from NAD83(2011) to WGS-
 - **Tests.** NCAT doesn't do ITRF or WGS-84, and HTDP wasn't run, so the tests check against PROJ's `cs2cs` at known points, to 1 mm, and check that the epoch matters (by more than 0.2 m over the test's span). The manifest's `[frame]` (`WGS 84 (G2139)`, epoch) is written and checked; the runtime warns on a database without one, and the check tools refuse a frame they don't know.
 - **KHSV.** Recompiled at epoch 2026.9 (3 minutes). `check-elevation.py` passes: the sources to 7 mm RMS, the runways within 2 cm of the fit, the FAA's survey points within 2 cm, all converted the same way. With its conversion turned off, every comparison fails by 1.30 m. `check-imagery.py` passes at 42 to 48 dB.
 - **Golden images** are unchanged: test databases are compiled without a shift.
-- **MSL.** The 1.30 m drop broke D-035's agreement with Aerie, so `config/khsv.toml`'s constant is now −29.55 m above WGS-84. GEOID18 converted to WGS-84 ranges from −29.49 to −29.85 m over the runway ends. Aerie's constant must change with it.
+- **MSL.** The 1.30 m drop broke D-035's agreement with the host, so `config/khsv.toml`'s constant is now −29.55 m above WGS-84. GEOID18 converted to WGS-84 ranges from −29.49 to −29.85 m over the runway ends. The host's constant must change with it.
 
 ## Step 2: The HAT/HOT packets, byte order and ports
 
@@ -87,7 +87,7 @@ The compiler converts positions and ellipsoidal heights from NAD83(2011) to WGS-
 - **Requests:**
   - **One-shot** (Update Period 0): answered once.
   - **Periodic** (Update Period n): answered every nth frame until the period is set to 0, carrying the Host Frame Number LSN.
-  - **Geodetic points:** latitude, longitude, and MSL altitude through the shared constant (D-035). This is what Aerie sends.
+  - **Geodetic points:** latitude, longitude, and MSL altitude through the shared constant (D-035). This is what the host sends.
   - **Entity points:** X, Y and Z offsets in the entity's body frame, from its pose in scene state.
 - **Responses:**
   - **HAT** is the altitude less the terrain height; **HOT** is the terrain less the geoid (MSL).
@@ -97,7 +97,7 @@ The compiler converts positions and ellipsoidal heights from NAD83(2011) to WGS-
   - Each kind is checked against the terrain query on a test database, and HAT plus HOT equals the MSL altitude.
   - A periodic request keeps its period and stops on 0.
   - An entity point follows its entity.
-  - Each answer arrives in the IG's next message (Aerie sends about two requests a frame), measured. It holds up under 100 requests a frame, with the render thread untouched (`AllocationCounter`, frame timing).
+  - Each answer arrives in the IG's next message (the host sends about two requests a frame), measured. It holds up under 100 requests a frame, with the render thread untouched (`AllocationCounter`, frame timing).
   - Stats count requests, answers and invalid answers.
 
 ### Step 3 results (2026-11-09)
@@ -124,22 +124,23 @@ The compiler converts positions and ellipsoidal heights from NAD83(2011) to WGS-
   - Answers are taken from the ring only while there's room in the datagram, so a backlog leaves over several frames. A test queues 2,000 requests with no frames running and loses none, though it couldn't make the old code overflow: the query thread's 1 ms retry refills the ring too slowly.
   - The periodic test waits for answers in flight before counting. The reviewer saw it fail 4 times in 60; 300 repeats here, some under load, didn't fail.
 - **Checks:** TSan and ASan are clean on the threaded tests, and 394 tests pass on lavapipe.
-- **Not yet:** the desk run with the test host and Aerie's pattern (step 4). `DatabaseTerrain` keeps every tile it reads (about 260 KB each at 257 samples), so a long flight over new ground grows it; that gets an issue if step 4 shows it matters.
+- **Not yet:** the desk run with the test host and the host's pattern (step 4). `DatabaseTerrain` keeps every tile it reads (about 260 KB each at 257 samples), so a long flight over new ground grows it; that gets an issue if step 4 shows it matters.
 
 ## Step 4: The test host and the real simulator
 
-- **The test host.** `cigi-test-host` can send HAT/HOT requests from a script, logging the answers. Its default is Aerie's pattern: Extended, at the ownship, once per host frame at 100 Hz. One-shot and periodic requests at fixed points are also possible. A KHSV script lands on 36L and checks the HAT at touchdown against the gear height.
+- **The test host.** `cigi-test-host` can send HAT/HOT requests from a script, logging the answers. Its default is the host's pattern: Extended, at the ownship, once per host frame at 100 Hz. One-shot and periodic requests at fixed points are also possible. A KHSV script lands on 36L and checks the HAT at touchdown against the gear height.
 - **At the desk, with the team's simulator:**
   - it connects;
   - its MSL altitudes put the aircraft on the runway;
   - its HAT/HOT requests are answered;
   - latency is measured.
 - Results are recorded, and anything unexpected becomes an issue.
+- **Done (2026-11-15), by the host's own datum test at the desk:** it connected; its MSL altitudes put the aircraft on each of KHSV's four runway ends; its HAT/HOT requests were answered, Fovea's HOT within 6.3 cm of the FAA's survey at every end (tolerance 0.30 m). Latency wasn't measured separately, and nothing unexpected became an issue.
 
 ## Inputs needed from you and the team
 
 | Needed by | Input |
 |---|---|
-| Step 1 | ~~Aerie's `ellipsoid_minus_msl_m` set to −29.55 m at KHSV, with Fovea's~~ Done (the team, 2026-11-09) |
-| Step 2 | ~~Confirm 8004 and 8005 are Aerie's ports~~ Confirmed (the team, 2026-11-09) |
-| Step 4 | Time with EYAS and Aerie at the desk, and the other packets Aerie sends besides IG Control, Entity Control and HAT/HOT |
+| Step 1 | ~~The host's `ellipsoid_minus_msl_m` set to −29.55 m at KHSV, with Fovea's~~ Done (the team, 2026-11-09) |
+| Step 2 | ~~Confirm 8004 and 8005 are the host's ports~~ Confirmed (the team, 2026-11-09) |
+| Step 4 | ~~Time with the host at the desk~~ Done (2026-11-15, below) |
