@@ -36,6 +36,31 @@ if(FOVEA_MSVC AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 19.30)
     message(FATAL_ERROR "Fovea needs MSVC from Visual Studio 2022 (found ${CMAKE_CXX_COMPILER_VERSION})")
 endif()
 
+# 64-bit only (D-038): a 32-bit target makes Vulkan's non-dispatchable
+# handles integers, not pointers, and the build fails deep inside instead.
+# On Windows that's the default "Developer PowerShell", whose cl is x86.
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    message(FATAL_ERROR "Fovea builds for 64-bit targets only (this compiler targets ${CMAKE_SIZEOF_VOID_P}-byte pointers); "
+                        "on Windows, use the x64 tools (vcvars64.bat, or Launch-VsDevShell.ps1 -Arch amd64)")
+endif()
+
+# A binary names neither the path it was built in nor its sources' (D-038).
+# MSVC's linker records the PDB's full path (a user's home on Windows) in
+# every executable by default; and sources' paths are compiled in as
+# __FILE__ (SDL's assertion messages, fetched into the build tree, had the
+# builder's home): trimmed off the source and build directories, for every
+# target and dependency compiled after this (C and C++).
+if(FOVEA_MSVC)
+    add_link_options("/PDBALTPATH:%_PDB%")
+    file(TO_NATIVE_PATH "${CMAKE_SOURCE_DIR}/" fovea_source_prefix)
+    file(TO_NATIVE_PATH "${CMAKE_BINARY_DIR}/" fovea_binary_prefix)
+    add_compile_options("/d1trimfile:${fovea_binary_prefix}" "/d1trimfile:${fovea_source_prefix}")
+else()
+    # The build directory's map last: it's inside the source's, and the
+    # last match wins.
+    add_compile_options("-ffile-prefix-map=${CMAKE_SOURCE_DIR}/=" "-ffile-prefix-map=${CMAKE_BINARY_DIR}/=")
+endif()
+
 foreach(flags_var IN ITEMS CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
                            CMAKE_CXX_FLAGS_RELWITHDEBINFO CMAKE_CXX_FLAGS_MINSIZEREL)
     if("${${flags_var}}" MATCHES "fast-math|-Ofast|finite-math-only|unsafe-math-optimizations|[/-]fp:fast")
