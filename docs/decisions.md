@@ -245,3 +245,10 @@ A query thread with its own `TerrainDatabase` reader answers HAT/HOT requests, w
 **Status:** Accepted (2026-11-09)
 
 The compiler converts positions and ellipsoidal heights from NAD83(2011), the sources' frame, to WGS-84 (a current realization, at an epoch written in the manifest), with PROJ through GDAL. It refuses to compile if PROJ offers only a ballpark transformation, which would leave the coordinates unchanged. The runtime and hosts are WGS-84 already; the frames differ by about a metre at KHSV (#37).
+
+## D-038 64-bit builds only; no build path in a Windows binary
+
+**Status:** Accepted (2026-11-17)
+
+- **64-bit only.** A 32-bit target makes Vulkan's non-dispatchable handles 64-bit integers rather than pointers, and the build failed deep inside (`reinterpret_cast` from `VkSurfaceKHR`) when configured from Visual Studio's default developer shell, whose `cl` targets x86. CMake now refuses a target without 8-byte pointers, saying which tools to use.
+- **No build path in the binary.** MSVC's linker writes the PDB's full path into each executable (its debug directory), which on Windows is usually under the builder's home folder: an installed IG then carries its builder's name. `/PDBALTPATH:%_PDB%` records the PDB's file name alone; a debugger still finds it beside the executable or through a symbol path.

@@ -36,6 +36,21 @@ if(FOVEA_MSVC AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 19.30)
     message(FATAL_ERROR "Fovea needs MSVC from Visual Studio 2022 (found ${CMAKE_CXX_COMPILER_VERSION})")
 endif()
 
+# 64-bit only (D-038): a 32-bit target makes Vulkan's non-dispatchable
+# handles integers, not pointers, and the build fails deep inside instead.
+# On Windows that's the default "Developer PowerShell", whose cl is x86.
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    message(FATAL_ERROR "Fovea builds for 64-bit targets only (this compiler targets ${CMAKE_SIZEOF_VOID_P}-byte pointers); "
+                        "on Windows, use the x64 tools (vcvars64.bat, or Launch-VsDevShell.ps1 -Arch amd64)")
+endif()
+
+# A binary names only its debug file, not the path it was built in (D-038):
+# MSVC's linker records the PDB's full path (a user's home on Windows) in
+# every executable by default.
+if(FOVEA_MSVC)
+    add_link_options("/PDBALTPATH:%_PDB%")
+endif()
+
 foreach(flags_var IN ITEMS CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
                            CMAKE_CXX_FLAGS_RELWITHDEBINFO CMAKE_CXX_FLAGS_MINSIZEREL)
     if("${${flags_var}}" MATCHES "fast-math|-Ofast|finite-math-only|unsafe-math-optimizations|[/-]fp:fast")

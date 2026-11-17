@@ -35,7 +35,7 @@ cmake --preset release && cmake --build --preset release && ctest --preset relea
 ```
 
 - **Linux:** the build also needs `libx11-dev libxext-dev libxrandr-dev` for SDL. The compiler is built only when GDAL 3.8 or later is installed (`libgdal-dev`).
-- **Windows:** configure from a Visual Studio developer prompt with `CC=cl CXX=cl`, using the same presets.
+- **Windows:** configure from a 64-bit Visual Studio developer prompt (`vcvars64.bat`, or `Launch-VsDevShell.ps1 -Arch amd64`; the default developer shell targets x86, which CMake refuses) with `CC=cl CXX=cl`, using the same presets.
 
 The presets are `debug`, `release`, `relwithdebinfo`, `asan`, `asan-fast`, `tsan` and `fuzz` (the CIGI codec's fuzz target). Warnings are errors on every compiler.
 
