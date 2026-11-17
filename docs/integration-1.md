@@ -97,7 +97,7 @@ The compiler converts positions and ellipsoidal heights from NAD83(2011) to WGS-
   - Each kind is checked against the terrain query on a test database, and HAT plus HOT equals the MSL altitude.
   - A periodic request keeps its period and stops on 0.
   - An entity point follows its entity.
-  - Each answer arrives in the IG's next message (the host sends about two requests a frame), measured. It holds up under 100 requests a frame, with the render thread untouched (`AllocationCounter`, frame timing).
+  - Each answer arrives in the IG's next message (the host then sent about two requests a frame), measured. It holds up under 100 requests a frame, with the render thread untouched (`AllocationCounter`, frame timing).
   - Stats count requests, answers and invalid answers.
 
 ### Step 3 results (2026-11-09)
@@ -124,18 +124,18 @@ The compiler converts positions and ellipsoidal heights from NAD83(2011) to WGS-
   - Answers are taken from the ring only while there's room in the datagram, so a backlog leaves over several frames. A test queues 2,000 requests with no frames running and loses none, though it couldn't make the old code overflow: the query thread's 1 ms retry refills the ring too slowly.
   - The periodic test waits for answers in flight before counting. The reviewer saw it fail 4 times in 60; 300 repeats here, some under load, didn't fail.
 - **Checks:** TSan and ASan are clean on the threaded tests, and 394 tests pass on lavapipe.
-- **Not yet:** the desk run with the test host and the host's pattern (step 4). `DatabaseTerrain` keeps every tile it reads (about 260 KB each at 257 samples), so a long flight over new ground grows it; that gets an issue if step 4 shows it matters.
+- **Not yet at the time:** the desk run with the test host and the host's pattern (step 4, since done but for latency: below). `DatabaseTerrain` keeps every tile it reads (about 260 KB each at 257 samples), so a long flight over new ground grows it; that gets an issue if step 4 shows it matters.
 
 ## Step 4: The test host and the real simulator
 
-- **The test host.** `cigi-test-host` can send HAT/HOT requests from a script, logging the answers. Its default is the host's pattern: Extended, at the ownship, once per host frame at 100 Hz. One-shot and periodic requests at fixed points are also possible. A KHSV script lands on 36L and checks the HAT at touchdown against the gear height.
+- **The test host.** `cigi-test-host` can send HAT/HOT requests from a script, logging the answers. Its default is the host's pattern as it then was: Extended, at the ownship, once per host frame at 100 Hz. One-shot and periodic requests at fixed points are also possible. A KHSV script lands on 36L and checks the HAT at touchdown against the gear height.
 - **At the desk, with the team's simulator:**
   - it connects;
   - its MSL altitudes put the aircraft on the runway;
   - its HAT/HOT requests are answered;
   - latency is measured.
 - Results are recorded, and anything unexpected becomes an issue.
-- **Done (2026-11-15), by the host's own datum test at the desk:** it connected; its MSL altitudes put the aircraft on each of KHSV's four runway ends; its HAT/HOT requests were answered, Fovea's HOT within 6.3 cm of the FAA's survey at every end (tolerance 0.30 m). Latency wasn't measured separately, and nothing unexpected became an issue.
+- **Done but for latency (2026-11-15), by the host's own datum test at the desk:** it connected; its MSL altitudes put the aircraft on each of KHSV's four runway ends; its HAT/HOT requests were answered, Fovea's HOT within 6.3 cm of the FAA's survey at every end (tolerance 0.30 m). Done but for latency, which wasn't measured.
 
 ## Inputs needed from you and the team
 
@@ -143,4 +143,4 @@ The compiler converts positions and ellipsoidal heights from NAD83(2011) to WGS-
 |---|---|
 | Step 1 | ~~The host's `ellipsoid_minus_msl_m` set to −29.55 m at KHSV, with Fovea's~~ Done (the team, 2026-11-09) |
 | Step 2 | ~~Confirm 8004 and 8005 are the host's ports~~ Confirmed (the team, 2026-11-09) |
-| Step 4 | ~~Time with the host at the desk~~ Done (2026-11-15, below) |
+| Step 4 | ~~Time with the host at the desk~~ Done but for latency (2026-11-15, above) |

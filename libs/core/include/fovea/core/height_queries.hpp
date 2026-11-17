@@ -30,7 +30,7 @@ struct HeightAnswer {
 };
 
 struct HeightQueries {
-    // About ten frames' worth at a host's two requests a frame, and a burst
+    // About ten frames' worth at two requests a frame (a 100 Hz host's), and a burst
     // of 100 a frame (the plan's load) with room to spare.
     static constexpr std::size_t kCapacity = 1024;
 
