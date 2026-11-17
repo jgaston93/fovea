@@ -43,9 +43,9 @@ The frame-timing overlay and future debug panels use Dear ImGui with its Vulkan 
 
 **Status:** Accepted
 
-GoogleTest 1.15.2 is used for CPU-side unit tests (math, config parsing, containers, terrain queries), discovered and run through CTest (`gtest_discover_tests`). It matches the sibling eyas repo, so the two share tooling and habits. GPU and image tests go through the headless and replay harness instead.
+GoogleTest 1.15.2 is used for CPU-side unit tests (math, config parsing, containers, terrain queries), discovered and run through CTest (`gtest_discover_tests`). It matches the flight-model repo Fovea was set up beside, so the two share tooling and habits. GPU and image tests go through the headless and replay harness instead.
 
-## D-008 Compilers, warnings and CI (adapted from eyas)
+## D-008 Compilers, warnings and CI (adapted from a sibling repo)
 
 **Status:** Accepted
 
@@ -232,7 +232,7 @@ Each global cloud layer is a lit, textured layer at its base (the ICD's mean-sea
 
 **Status:** Accepted (2026-11-09)
 
-A CIGI altitude is converted to and from ellipsoidal height with `[host] geoid_height_m`, the same constant the host uses (the team's simulator, Aerie under EYAS: `ellipsoid_minus_msl_m`; at KHSV −29.55 m since D-037, GEOID18's −28.25 m less the 1.30 m from NAD83(2011) to WGS-84). This covers entity positions, weather layer bases, and HAT/HOT altitudes and heights. Fovea and the host then agree on MSL exactly everywhere, which matters more than either matching the true geoid. The configs on both sides must match: a mismatch shifts the whole world vertically. A geoid grid waits for a host that uses a geoid model, or for areas large enough that one constant drifts by metres (#19, kept open to revisit).
+A CIGI altitude is converted to and from ellipsoidal height with `[host] geoid_height_m`, the same constant the host uses (the first host's `ellipsoid_minus_msl_m`; at KHSV −29.55 m since D-037, GEOID18's −28.25 m less the 1.30 m from NAD83(2011) to WGS-84). This covers entity positions, weather layer bases, and HAT/HOT altitudes and heights. Fovea and the host then agree on MSL exactly everywhere, which matters more than either matching the true geoid. The configs on both sides must match: a mismatch shifts the whole world vertically. A geoid grid waits for a host that uses a geoid model, or for areas large enough that one constant drifts by metres (#19, kept open to revisit).
 
 ## D-036 HAT/HOT are answered off the render thread, from the database's finest data
 

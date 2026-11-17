@@ -197,7 +197,7 @@ frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
 
 `OffscreenPresenter` renders the same views to images without a window. Combined with a replay adapter that writes recorded CIGI traffic into SceneState at its original timing, it enables golden-image comparisons and repeatable performance runs. Milestone 1 provides the offscreen presenter and a `--headless --frames N --dump <dir>` option. Replay arrives with CIGI in milestone 2.
 
-## Milestone 1 build order
+## Milestone 1 build order (the record)
 
 1. CMake skeleton, presets, dependency fetching, warnings, CI on GCC, Clang and Windows MSVC (D-008, D-009; done).
 2. `core`: math (doubles, ECEF/geodetic), monotonic time, logging, triple buffer, SPSC ring, frame arena, config structs and TOML loading with validation, plus unit tests.

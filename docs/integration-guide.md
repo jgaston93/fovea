@@ -84,7 +84,7 @@ Until a host sets them, the date, time, visibility and weather layers come from 
 Fovea's database is WGS-84 (D-037). CIGI altitudes are above mean sea level. Fovea converts between the two with a single constant, `[host] geoid_height_m`: the geoid's height above the WGS-84 ellipsoid (D-035).
 
 - **The same constant applies everywhere:** entity positions, weather layer bases, HAT/HOT altitudes, and the HOT answers.
-- **It must match the host's own constant** (EYAS's Aerie calls it `ellipsoid_minus_msl_m`). Then the two agree on MSL exactly. A mismatch shifts the whole world up or down by the difference.
+- **It must match the host's own constant** (one host calls it `ellipsoid_minus_msl_m`). Then the two agree on MSL exactly. A mismatch shifts the whole world up or down by the difference.
 - **At KHSV it is −29.55 m.** That is GEOID18's −28.25 m less the 1.30 m from NAD83(2011) to WGS-84.
 - **Fovea doesn't use a geoid grid.** A host that uses a geoid model will drift from the constant away from the area it was set for (#19).
 
