@@ -104,7 +104,8 @@ struct ParticlesConfig {
     std::uint16_t port = 0;  // required
     // The local address to listen on: all interfaces when unset.
     std::optional<std::uint32_t> listen_address;
-    // The most particles kept; each costs about 200 bytes in all.
+    // The most particles kept; each costs about 300 bytes in all (three
+    // published frames, the adapter's table and its index).
     std::uint32_t capacity = 200000;
     // How long a particle fades in when it first arrives, and out when its
     // sender stops refreshing it.

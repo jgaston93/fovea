@@ -1,5 +1,6 @@
 #include "fovea/net/puff_adapter.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <numbers>
@@ -12,7 +13,9 @@ namespace {
 
 constexpr int kMaxDatagramsPerPoll = 4096;
 constexpr auto kLossWindow = std::chrono::seconds(1);
-constexpr auto kForgetOrigin = std::chrono::seconds(10);
+// A sequence further ahead than this is a discontinuity (a corrupt number),
+// not that many datagrams lost: counting starts again from it.
+constexpr std::int64_t kMaxSequenceGap = 65536;
 
 std::size_t hash_of(std::uint32_t source, std::uint32_t id) noexcept {
     const std::uint64_t k = (std::uint64_t{source} << 32) | id;
@@ -59,23 +62,23 @@ bool PuffAdapter::poll() {
 void PuffAdapter::apply(std::span<const std::uint8_t> d, LocalTime t) noexcept {
     stats_.datagrams.fetch_add(1, std::memory_order_relaxed);
     puff::Header h;
-    switch (puff::read_header(d, h)) {
-        case puff::HeaderResult::rejected:
-            stats_.rejected.fetch_add(1, std::memory_order_relaxed);
-            return;
-        case puff::HeaderResult::unknown_type:
-            stats_.skipped.fetch_add(1, std::memory_order_relaxed);
-            return;
-        case puff::HeaderResult::ok:
-            break;
+    const puff::HeaderResult read = puff::read_header(d, h);
+    if (read == puff::HeaderResult::rejected) {
+        stats_.rejected.fetch_add(1, std::memory_order_relaxed);
+        return;
     }
-    Source* s = source_for(h);
+    Source* s = source_for(h, t);
     if (s == nullptr) {
         stats_.rejected.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+    // A skipped type still took a sequence number: counted, so it isn't a loss.
     count_sequence(*s, h.sequence);
-    const auto source = static_cast<std::uint32_t>(s - sources_.begin());
+    if (read == puff::HeaderResult::unknown_type) {
+        stats_.skipped.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const auto source = static_cast<std::uint32_t>(s - sources_.data());
     if (h.type == static_cast<std::uint8_t>(puff::Type::origin)) {
         apply_origin(source, h, puff::read_origin(d, h), t);
     } else {
@@ -83,65 +86,101 @@ void PuffAdapter::apply(std::span<const std::uint8_t> d, LocalTime t) noexcept {
     }
 }
 
-PuffAdapter::Source* PuffAdapter::source_for(const puff::Header& h) noexcept {
+PuffAdapter::Source* PuffAdapter::source_for(const puff::Header& h, LocalTime t) noexcept {
+    Source* free = nullptr;
     for (std::size_t i = 0; i < sources_.size(); ++i) {
-        Source& s = sources_[i];
+        Source& s = sources_.at(i);
+        if (!s.used) {
+            free = free != nullptr ? free : &s;
+            continue;
+        }
         if (s.id != h.source_id) {
             continue;
         }
         if (s.session != h.session) {
+            if (s.has_previous && h.session == s.previous_session) {
+                return nullptr;  // a stray from before the restart: it mustn't reset the new one
+            }
             // Restarted: its time starts again, so its old puffs and origins
             // would win against everything new.
+            close_window(s);
             reset_source(static_cast<std::uint32_t>(i));
+            s.has_previous = true;
+            s.previous_session = s.session;
             s.session = h.session;
             stats_.sessions.fetch_add(1, std::memory_order_relaxed);
         }
+        s.last_heard = t;
         return &s;
     }
-    Source fresh;
-    fresh.id = h.source_id;
-    fresh.session = h.session;
-    if (!sources_.push_back(fresh)) {
+    if (free == nullptr) {
         return nullptr;
     }
+    *free = Source{};
+    free->used = true;
+    free->id = h.source_id;
+    free->session = h.session;
+    free->last_heard = t;
     stats_.sessions.fetch_add(1, std::memory_order_relaxed);
-    return &sources_[sources_.size() - 1];
+    return free;
 }
 
 void PuffAdapter::reset_source(std::uint32_t index) noexcept {
-    std::size_t kept = 0;
-    for (std::size_t i = 0; i < count_; ++i) {
-        if (held_[i].source != index) {
-            held_[kept++] = held_[i];
+    for (std::size_t i = 0; i < count_;) {
+        if (held_[i].source == index) {
+            remove(i);  // the last moves into i: look at i again
+        } else {
+            ++i;
         }
     }
-    count_ = kept;
-    rebuild_index();
     for (OriginSlot& o : origins_) {
         if (o.used && o.source == index) {
             o.used = false;
         }
     }
-    sources_[index].window_open = false;
+    sources_.at(index).counting = false;
 }
 
 void PuffAdapter::count_sequence(Source& s, std::uint32_t sequence) noexcept {
-    if (!s.window_open) {
-        s.window_open = true;
+    if (!s.counting) {
+        s.counting = true;
         s.base = sequence;
-        s.lowest = s.highest = 0;
+        s.highest = 0;
         s.received = 1;
         return;
     }
     const auto d = static_cast<std::int64_t>(static_cast<std::int32_t>(sequence - s.base));
-    s.lowest = std::min(s.lowest, d);
+    if (d < 0) {
+        return;  // behind the window: an earlier window counted it lost; it's late, not new
+    }
+    if (d - s.highest > kMaxSequenceGap) {
+        s.base = sequence;  // a discontinuity: start again from it, counting no loss
+        s.highest = 0;
+        s.received = 1;
+        return;
+    }
     s.highest = std::max(s.highest, d);
     ++s.received;
 }
 
+void PuffAdapter::close_window(Source& s) noexcept {
+    if (!s.counting) {
+        return;
+    }
+    const auto expected = static_cast<std::uint64_t>(s.highest + 1);
+    if (expected > s.received) {
+        stats_.lost.fetch_add(expected - s.received, std::memory_order_relaxed);
+    }
+    // The next window expects the sequence after this one's highest, so a
+    // loss across the boundary is counted too.
+    s.base += static_cast<std::uint32_t>(s.highest + 1);
+    s.highest = -1;
+    s.received = 0;
+}
+
 int PuffAdapter::find_origin(std::uint32_t source, std::uint32_t id) const noexcept {
     for (std::size_t i = 0; i < origins_.size(); ++i) {
-        if (origins_[i].used && origins_[i].source == source && origins_[i].id == id) {
+        if (origins_.at(i).used && origins_.at(i).source == source && origins_.at(i).id == id) {
             return static_cast<int>(i);
         }
     }
@@ -150,23 +189,26 @@ int PuffAdapter::find_origin(std::uint32_t source, std::uint32_t id) const noexc
 
 void PuffAdapter::apply_origin(std::uint32_t source, const puff::Header& h, const puff::Origin& o,
                                LocalTime t) noexcept {
+    if (!std::isfinite(o.latitude_rad) || !std::isfinite(o.longitude_rad) ||
+        !std::isfinite(o.height_msl_m)) {
+        stats_.rejected.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     int slot = find_origin(source, h.origin_id);
-    if (slot < 0) {
-        for (std::size_t i = 0; i < origins_.size() && slot < 0; ++i) {
-            if (!origins_[i].used) {
-                slot = static_cast<int>(i);
-            }
+    for (std::size_t i = 0; i < origins_.size() && slot < 0; ++i) {
+        if (!origins_.at(i).used) {
+            slot = static_cast<int>(i);
+            origins_.at(i).refs = 0;
         }
     }
-    if (slot < 0 || !std::isfinite(o.latitude_rad) || !std::isfinite(o.longitude_rad) ||
-        !std::isfinite(o.height_msl_m)) {
-        (slot < 0 ? stats_.origins_full : stats_.rejected).fetch_add(1, std::memory_order_relaxed);
+    if (slot < 0) {
+        stats_.origins_full.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     constexpr double kDeg = 180.0 / std::numbers::pi;
     const double lat = o.latitude_rad * kDeg;
     const double lon = o.longitude_rad * kDeg;
-    OriginSlot& s = origins_[static_cast<std::size_t>(slot)];
+    OriginSlot& s = origins_.at(static_cast<std::size_t>(slot));
     s.used = true;
     s.source = source;
     s.id = h.origin_id;
@@ -179,19 +221,21 @@ void PuffAdapter::apply_origin(std::uint32_t source, const puff::Header& h, cons
 
 void PuffAdapter::apply_puffs(std::uint32_t source, std::span<const std::uint8_t> d,
                               const puff::Header& h, LocalTime t) noexcept {
-    const int slot = find_origin(source, h.origin_id);
-    if (slot < 0) {
+    const int found = find_origin(source, h.origin_id);
+    if (found < 0) {
         stats_.unknown_origin.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    origins_[static_cast<std::size_t>(slot)].last_used = t;
+    const auto slot = static_cast<std::uint16_t>(found);
+    origins_.at(slot).last_used = t;
     const LocalTime fade_from =
         t + std::chrono::duration_cast<Clock::duration>(std::chrono::microseconds(h.hold_us));
     const bool frozen = (h.flags & puff::kFlagFrozen) != 0;
+    Source& src = sources_.at(source);
     for (std::size_t i = 0; i < h.count; ++i) {
         const puff::Puff r = puff::read_puff(d, h, i);
         if (!finite_puff(r)) {
-            stats_.rejected.fetch_add(1, std::memory_order_relaxed);
+            stats_.rejected_records.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
         std::size_t at = find(source, r.id);
@@ -200,6 +244,7 @@ void PuffAdapter::apply_puffs(std::uint32_t source, std::span<const std::uint8_t
                 stats_.late.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
+            --origins_.at(held_[at].p.origin).refs;
         } else {
             if (count_ == held_.size()) {
                 stats_.table_full.fetch_add(1, std::memory_order_relaxed);
@@ -210,6 +255,7 @@ void PuffAdapter::apply_puffs(std::uint32_t source, std::span<const std::uint8_t
             held_[at].id = r.id;
             held_[at].p.first_seen = t;
             index_insert(at);
+            ++src.alive;
         }
         Held& e = held_[at];
         e.sim_time_ns = h.sim_time_ns;
@@ -219,13 +265,14 @@ void PuffAdapter::apply_puffs(std::uint32_t source, std::span<const std::uint8_t
         e.p.bulk_density = r.bulk_density;
         e.p.received = t;
         e.p.fade_from = fade_from;
-        e.p.origin = static_cast<std::uint16_t>(slot);
+        e.p.origin = slot;
         e.p.frozen = frozen;
+        ++origins_.at(slot).refs;
         stats_.records.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
-std::size_t PuffAdapter::find(std::uint32_t source, std::uint32_t id) const noexcept {
+std::size_t PuffAdapter::find_slot(std::uint32_t source, std::uint32_t id) const noexcept {
     const std::size_t mask = index_.size() - 1;
     for (std::size_t i = hash_of(source, id) & mask;; i = (i + 1) & mask) {
         const std::uint32_t v = index_[i];
@@ -234,9 +281,14 @@ std::size_t PuffAdapter::find(std::uint32_t source, std::uint32_t id) const noex
         }
         const Held& e = held_[v - 1];
         if (e.source == source && e.id == id) {
-            return v - 1;
+            return i;
         }
     }
+}
+
+std::size_t PuffAdapter::find(std::uint32_t source, std::uint32_t id) const noexcept {
+    const std::size_t slot = find_slot(source, id);
+    return slot == npos ? npos : index_[slot] - 1;
 }
 
 void PuffAdapter::index_insert(std::size_t at) noexcept {
@@ -249,34 +301,59 @@ void PuffAdapter::index_insert(std::size_t at) noexcept {
     index_[i] = static_cast<std::uint32_t>(at + 1);
 }
 
-void PuffAdapter::rebuild_index() noexcept {
-    std::fill(index_.begin(), index_.end(), 0U);
-    for (std::size_t i = 0; i < count_; ++i) {
-        index_insert(i);
+// Linear probing's backward-shift deletion: no tombstones, so the index never
+// needs rebuilding. An entry after the hole moves into it unless its home
+// lies cyclically in (hole, entry].
+void PuffAdapter::index_erase(std::size_t slot) noexcept {
+    const std::size_t mask = index_.size() - 1;
+    std::size_t hole = slot;
+    index_[hole] = 0;
+    for (std::size_t j = (hole + 1) & mask; index_[j] != 0; j = (j + 1) & mask) {
+        const Held& e = held_[index_[j] - 1];
+        const std::size_t home = hash_of(e.source, e.id) & mask;
+        const bool stays = hole <= j ? (hole < home && home <= j) : (hole < home || home <= j);
+        if (!stays) {
+            index_[hole] = index_[j];
+            index_[j] = 0;
+            hole = j;
+        }
     }
+}
+
+// Removes the particle at `at`: the last moves into its place (order doesn't
+// matter), its index entry repointed. Constant time on average.
+void PuffAdapter::remove(std::size_t at) noexcept {
+    Held& e = held_[at];
+    --origins_.at(e.p.origin).refs;
+    --sources_.at(e.source).alive;
+    index_erase(find_slot(e.source, e.id));
+    const std::size_t last = count_ - 1;
+    if (at != last) {
+        index_[find_slot(held_[last].source, held_[last].id)] = static_cast<std::uint32_t>(at + 1);
+        held_[at] = held_[last];
+    }
+    --count_;
 }
 
 void PuffAdapter::compact(LocalTime t) noexcept {
     const auto fade = std::chrono::duration_cast<Clock::duration>(options_.fade);
-    std::array<bool, kMaxParticleOrigins> named{};
-    std::size_t kept = 0;
-    for (std::size_t i = 0; i < count_; ++i) {
-        if (t < held_[i].p.fade_from + fade) {
-            named.at(held_[i].p.origin) = true;
-            if (kept != i) {
-                held_[kept] = held_[i];
-            }
-            ++kept;
+    for (std::size_t i = 0; i < count_;) {
+        if (t >= held_[i].p.fade_from + fade) {
+            remove(i);  // the last moves into i: look at i again
+        } else {
+            ++i;
         }
     }
-    if (kept != count_) {
-        count_ = kept;
-        rebuild_index();
-    }
-    for (std::size_t i = 0; i < origins_.size(); ++i) {
-        OriginSlot& o = origins_.at(i);
-        if (o.used && !named.at(i) && t - o.last_used > kForgetOrigin) {
+    for (OriginSlot& o : origins_) {
+        if (o.used && o.refs == 0 && t - o.last_used > kForgetOrigin) {
             o.used = false;
+        }
+    }
+    for (std::size_t i = 0; i < sources_.size(); ++i) {
+        Source& s = sources_.at(i);
+        if (s.used && s.alive == 0 && t - s.last_heard > kForget) {
+            reset_source(static_cast<std::uint32_t>(i));
+            s.used = false;
         }
     }
 }
@@ -284,12 +361,8 @@ void PuffAdapter::compact(LocalTime t) noexcept {
 void PuffAdapter::publish(LocalTime t) noexcept {
     if (t - window_start_ >= kLossWindow) {
         for (Source& s : sources_) {
-            if (s.window_open) {
-                const auto expected = static_cast<std::uint64_t>(s.highest - s.lowest + 1);
-                if (expected > s.received) {
-                    stats_.lost.fetch_add(expected - s.received, std::memory_order_relaxed);
-                }
-                s.window_open = false;
+            if (s.used) {
+                close_window(s);
             }
         }
         window_start_ = t;

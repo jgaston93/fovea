@@ -191,9 +191,11 @@ Every datagram stands alone: a header, then an origin or whole puffs. There are 
 - **A particle takes a record unless it holds a newer one** (`sim_time_ns`); an equal time is taken. A late datagram loses to newer data.
 - **It moves on its velocity** from when its record arrived, on Fovea's clock, unless the record was frozen.
 - **It fades** in over `fade_s` when new, and out over `fade_s` once `hold_us` passes without a refresh; then it is dropped. A sender retires a particle by not refreshing it.
-- **A new `session`** from a source drops that source's particles and origins.
+- **A new `session`** from a source drops that source's particles and origins. A datagram from the session before it (a stray, after a restart) is rejected. Each sender needs its own `source_id`: two sharing one would reset each other.
+- **Limits:** 8 sources and 64 origins at once, and `capacity` particles. A source silent for 10 s with no particles left is forgotten, and an origin no particle names is forgotten 2 s after it was last sent or named, so senders and origins come and go freely within those limits.
 - **Non-finite values, or a negative radius or density,** reject that record. Particles over the capacity are dropped.
-- **On exit,** Fovea prints the stream's counts: datagrams (rejected, skipped, lost by sequence), records taken and late, origins, sessions, and particles dropped for an unknown origin or a full table.
+- **Losses** are counted from gaps in `sequence` over each second, continuing from one second to the next; reordering isn't counted, nor a jump of more than 65 536 (a corrupt number: counting starts again from it).
+- **On exit,** Fovea prints the stream's counts: datagrams (rejected, skipped, lost), records taken, late and rejected, origins, sessions, and particles dropped for an unknown origin or a full table. A failure of the particle thread stops Fovea with an error.
 
 ## Not supported yet
 

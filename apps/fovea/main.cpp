@@ -241,9 +241,9 @@ void print_particle_stats(const fovea::PuffAdapterStats& s) {
     };
     std::printf(
         "particles: %llu datagrams (%llu rejected, %llu skipped, %llu lost), %llu records "
-        "(%llu late), %llu origins, %llu sessions; %llu alive at the end\n",
+        "(%llu late, %llu rejected), %llu origins, %llu sessions; %llu alive at the end\n",
         n(s.datagrams), n(s.rejected), n(s.skipped), n(s.lost), n(s.records), n(s.late),
-        n(s.origins), n(s.sessions), n(s.alive));
+        n(s.rejected_records), n(s.origins), n(s.sessions), n(s.alive));
     if (n(s.unknown_origin) > 0 || n(s.table_full) > 0 || n(s.origins_full) > 0) {
         std::printf(
             "particles: %llu datagrams before their origin, %llu particles over the capacity, "
@@ -721,6 +721,17 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         } catch (...) {
             render_error = std::current_exception();
         }
+        // Stopped first, so its counts print whatever else failed; its error
+        // is rethrown after the render and network threads' (exit 1).
+        std::exception_ptr particle_error;
+        if (puff_thread) {
+            try {
+                puff_thread->stop();
+            } catch (...) {
+                particle_error = std::current_exception();
+            }
+            print_particle_stats(puff_adapter->stats());
+        }
         if (host_thread) {
             std::exception_ptr host_error;
             try {
@@ -751,16 +762,11 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
                 }
             }
         }
-        if (puff_thread) {
-            try {
-                puff_thread->stop();
-            } catch (const std::exception& e) {
-                (void)std::fprintf(stderr, "fovea: the particle thread failed: %s\n", e.what());
-            }
-            print_particle_stats(puff_adapter->stats());
-        }
         if (render_error) {
             std::rethrow_exception(render_error);
+        }
+        if (particle_error) {
+            std::rethrow_exception(particle_error);  // a failed particle thread stopped the IG
         }
         if (stats) {
             stats->stop();

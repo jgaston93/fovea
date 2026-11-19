@@ -14,7 +14,6 @@
 #include <span>
 #include <vector>
 
-#include "fovea/core/containers.hpp"
 #include "fovea/core/particles.hpp"
 #include "fovea/core/time.hpp"
 #include "fovea/net/puff_stream.hpp"
@@ -35,10 +34,12 @@ struct PuffAdapterOptions {
 // live display) or after the thread stops.
 struct PuffAdapterStats {
     std::atomic<std::uint64_t> datagrams{0};  // received
-    std::atomic<std::uint64_t> rejected{
-        0};                                 // malformed, truncated, or from a source over the table
-    std::atomic<std::uint64_t> skipped{0};  // a newer minor's datagram type
-    std::atomic<std::uint64_t> origins{0};  // origin datagrams applied
+    // Datagrams malformed or truncated, from a source over kMaxSources, or
+    // from a source's previous session (a stray after a restart).
+    std::atomic<std::uint64_t> rejected{0};
+    std::atomic<std::uint64_t> rejected_records{0};  // non-finite, or a negative radius or density
+    std::atomic<std::uint64_t> skipped{0};           // a newer minor's datagram type
+    std::atomic<std::uint64_t> origins{0};           // origin datagrams applied
     std::atomic<std::uint64_t> unknown_origin{0};  // puff datagrams naming an origin not yet heard
     std::atomic<std::uint64_t> origins_full{0};    // origins over kMaxParticleOrigins, dropped
     std::atomic<std::uint64_t> records{0};         // puff records taken
@@ -52,7 +53,11 @@ struct PuffAdapterStats {
 
 class PuffAdapter {
 public:
+    // Senders at once. A sender silent for kForget with no particles left is
+    // forgotten, freeing its place; so is an origin no particle names.
     static constexpr std::size_t kMaxSources = 8;
+    static constexpr std::chrono::seconds kForget{10};
+    static constexpr std::chrono::seconds kForgetOrigin{2};
 
     // Binds the socket (throws std::runtime_error if it can't); the state's
     // capacity is the most particles kept.
@@ -85,31 +90,40 @@ private:
         bool used = false;
         std::uint32_t source = 0;  // index into sources_
         std::uint32_t id = 0;
-        LocalTime last_used;
+        LocalTime last_used;   // announced or named
+        std::size_t refs = 0;  // particles placed from it
         ParticleOrigin frame;
     };
     struct Source {
+        bool used = false;
         std::uint32_t id = 0;
         std::uint32_t session = 0;
-        // Loss window: sequences relative to the window's first, and how many arrived.
-        bool window_open = false;
+        bool has_previous = false;
+        std::uint32_t previous_session = 0;
+        LocalTime last_heard;
+        std::size_t alive = 0;  // its particles held
+        // Losses: sequences from `base`, the window's first expected; a
+        // window closes each second and the next starts after its highest.
+        bool counting = false;
         std::uint32_t base = 0;
-        std::int64_t lowest = 0;
-        std::int64_t highest = 0;
+        std::int64_t highest = -1;
         std::uint64_t received = 0;
     };
 
-    Source* source_for(const puff::Header& h) noexcept;
+    Source* source_for(const puff::Header& h, LocalTime t) noexcept;
     void reset_source(std::uint32_t index) noexcept;
+    void close_window(Source& s) noexcept;
     static void count_sequence(Source& s, std::uint32_t sequence) noexcept;
     int find_origin(std::uint32_t source, std::uint32_t id) const noexcept;
     void apply_origin(std::uint32_t source, const puff::Header& h, const puff::Origin& o,
                       LocalTime t) noexcept;
     void apply_puffs(std::uint32_t source, std::span<const std::uint8_t> d, const puff::Header& h,
                      LocalTime t) noexcept;
-    std::size_t find(std::uint32_t source, std::uint32_t id) const noexcept;  // npos if absent
+    std::size_t find_slot(std::uint32_t source, std::uint32_t id) const noexcept;  // npos if absent
+    std::size_t find(std::uint32_t source, std::uint32_t id) const noexcept;       // npos if absent
     void index_insert(std::size_t at) noexcept;
-    void rebuild_index() noexcept;
+    void index_erase(std::size_t slot) noexcept;
+    void remove(std::size_t at) noexcept;
     void compact(LocalTime t) noexcept;
 
     static constexpr std::size_t npos = static_cast<std::size_t>(-1);
@@ -118,7 +132,7 @@ private:
     ParticleState& state_;
     UdpSocket socket_;
     std::array<std::uint8_t, 2048> buffer_{};
-    FixedArray<Source, kMaxSources> sources_;
+    std::array<Source, kMaxSources> sources_{};
     std::array<OriginSlot, kMaxParticleOrigins> origins_{};
     std::vector<Held> held_;  // the first count_ are live; sized at construction
     std::size_t count_ = 0;

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <map>
 #include <numbers>
 #include <vector>
 
@@ -327,8 +328,8 @@ TEST_F(PuffAdapterTest, TheCapacityIsAHardLimit) {
 // Losses are counted over a window from the span of sequences seen, so a
 // reordering isn't a loss.
 TEST_F(PuffAdapterTest, LossesAreCountedOverSequenceSpans) {
-    send(origin_datagram(header()), t0);
-    adapter.publish(t0);  // closes the origin's window (nothing lost); the next opens at 10
+    send(origin_datagram(header()), t0);  // sequence 0
+    adapter.publish(t0);                  // closes its window: the next expects 1
     puff::Header h = header();
     const std::array<puff::Puff, 1> one{puff_at(1, 0)};
     for (const std::uint32_t s : {10U, 12U, 11U, 13U, 16U}) {  // 11 late, 14 and 15 lost
@@ -336,7 +337,130 @@ TEST_F(PuffAdapterTest, LossesAreCountedOverSequenceSpans) {
         send(puff_datagram(h, one), t0 + 100ms);
     }
     adapter.publish(t0 + 2s);
-    EXPECT_EQ(stat(adapter.stats().lost), 2U);  // 10..16: 7 expected, 5 received
+    EXPECT_EQ(stat(adapter.stats().lost), 11U);  // 1..9, 14 and 15; 11's lateness isn't a loss
+}
+
+// A loss across a window's boundary is counted; a datagram of a newer
+// minor's type took its sequence number, so it isn't a loss; a wild jump (a
+// corrupt sequence) starts counting again rather than adding billions.
+TEST_F(PuffAdapterTest, LossesAcrossWindowsSkippedTypesAndJumps) {
+    puff::Header h = header();
+    const std::array<puff::Puff, 1> one{puff_at(1, 0)};
+    send(origin_datagram(h), t0);  // 0
+    for (const std::uint32_t s : {1U, 2U, 3U, 4U}) {
+        h.sequence = s;
+        send(puff_datagram(h, one), t0);
+    }
+    adapter.publish(t0 + 1s);                 // closes 0..4
+    for (const std::uint32_t s : {7U, 8U}) {  // 5 and 6 lost across the boundary
+        h.sequence = s;
+        send(puff_datagram(h, one), t0 + 1100ms);
+    }
+    auto skipped = puff_datagram(h, one);
+    skipped[8] = 9;   // a type this version doesn't know
+    skipped[24] = 9;  // sequence 9
+    send(skipped, t0 + 1100ms);
+    h.sequence = 10;
+    send(puff_datagram(h, one), t0 + 1100ms);
+    adapter.publish(t0 + 2s);
+    EXPECT_EQ(stat(adapter.stats().lost), 2U);
+    EXPECT_EQ(stat(adapter.stats().skipped), 1U);
+    h.sequence = 10 + 0x7FFF0000U;  // corrupt
+    send(puff_datagram(h, one), t0 + 2100ms);
+    h.sequence = 11 + 0x7FFF0000U;
+    send(puff_datagram(h, one), t0 + 2100ms);
+    adapter.publish(t0 + 3s);
+    EXPECT_EQ(stat(adapter.stats().lost), 2U);
+}
+
+// A sender silent for PuffAdapter::kForget with no particles left is
+// forgotten, so a ninth can come after eight have gone.
+TEST_F(PuffAdapterTest, SilentSourcesAreForgotten) {
+    for (std::uint32_t s = 1; s <= PuffAdapter::kMaxSources; ++s) {
+        send(origin_datagram(header(s)), t0);
+    }
+    send(origin_datagram(header(99)), t0);
+    EXPECT_EQ(stat(adapter.stats().rejected), 1U);  // over the table
+    adapter.publish(t0 + 11s);
+    send(origin_datagram(header(99)), t0 + 11s);
+    EXPECT_EQ(stat(adapter.stats().rejected), 1U);
+    EXPECT_EQ(stat(adapter.stats().origins), 9U);
+}
+
+// A stray datagram from before a restart is refused: it mustn't reset the
+// new session.
+TEST_F(PuffAdapterTest, AStrayFromThePreviousSessionIsRefused) {
+    send(origin_datagram(header(7, 1)), t0);
+    send(origin_datagram(header(7, 2)), t0);  // restarted
+    const std::array<puff::Puff, 1> one{puff_at(1, 4.0F)};
+    send(puff_datagram(header(7, 2), one), t0);
+    send(puff_datagram(header(7, 1), one), t0);  // a stray from session 1
+    EXPECT_EQ(published(t0).count, 1U);
+    EXPECT_EQ(stat(adapter.stats().rejected), 1U);
+    EXPECT_EQ(stat(adapter.stats().sessions), 2U);
+}
+
+// A sender re-centring under new ids frees the old origins once no particle
+// names them: far more origins over time than the table holds at once.
+TEST_F(PuffAdapterTest, OriginsNoParticleNamesAreFreed) {
+    const std::array<puff::Puff, 1> one{puff_at(1, 0)};
+    for (std::uint32_t k = 0; k < 3 * kMaxParticleOrigins; ++k) {
+        puff::Header h = header();
+        h.origin_id = k + 1;
+        h.sim_time_ns = k;
+        const LocalTime t = t0 + std::chrono::milliseconds(500 * k);
+        send(origin_datagram(h), t);
+        send(puff_datagram(h, one), t);  // the one particle moves to the new origin
+        adapter.publish(t);
+    }
+    EXPECT_EQ(stat(adapter.stats().origins_full), 0U);
+    EXPECT_EQ(stat(adapter.stats().unknown_origin), 0U);
+    EXPECT_EQ(published(t0 + 100s).count, 0U);
+}
+
+// The table under churn, against a reference: particles arriving, refreshed
+// and expiring at random, the count always what the reference says, and a
+// refreshed id never held twice.
+TEST(PuffAdapter, TheTableStaysRightUnderChurn) {
+    ParticleState state(1000);
+    PuffAdapterOptions o;
+    o.address = kLoopback;
+    o.fade = 0.05s;
+    PuffAdapter adapter(o, state);
+    const LocalTime t0 = LocalTime{} + 1000s;
+    puff::Header h = header();
+    std::vector<std::uint8_t> d(puff::kMaxDatagram);
+    d.resize(puff::write_origin(d, h, {0.6, -1.5, 190.0}));
+    adapter.apply(d, t0);
+    std::map<std::uint32_t, LocalTime> gone_at;  // id -> when it goes (fade_from + fade)
+    std::uint32_t rng = 12345;
+    const auto next = [&rng] {
+        rng = rng * 1664525U + 1013904223U;
+        return rng >> 8;
+    };
+    for (int step = 1; step <= 400; ++step) {
+        const LocalTime t = t0 + std::chrono::milliseconds(10 * step);
+        std::vector<puff::Puff> batch;
+        for (int i = 0; i < 39; ++i) {
+            batch.push_back(puff_at(next() % 800, 1.0F));
+        }
+        h.hold_us = 20000 + (next() % 5) * 20000;  // 20 to 100 ms
+        h.sim_time_ns = static_cast<std::uint64_t>(step);
+        std::vector<std::uint8_t> p(puff::kMaxDatagram);
+        p.resize(puff::write_puffs(p, h, batch));
+        adapter.apply(p, t);
+        for (const auto& b : batch) {
+            gone_at[b.id] = t + std::chrono::microseconds(h.hold_us) + 50ms;
+        }
+        adapter.publish(t);
+        std::size_t expected = 0;
+        for (const auto& [id, when] : gone_at) {
+            expected += t < when ? 1U : 0U;
+        }
+        const ParticleFrame& f = state.latest();
+        ASSERT_EQ(f.count, expected) << "step " << step;
+    }
+    EXPECT_EQ(adapter.stats().table_full.load(), 0U);
 }
 
 TEST_F(PuffAdapterTest, NonFiniteOrNegativePuffsAreRejected) {
@@ -346,7 +470,8 @@ TEST_F(PuffAdapterTest, NonFiniteOrNegativePuffsAreRejected) {
     bad[1].radius = -1.0F;
     send(puff_datagram(header(), bad), t0);
     EXPECT_EQ(published(t0).count, 1U);
-    EXPECT_EQ(stat(adapter.stats().rejected), 2U);
+    EXPECT_EQ(stat(adapter.stats().rejected_records), 2U);
+    EXPECT_EQ(stat(adapter.stats().rejected), 0U);
 }
 
 TEST_F(PuffAdapterTest, ApplyingAndPublishingAllocateNothing) {

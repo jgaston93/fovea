@@ -27,7 +27,7 @@ struct ParticleOrigin {
     DMat3 enu_to_ecef{1.0};  // columns: east, north and up, as ECEF unit vectors
 };
 
-inline constexpr std::size_t kMaxParticleOrigins = 16;
+inline constexpr std::size_t kMaxParticleOrigins = 64;
 
 struct Particle {
     Vec3 position{0.0F};        // [m] east, north, up from its origin
