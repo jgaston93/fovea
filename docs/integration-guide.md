@@ -136,6 +136,65 @@ When Fovea exits, it prints what the host link did: messages received and reject
 | The aircraft floats above or sinks into the runway | `geoid_height_m` differs from the host's constant |
 | HAT/HOT answers all invalid | The point is outside the database, or no database is loaded |
 
+## Particle volumes
+
+A simulation of dust, smoke or spray sends its particles to Fovea on a UDP port of their own, apart from CIGI ([D-039](decisions.md)). Each particle (a *puff*) is a sphere of uniform density with a velocity. Fovea receives and keeps them now; drawing them is the next step.
+
+```toml
+[particles]
+port = 47102                 # required
+listen_address = "127.0.0.1" # optional: listen on one address only
+capacity = 200000            # the most particles kept (200000 if left out)
+fade_s = 0.25                # fade in when new, and out when no longer refreshed
+```
+
+Origins' heights are MSL, made ellipsoidal with `[host]`'s `geoid_height_m` (0 without a `[host]`).
+
+### The stream
+
+Every datagram stands alone: a header, then an origin or whole puffs. There are no frames or chunks to reassemble. Little-endian, no padding; at most 1472 bytes, so IP never fragments one (up to 39 puffs at this version). Version 0.1.
+
+**Header (48 bytes):**
+
+| Offset | Field | Type | |
+|---|---|---|---|
+| 0 | `magic` | u32 | `PUFF` in memory |
+| 4 | `version_major`, `version_minor` | u16, u16 | 0, 1. Another major is rejected. |
+| 8 | `type` | u8 | 1 an origin, 2 puffs; any other is a newer minor's, skipped |
+| 9 | `flags` | u8 | bit 0: the sender is frozen (its particles aren't moved on their velocity) |
+| 10 | `header_bytes` | u16 | where the body starts: at least 48 (a newer, longer header is skipped) |
+| 12 | `source_id` | u32 | the sender; particles and origins are per source |
+| 16 | `sim_time_ns` | u64 | the sender's own time: orders one particle's records |
+| 24 | `sequence` | u32 | +1 per datagram, per source and session; for counting losses only |
+| 28 | `origin_id` | u32 | puffs: the origin their positions are from; an origin: its own id |
+| 32 | `hold_us` | u32 | puffs: µs a particle lives without a refresh, on Fovea's clock |
+| 36 | `record_bytes` | u16 | puffs: one record's size, at least 36 (a newer, longer record is read for what's known) |
+| 38 | `count` | u16 | puffs: records in this datagram |
+| 40 | `session` | u32 | the sender's run, new at each start: a new one resets the source |
+| 44 | reserved | u32 | 0 |
+
+**An origin (type 1): the header, then three f64:** latitude and longitude in radians (WGS-84 geodetic), and height in metres above MSL. Puffs are placed east-north-up on the tangent plane at that point; only the origin's height is MSL.
+
+**Puffs (type 2): the header, then `count` records:**
+
+| Offset | Field | Type | |
+|---|---|---|---|
+| 0 | `id` | u32 | the same particle keeps its id for its life, moving continuously |
+| 4 | `east`, `north`, `up` | 3 × f32 | m from the origin |
+| 16 | `v_east`, `v_north`, `v_up` | 3 × f32 | m/s |
+| 28 | `radius` | f32 | m, the sphere's extent |
+| 32 | `bulk_density` | f32 | kg/m³, the particle's mass over its sphere's volume |
+
+### What Fovea does with it
+
+- **Origins** are kept by source and id. Puffs naming an origin not yet heard are dropped, so a sender sends a new origin (three times) before puffs name it, then about once a second.
+- **A particle takes a record unless it holds a newer one** (`sim_time_ns`); an equal time is taken. A late datagram loses to newer data.
+- **It moves on its velocity** from when its record arrived, on Fovea's clock, unless the record was frozen.
+- **It fades** in over `fade_s` when new, and out over `fade_s` once `hold_us` passes without a refresh; then it is dropped. A sender retires a particle by not refreshing it.
+- **A new `session`** from a source drops that source's particles and origins.
+- **Non-finite values, or a negative radius or density,** reject that record. Particles over the capacity are dropped.
+- **On exit,** Fovea prints the stream's counts: datagrams (rejected, skipped, lost by sequence), records taken and late, origins, sessions, and particles dropped for an unknown origin or a full table.
+
 ## Not supported yet
 
 - **Entities:** drawing entities other than the eyepoint, attached entities and articulated parts (milestone 9, #20). Line of sight and other terrain queries over CIGI (milestone 9).
@@ -144,3 +203,4 @@ When Fovea exits, it prints what the host link did: messages received and reject
 - **Other packets:** view and sensor control, component control and the remaining packets, which are skipped.
 - **Recording:** recording and replaying CIGI traffic (#29).
 - **Control plane:** a control and stats channel separate from CIGI (milestone 12).
+- **Particle volumes:** drawing them (D-039's next step).

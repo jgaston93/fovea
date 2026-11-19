@@ -1,9 +1,12 @@
 # Host protocol adapters. Writes SceneState only; never includes render
-# headers. The CIGI 3.3 codec (D-013, D-014) is here.
+# headers. The CIGI 3.3 codec (D-013, D-014) is here, and the puff stream's
+# (D-039), whose adapter writes ParticleState.
 add_library(fovea_net STATIC
     src/cigi.cpp
     src/cigi_adapter.cpp
     src/host_thread.cpp
+    src/puff_adapter.cpp
+    src/puff_stream.cpp
     src/udp_socket.cpp)
 add_library(fovea::net ALIAS fovea_net)
 target_include_directories(fovea_net PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
