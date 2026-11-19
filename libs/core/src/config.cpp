@@ -295,6 +295,37 @@ void parse_host(Parser& p, const toml::table& t, HostConfig& out) {
     }
 }
 
+void parse_particles(Parser& p, const toml::table& t, ParticlesConfig& out) {
+    p.check_keys(t, {"port", "listen_address", "capacity", "fade_s"}, "particles");
+    if (const auto* n = p.required(t, "port", "particles")) {
+        if (auto v = p.integer(*n, "particles.port", 1, 65535)) {
+            out.port = static_cast<std::uint16_t>(*v);
+        }
+    }
+    if (const auto* n = t.get("listen_address")) {
+        if (auto v = p.string(*n, "particles.listen_address")) {
+            out.listen_address = parse_ipv4(*v);
+            if (!out.listen_address) {
+                p.error(n->source(),
+                        "'particles.listen_address' must be an IPv4 address like 127.0.0.1 "
+                        "(got \"" +
+                            *v + "\")");
+            }
+        }
+    }
+    if (const auto* n = t.get("capacity")) {
+        if (auto v = p.integer(*n, "particles.capacity", 1, 2000000)) {
+            out.capacity = static_cast<std::uint32_t>(*v);
+        }
+    }
+    if (const auto* n = t.get("fade_s")) {
+        if (auto v = p.number(*n, "particles.fade_s")) {
+            check_range(p, *n, "particles.fade_s", *v, 0.0, 10.0, false);
+            out.fade_s = *v;
+        }
+    }
+}
+
 // Reads the listed numeric fields of an inline table, all required.
 template <std::size_t N>
 std::optional<std::array<double, N>> number_fields(Parser& p, const toml::node& node,
@@ -671,8 +702,10 @@ ConfigResult parse_display_config(std::string_view text, std::string_view source
     }
 
     DisplayConfig config;
-    p.check_keys(root, {"display", "channel", "reference_scene", "environment", "host", "terrain"},
-                 "");
+    p.check_keys(
+        root,
+        {"display", "channel", "reference_scene", "environment", "host", "terrain", "particles"},
+        "");
     if (const auto* n = root.get("environment")) {
         if (const auto* t = p.table(*n, "environment")) {
             parse_environment(p, *t, config.environment);
@@ -686,6 +719,11 @@ ConfigResult parse_display_config(std::string_view text, std::string_view source
     if (const auto* n = root.get("host")) {
         if (const auto* t = p.table(*n, "host")) {
             parse_host(p, *t, config.host.emplace());
+        }
+    }
+    if (const auto* n = root.get("particles")) {
+        if (const auto* t = p.table(*n, "particles")) {
+            parse_particles(p, *t, config.particles.emplace());
         }
     }
     if (const auto* n = root.get("reference_scene")) {

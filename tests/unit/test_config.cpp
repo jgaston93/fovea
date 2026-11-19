@@ -524,3 +524,47 @@ TEST(Config, TerrainDatabaseIsRelativeToTheConfigFile) {
 
 }  // namespace
 }  // namespace fovea
+
+namespace fovea {
+namespace {
+
+TEST(Config, ParticlesSectionIsOptional) {
+    const auto r = parse(kMinimal);
+    ASSERT_TRUE(r.ok());
+    EXPECT_FALSE(r.config->particles.has_value());
+}
+
+TEST(Config, ParticlesSectionReadsItsFields) {
+    const auto r = parse(kMinimal + R"(
+[particles]
+port = 47102
+listen_address = "192.168.1.10"
+capacity = 50000
+fade_s = 0.5
+)");
+    ASSERT_TRUE(r.ok()) << r.errors[0].to_string();
+    ASSERT_TRUE(r.config->particles.has_value());
+    const ParticlesConfig& c = *r.config->particles;
+    EXPECT_EQ(c.port, 47102);
+    EXPECT_EQ(c.listen_address, 0xC0A8010AU);
+    EXPECT_EQ(c.capacity, 50000U);
+    EXPECT_DOUBLE_EQ(c.fade_s, 0.5);
+    const auto d = parse(kMinimal + "[particles]\nport = 9000\n");
+    ASSERT_TRUE(d.ok()) << d.errors[0].to_string();
+    EXPECT_FALSE(d.config->particles->listen_address.has_value());
+    EXPECT_EQ(d.config->particles->capacity, 200000U);
+    EXPECT_DOUBLE_EQ(d.config->particles->fade_s, 0.25);
+}
+
+TEST(Config, ParticlesSectionIsChecked) {
+    const std::string head = kMinimal + "[particles]\n";  // [particles] is line 7
+    expect_one_error(parse(head + "capacity = 10\n"), 7, "missing 'particles.port'");
+    expect_one_error(parse(head + "port = 0\n"), 8, "particles.port");
+    expect_one_error(parse(head + "port = 9000\nlisten_address = \"1.2.3\"\n"), 9, "IPv4 address");
+    expect_one_error(parse(head + "port = 9000\ncapacity = 0\n"), 9, "particles.capacity");
+    expect_one_error(parse(head + "port = 9000\nfade_s = -1\n"), 9, "particles.fade_s");
+    expect_one_error(parse(head + "port = 9000\nrate = 3\n"), 9, "rate");
+}
+
+}  // namespace
+}  // namespace fovea

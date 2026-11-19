@@ -270,6 +270,16 @@ public:
         return slots_[front_];
     }
 
+    // Before the first publish, with no reader yet: runs `f` on each of the
+    // three slots, for a value whose storage is sized once at start (a
+    // vector given its capacity), so publishing never allocates.
+    template <typename F>
+    void init_slots(F&& f) {
+        for (T& slot : slots_) {
+            f(slot);
+        }
+    }
+
     // True if a value was published since the reader last took one.
     bool has_new() const noexcept {
         return (middle_.load(std::memory_order_acquire) & kDirty) != 0;

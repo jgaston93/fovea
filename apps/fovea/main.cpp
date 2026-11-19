@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cstdio>
@@ -36,6 +37,8 @@
 #include "fovea/core/scene.hpp"
 #include "fovea/net/cigi_adapter.hpp"
 #include "fovea/net/host_thread.hpp"
+#include "fovea/net/poll_thread.hpp"
+#include "fovea/net/puff_adapter.hpp"
 #include "fovea/platform/monitors.hpp"
 #include "fovea/platform/platform.hpp"
 #include "fovea/render/frame_loop.hpp"
@@ -232,6 +235,23 @@ int finish(const fovea::Renderer& r) {
 }
 
 // What the CIGI link did, at exit.
+void print_particle_stats(const fovea::PuffAdapterStats& s) {
+    const auto n = [](const std::atomic<std::uint64_t>& v) {
+        return static_cast<unsigned long long>(v.load(std::memory_order_relaxed));
+    };
+    std::printf(
+        "particles: %llu datagrams (%llu rejected, %llu skipped, %llu lost), %llu records "
+        "(%llu late, %llu rejected), %llu origins, %llu sessions; %llu alive at the end\n",
+        n(s.datagrams), n(s.rejected), n(s.skipped), n(s.lost), n(s.records), n(s.late),
+        n(s.rejected_records), n(s.origins), n(s.sessions), n(s.alive));
+    if (n(s.unknown_origin) > 0 || n(s.table_full) > 0 || n(s.origins_full) > 0) {
+        std::printf(
+            "particles: %llu datagrams before their origin, %llu particles over the capacity, "
+            "%llu origins over the table (dropped)\n",
+            n(s.unknown_origin), n(s.table_full), n(s.origins_full));
+    }
+}
+
 void print_host_stats(const fovea::CigiAdapter& adapter) {
     const fovea::CigiAdapterStats& s = adapter.stats();
     std::printf(
@@ -530,6 +550,9 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
     std::unique_ptr<fovea::HeightQueryThread> query_thread;
     std::unique_ptr<fovea::CigiAdapter> host_adapter;
     std::unique_ptr<fovea::HostThread> host_thread;
+    std::unique_ptr<fovea::ParticleState> particle_state;
+    std::unique_ptr<fovea::PuffAdapter> puff_adapter;
+    std::unique_ptr<fovea::PollThread> puff_thread;
     std::unique_ptr<fovea::FrameLoop> loop;
     if (renderer && !options.clear) {
         if (!options.stats.empty()) {
@@ -602,6 +625,30 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
             host_thread = std::make_unique<fovea::HostThread>(*host_adapter, *scene_state);
             host_thread->start();
         }
+        if (config.particles) {
+            // D-039: drawn in a later step; received, kept and counted now.
+            const fovea::ParticlesConfig& pc = *config.particles;
+            particle_state = std::make_unique<fovea::ParticleState>(pc.capacity);
+            fovea::PuffAdapterOptions puff_options;
+            puff_options.port = pc.port;
+            puff_options.address = pc.listen_address.value_or(0);
+            puff_options.geoid_height_m = config.host ? config.host->geoid_height_m : 0.0;
+            puff_options.fade = std::chrono::duration<float>(static_cast<float>(pc.fade_s));
+            try {
+                puff_adapter = std::make_unique<fovea::PuffAdapter>(puff_options, *particle_state);
+            } catch (const std::runtime_error& e) {
+                (void)std::fprintf(stderr, "fovea: particles on UDP port %u: %s\n",
+                                   unsigned{pc.port}, e.what());
+                return 1;
+            }
+            std::printf(
+                "particles: listening on %s (receive buffer %zu KB), up to %u kept\n",
+                fovea::format_endpoint({puff_options.address, puff_adapter->port()}).c_str(),
+                puff_adapter->receive_buffer_bytes() / 1024, unsigned{pc.capacity});
+            puff_thread =
+                std::make_unique<fovea::PollThread>([a = puff_adapter.get()] { return a->poll(); });
+            puff_thread->start();
+        }
         loop = std::make_unique<fovea::FrameLoop>(*renderer, *scene_state, views, loop_options,
                                                   stats.get());
         loop->start();
@@ -616,7 +663,8 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
             // Rendering runs on its own thread; wake for events, or at least
             // every 100 ms to check the time limit and the loop's health.
             if (loop->failed() || (host_thread && host_thread->failed()) ||
-                (query_thread && query_thread->failed())) {
+                (query_thread && query_thread->failed()) ||
+                (puff_thread && puff_thread->failed())) {
                 break;  // stop() below rethrows what went wrong
             }
             int timeout_ms = 100;
@@ -673,6 +721,17 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         } catch (...) {
             render_error = std::current_exception();
         }
+        // Stopped first, so its counts print whatever else failed; its error
+        // is rethrown after the render and network threads' (exit 1).
+        std::exception_ptr particle_error;
+        if (puff_thread) {
+            try {
+                puff_thread->stop();
+            } catch (...) {
+                particle_error = std::current_exception();
+            }
+            print_particle_stats(puff_adapter->stats());
+        }
         if (host_thread) {
             std::exception_ptr host_error;
             try {
@@ -705,6 +764,9 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
         }
         if (render_error) {
             std::rethrow_exception(render_error);
+        }
+        if (particle_error) {
+            std::rethrow_exception(particle_error);  // a failed particle thread stopped the IG
         }
         if (stats) {
             stats->stop();

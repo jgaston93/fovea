@@ -98,6 +98,20 @@ struct HostConfig {
     double geoid_height_m = 0.0;
 };
 
+// [particles] (D-039): a host's particle volumes, the puff stream, on a UDP
+// port of their own (docs/integration-guide.md, "Particle volumes").
+struct ParticlesConfig {
+    std::uint16_t port = 0;  // required
+    // The local address to listen on: all interfaces when unset.
+    std::optional<std::uint32_t> listen_address;
+    // The most particles kept; each costs about 300 bytes in all (three
+    // published frames, the adapter's table and its index).
+    std::uint32_t capacity = 200000;
+    // How long a particle fades in when it first arrives, and out when its
+    // sender stops refreshing it.
+    double fade_s = 0.25;
+};
+
 // [environment] (milestone 6, D-029): the date and time, UTC, and the
 // visibility, until a host sets them.
 struct EnvironmentConfig {
@@ -124,6 +138,7 @@ struct DisplayConfig {
     EnvironmentConfig environment;
     std::optional<HostConfig> host;
     std::optional<TerrainConfig> terrain;
+    std::optional<ParticlesConfig> particles;
 };
 
 // One problem in a config file. Line and column are 1-based; 0 when the

@@ -254,3 +254,19 @@ The compiler converts positions and ellipsoidal heights from NAD83(2011), the so
 - **No build path in the binary.** An installed IG would otherwise carry its builder's name, twice over on Windows:
   - MSVC's linker writes the PDB's full path into each executable (its debug directory), usually under the builder's home folder. `/PDBALTPATH:%_PDB%` records the PDB's file name alone; a debugger still finds it beside the executable or through a symbol path.
   - Sources' paths are compiled in as `__FILE__`: SDL's assertion messages, fetched into the build tree, named the builder's home after the first fix. MSVC's `/d1trimfile:` (undocumented, long supported, the counterpart of GCC's and Clang's `-ffile-prefix-map`) trims the source and build directories off them, for every target and dependency compiled after the flags are set; GCC and Clang get `-ffile-prefix-map` for both. A debugger is pointed at the sources by its source path.
+
+## D-039 A host's particle volumes arrive as a stream of self-contained puffs, apart from CIGI
+
+**Status:** Accepted (2026-11-19)
+
+A particle simulation (rotor-wash dust, smoke, spray) sends what it simulates to Fovea for the views to draw. CIGI 3.3 has nothing for a particle field: its weather regions would throw a simulation's motion away, and its user-defined packets would put a few thousand datagrams a second on the host link that carries entity updates and terrain answers.
+
+- **Puffs, not a density grid.** Each particle is a sphere of uniform density with a velocity, in a local east-north-up frame. A puff keeps its own motion, which the IG continues between updates, so dust moves smoothly at 60 Hz from a 5–30 Hz sender. A grid on the wire would have to be cross-faded, smearing exactly the motion a pilot reads (moving dust gives false self-motion cues), and fixes one resolution everywhere. Particles are also how real-time simulators have shown rotor-wash dust (a particle system in DLR's image generator, Aeronautical Journal 2011; a loosely coupled brownout model feeding the U.S. Army's simulators' IG, I/ITSEC 2008).
+- **Every datagram stands alone:** a header, then whole puffs, each under 1472 bytes (never fragmented). No frames or chunks to reassemble: a lost datagram costs its own puffs one refresh. A particle takes a record unless it holds a newer one by the sender's time (an equal time is taken: a frozen sender's refreshes), and fades out when not refreshed within the header's hold time. Senders may refresh particles at different rates.
+- **The origin by id.** The frame's origin is sent in its own datagram, about once a second, under an id the puffs name; a new origin is a new id, so a switch never misplaces datagrams in flight. A new session from a source (a restarted sender, its time from zero) resets that source.
+- **Time is the receiver's.** A particle moves on its velocity from when its record arrived, on Fovea's clock, not from the sender's time: no clock mapping to break across a freeze or a restart.
+- **Its own thread and its own state.** A `PuffAdapter` on a `PollThread`, apart from CIGI's, keeps up to a configured capacity by (source, id) in a table sized at start, and publishes `ParticleFrame`s (core, protocol-neutral) through a triple buffer of their own: a frame is megabytes, too large for `SceneSnapshot`. Nothing allocates after start.
+- **Drawing is the next step:** soft, depth-tested particles lit by the sky, their optical depth from bulk density and a configured mass extinction coefficient; a volume filled from the particles each frame only if that can't hold 60 Hz with the eye inside a cloud.
+
+The format is in `docs/integration-guide.md` ("Particle volumes").
+

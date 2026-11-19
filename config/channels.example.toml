@@ -89,3 +89,14 @@ frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
 # host_port = 8005             #   and at which port (8005 if left out; 0: the one it sends from)
 # byte_order = "network"       # what the IG sends: "network" (big-endian, if left out) or "native"
 # geoid_height_m = 0.0         # the geoid above the WGS-84 ellipsoid, here
+
+# A host's particle volumes (D-039): dust, smoke or spray from a simulation,
+# as the puff stream over UDP on a port of its own (docs/integration-guide.md,
+# "Particle volumes"). Leave it out and nothing listens. Received and kept;
+# drawing them is the next step. Origins' MSL heights use [host]'s
+# geoid_height_m.
+# [particles]
+# port = 47102                 # required: where the puff stream arrives
+# listen_address = "127.0.0.1" # listen on this address only (left out: every interface)
+# capacity = 200000            # the most particles kept (about 300 bytes each in all)
+# fade_s = 0.25                # a particle fades in, and out when no longer refreshed

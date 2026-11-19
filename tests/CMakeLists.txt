@@ -9,6 +9,7 @@ add_executable(fovea_unit_tests
     unit/test_cigi.cpp
     unit/test_cigi_adapter.cpp
     unit/test_cigi_test_host.cpp
+    unit/test_puff_stream.cpp
     unit/test_config.cpp
     unit/test_containers.cpp
     unit/test_celestial.cpp
@@ -180,4 +181,8 @@ if(FOVEA_FUZZ)
     target_link_libraries(fovea_fuzz_cigi PRIVATE fovea::net)
     target_link_options(fovea_fuzz_cigi PRIVATE -fsanitize=fuzzer)
     fovea_target_defaults(fovea_fuzz_cigi)
+    add_executable(fovea_fuzz_puff_stream fuzz/fuzz_puff_stream.cpp)
+    target_link_libraries(fovea_fuzz_puff_stream PRIVATE fovea::net)
+    target_link_options(fovea_fuzz_puff_stream PRIVATE -fsanitize=fuzzer)
+    fovea_target_defaults(fovea_fuzz_puff_stream)
 endif()
