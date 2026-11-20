@@ -1,7 +1,7 @@
 #include "particles.hpp"
 
 #include <array>
-#include <span>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 
@@ -9,9 +9,16 @@ namespace fovea {
 
 namespace {
 
-// The origins' part of each slot's buffer, then the particles'.
+// Each slot's buffer: the origins, the light space, then the particles.
 constexpr VkDeviceSize kOriginsBytes = sizeof(GpuOrigin) * kMaxParticleOrigins;
-static_assert(kOriginsBytes % 256 == 0, "the particles' offset must suit any storage alignment");
+constexpr VkDeviceSize kLightSpaceAt = kOriginsBytes;
+constexpr VkDeviceSize kParticlesAt = kOriginsBytes + 256;
+static_assert(kOriginsBytes % 256 == 0 && kParticlesAt % 256 == 0,
+              "offsets must suit any storage alignment");
+static_assert(sizeof(GpuLightSpace) <= 256);
+
+constexpr VkFormat kParticleImageFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+constexpr VkFormat kLightFormat = VK_FORMAT_R16_SFLOAT;
 
 // Mirrors ParticlePush in shaders/particles.slang.
 struct ParticlePush {
@@ -19,7 +26,7 @@ struct ParticlePush {
     std::array<float, 3> anchor{};  // the origins' anchor relative to the eye
     float forward_scattering = 0.0F;
     std::array<float, 3> albedo{};
-    float unused = 0.0F;
+    std::uint32_t order_base = 0;  // this view's first entry in the order buffer
 };
 static_assert(sizeof(ParticlePush) == 96, "must match ParticlePush in particles.slang");
 
@@ -33,11 +40,15 @@ void check(VkResult r, const char* what) {
     }
 }
 
-// Triangles, single-sampled, no depth attachment (the shader reads the
-// resolved depth), composited "over", premultiplied; the target's alpha is
-// left as it was.
+enum class Blend : std::uint8_t {
+    over,       // premultiplied, back to front: the eye's slices, reversed view
+    under,      // premultiplied, front to back (Green 2013: one_minus_dest_alpha, one)
+    add,        // optical depths summed: the light buffer
+    composite,  // the particle image over the scene, the scene's alpha kept
+};
+
 VkPipeline make_pipeline(VkDevice device, VkPipelineLayout layout, VkShaderModule vertex,
-                         VkShaderModule fragment, VkFormat colour) {
+                         VkShaderModule fragment, VkFormat format, Blend mode) {
     std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     for (VkPipelineShaderStageCreateInfo& st : stages) {
         st.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -66,20 +77,43 @@ VkPipeline make_pipeline(VkDevice device, VkPipelineLayout layout, VkShaderModul
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineDepthStencilStateCreateInfo depth_state{};
     depth_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    VkPipelineColorBlendAttachmentState blend_attachment{};
-    blend_attachment.blendEnable = VK_TRUE;
-    blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-    blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    blend_attachment.colorBlendOp = VK_BLEND_OP_ADD;
-    blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-    blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    blend_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
-    blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendAttachmentState b{};
+    b.blendEnable = VK_TRUE;
+    b.colorBlendOp = VK_BLEND_OP_ADD;
+    b.alphaBlendOp = VK_BLEND_OP_ADD;
+    b.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                       VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    switch (mode) {
+        case Blend::over:
+            b.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            b.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            b.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            b.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            break;
+        case Blend::under:
+            b.srcColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+            b.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            b.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+            b.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            break;
+        case Blend::add:
+            b.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            b.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            b.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            b.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            b.colorWriteMask = VK_COLOR_COMPONENT_R_BIT;
+            break;
+        case Blend::composite:
+            b.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            b.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            b.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+            b.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            break;
+    }
     VkPipelineColorBlendStateCreateInfo blend{};
     blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     blend.attachmentCount = 1;
-    blend.pAttachments = &blend_attachment;
+    blend.pAttachments = &b;
     const std::array<VkDynamicState, 2> dynamic_states{VK_DYNAMIC_STATE_VIEWPORT,
                                                        VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dynamic{};
@@ -89,7 +123,7 @@ VkPipeline make_pipeline(VkDevice device, VkPipelineLayout layout, VkShaderModul
     VkPipelineRenderingCreateInfo rendering{};
     rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     rendering.colorAttachmentCount = 1;
-    rendering.pColorAttachmentFormats = &colour;
+    rendering.pColorAttachmentFormats = &format;
     VkGraphicsPipelineCreateInfo ci{};
     ci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     ci.pNext = &rendering;
@@ -114,61 +148,188 @@ std::array<float, 3> floats3(const DVec3& v) {
     return {static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)};
 }
 
+// Begins rendering into one colour image, the whole of it, and sets the
+// viewport and scissor to it.
+void begin(VkCommandBuffer cmd, VkImageView view, VkImageLayout layout, VkExtent2D extent,
+           VkAttachmentLoadOp load) {
+    VkRenderingAttachmentInfo colour{};
+    colour.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colour.imageView = view;
+    colour.imageLayout = layout;
+    colour.loadOp = load;
+    colour.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    info.renderArea = {{0, 0}, extent};
+    info.layerCount = 1;
+    info.colorAttachmentCount = 1;
+    info.pColorAttachments = &colour;
+    vkCmdBeginRendering(cmd, &info);
+    const VkViewport viewport{
+        0.0F, 0.0F, static_cast<float>(extent.width), static_cast<float>(extent.height),
+        0.0F, 1.0F};
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    const VkRect2D scissor{{0, 0}, extent};
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+}
+
+VkImageMemoryBarrier2 image_barrier(VkImage image, VkPipelineStageFlags2 src_stage,
+                                    VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stage,
+                                    VkAccessFlags2 dst_access, VkImageLayout from,
+                                    VkImageLayout to) {
+    VkImageMemoryBarrier2 b{};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    b.srcStageMask = src_stage;
+    b.srcAccessMask = src_access;
+    b.dstStageMask = dst_stage;
+    b.dstAccessMask = dst_access;
+    b.oldLayout = from;
+    b.newLayout = to;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = image;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    return b;
+}
+
+void barriers(VkCommandBuffer cmd, std::span<const VkImageMemoryBarrier2> bs) {
+    VkDependencyInfo dep{};
+    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep.imageMemoryBarrierCount = static_cast<std::uint32_t>(bs.size());
+    dep.pImageMemoryBarriers = bs.data();
+    vkCmdPipelineBarrier2(cmd, &dep);
+}
+
+constexpr VkPipelineStageFlags2 kColourStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+constexpr VkPipelineStageFlags2 kFragmentStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+constexpr VkAccessFlags2 kColourWrite = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+constexpr VkAccessFlags2 kColourReadWrite =
+    VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+constexpr VkAccessFlags2 kSampled = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+
 }  // namespace
 
+ParticlesGpu::Image ParticlesGpu::make_image(VkExtent2D extent, VkFormat format) const {
+    Image i;
+    VkImageCreateInfo ici{};
+    ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format = format;
+    ici.extent = {extent.width, extent.height, 1};
+    ici.mipLevels = 1;
+    ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    VmaAllocationCreateInfo aci{};
+    aci.usage = VMA_MEMORY_USAGE_AUTO;
+    check(vmaCreateImage(gpu_.allocator, &ici, &aci, &i.image, &i.memory, nullptr),
+          "vmaCreateImage (particles)");
+    VkImageViewCreateInfo vci{};
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image = i.image;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = format;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    check(vkCreateImageView(gpu_.device, &vci, nullptr, &i.view), "vkCreateImageView (particles)");
+    return i;
+}
+
+void ParticlesGpu::destroy_image(Image& i) const {
+    vkDestroyImageView(gpu_.device, i.view, nullptr);
+    if (i.image != VK_NULL_HANDLE) {
+        vmaDestroyImage(gpu_.allocator, i.image, i.memory);
+    }
+    i = Image{};
+}
+
 ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uint32_t slots,
-                           std::uint32_t outputs, VkFormat colour, VkShaderModule vertex,
-                           VkShaderModule fragment)
+                           std::span<const VkExtent2D> extents, VkFormat colour,
+                           const Modules& modules)
     : gpu_(gpu),
       capacity_(capacity),
       slots_(slots),
       counts_(slots, 0),
       anchors_(slots, DVec3(0.0)),
-      depth_sets_(outputs, VK_NULL_HANDLE) {
-    if (capacity == 0 || slots == 0 || outputs == 0) {
+      front_to_back_(std::size_t{slots} * extents.size(), 1),
+      view_sets_(extents.size(), VK_NULL_HANDLE),
+      centres_(capacity),
+      keys_(capacity * 2),
+      scratch_(capacity * 2) {
+    if (capacity == 0 || slots == 0 || extents.empty()) {
         fail("no capacity, slots or outputs");
     }
+    const auto outputs = static_cast<std::uint32_t>(extents.size());
     try {
+        for (const VkExtent2D e : extents) {
+            particle_images_.push_back(make_image(e, kParticleImageFormat));
+        }
+        light_ = make_image({kLightSize, kLightSize}, kLightFormat);
+        VkSamplerCreateInfo sci{};
+        sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sci.magFilter = VK_FILTER_LINEAR;
+        sci.minFilter = VK_FILTER_LINEAR;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        check(vkCreateSampler(gpu_.device, &sci, nullptr, &light_sampler_),
+              "vkCreateSampler (particles)");
+
         const VkDeviceSize particles_bytes = sizeof(GpuParticle) * capacity;
-        for (Slot& s : slots_) {
+        const VkDeviceSize order_bytes = sizeof(std::uint32_t) * capacity * outputs;
+        const auto host_buffer = [this](VkDeviceSize size, VkBuffer& buffer, VmaAllocation& memory,
+                                        void*& mapped) {
             VkBufferCreateInfo bci{};
             bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-            bci.size = kOriginsBytes + particles_bytes;
+            bci.size = size;
             bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
             VmaAllocationCreateInfo aci{};
             aci.usage = VMA_MEMORY_USAGE_AUTO;
             aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
             VmaAllocationInfo info{};
-            check(vmaCreateBuffer(gpu_.allocator, &bci, &aci, &s.buffer, &s.memory, &info),
+            check(vmaCreateBuffer(gpu_.allocator, &bci, &aci, &buffer, &memory, &info),
                   "vmaCreateBuffer (particles)");
             if (info.pMappedData == nullptr) {
                 fail("vmaCreateBuffer (particles): not mapped");
             }
-            s.mapped = info.pMappedData;
+            mapped = info.pMappedData;
+        };
+        for (Slot& s : slots_) {
+            host_buffer(kParticlesAt + particles_bytes, s.buffer, s.memory, s.mapped);
+            host_buffer(order_bytes, s.order, s.order_memory, s.order_mapped);
         }
 
-        const std::array<VkDescriptorSetLayoutBinding, 2> buffer_bindings{
-            VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-                                         VK_SHADER_STAGE_VERTEX_BIT, nullptr},
-            VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-                                         VK_SHADER_STAGE_VERTEX_BIT, nullptr}};
+        std::array<VkDescriptorSetLayoutBinding, 4> buffer_bindings{};
+        for (std::uint32_t b = 0; b < buffer_bindings.size(); ++b) {
+            buffer_bindings.at(b) = {b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                     nullptr};
+        }
         VkDescriptorSetLayoutCreateInfo lci{};
         lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         lci.bindingCount = static_cast<std::uint32_t>(buffer_bindings.size());
         lci.pBindings = buffer_bindings.data();
         check(vkCreateDescriptorSetLayout(gpu_.device, &lci, nullptr, &buffers_layout_),
               "vkCreateDescriptorSetLayout (particles)");
-        const VkDescriptorSetLayoutBinding depth_binding{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
-                                                         VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
-        lci.bindingCount = 1;
-        lci.pBindings = &depth_binding;
-        check(vkCreateDescriptorSetLayout(gpu_.device, &lci, nullptr, &depth_layout_),
-              "vkCreateDescriptorSetLayout (particles' depth)");
+        const std::array<VkDescriptorSetLayoutBinding, 4> view_bindings{
+            VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
+                                         VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
+                                         VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{2, VK_DESCRIPTOR_TYPE_SAMPLER, 1,
+                                         VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
+                                         VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+        lci.bindingCount = static_cast<std::uint32_t>(view_bindings.size());
+        lci.pBindings = view_bindings.data();
+        check(vkCreateDescriptorSetLayout(gpu_.device, &lci, nullptr, &view_layout_),
+              "vkCreateDescriptorSetLayout (particles' view)");
 
-        const std::array<VkDescriptorPoolSize, 2> sizes{
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 * slots},
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, outputs}};
+        const std::array<VkDescriptorPoolSize, 3> sizes{
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 * slots},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 3 * outputs},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, outputs}};
         VkDescriptorPoolCreateInfo pci{};
         pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         pci.maxSets = slots + outputs;
@@ -184,11 +345,13 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
             ai.pSetLayouts = &buffers_layout_;
             check(vkAllocateDescriptorSets(gpu_.device, &ai, &s.set),
                   "vkAllocateDescriptorSets (particles)");
-            const std::array<VkDescriptorBufferInfo, 2> infos{
-                VkDescriptorBufferInfo{s.buffer, kOriginsBytes, particles_bytes},
-                VkDescriptorBufferInfo{s.buffer, 0, kOriginsBytes}};
-            std::array<VkWriteDescriptorSet, 2> writes{};
-            for (std::uint32_t b = 0; b < 2; ++b) {
+            const std::array<VkDescriptorBufferInfo, 4> infos{
+                VkDescriptorBufferInfo{s.buffer, kParticlesAt, particles_bytes},
+                VkDescriptorBufferInfo{s.buffer, 0, kOriginsBytes},
+                VkDescriptorBufferInfo{s.buffer, kLightSpaceAt, sizeof(GpuLightSpace)},
+                VkDescriptorBufferInfo{s.order, 0, order_bytes}};
+            std::array<VkWriteDescriptorSet, 4> writes{};
+            for (std::uint32_t b = 0; b < writes.size(); ++b) {
                 writes.at(b).sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 writes.at(b).dstSet = s.set;
                 writes.at(b).dstBinding = b;
@@ -199,20 +362,46 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
             vkUpdateDescriptorSets(gpu_.device, static_cast<std::uint32_t>(writes.size()),
                                    writes.data(), 0, nullptr);
         }
-        for (VkDescriptorSet& d : depth_sets_) {
+        for (std::uint32_t o = 0; o < outputs; ++o) {
             VkDescriptorSetAllocateInfo ai{};
             ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
             ai.descriptorPool = pool_;
             ai.descriptorSetCount = 1;
-            ai.pSetLayouts = &depth_layout_;
-            check(vkAllocateDescriptorSets(gpu_.device, &ai, &d),
-                  "vkAllocateDescriptorSets (particles' depth)");
+            ai.pSetLayouts = &view_layout_;
+            check(vkAllocateDescriptorSets(gpu_.device, &ai, &view_sets_.at(o)),
+                  "vkAllocateDescriptorSets (particles' view)");
+            // The light buffer is read and written in GENERAL (D-041: no
+            // transitions between slices); the particle image is read once
+            // it's done.
+            const VkDescriptorImageInfo light_info{VK_NULL_HANDLE, light_.view,
+                                                   VK_IMAGE_LAYOUT_GENERAL};
+            const VkDescriptorImageInfo sampler_info{light_sampler_, VK_NULL_HANDLE,
+                                                     VK_IMAGE_LAYOUT_UNDEFINED};
+            const VkDescriptorImageInfo image_info{VK_NULL_HANDLE, particle_images_.at(o).view,
+                                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            std::array<VkWriteDescriptorSet, 3> writes{};
+            for (VkWriteDescriptorSet& w : writes) {
+                w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                w.dstSet = view_sets_.at(o);
+                w.descriptorCount = 1;
+            }
+            writes[0].dstBinding = 1;
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            writes[0].pImageInfo = &light_info;
+            writes[1].dstBinding = 2;
+            writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+            writes[1].pImageInfo = &sampler_info;
+            writes[2].dstBinding = 3;
+            writes[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            writes[2].pImageInfo = &image_info;
+            vkUpdateDescriptorSets(gpu_.device, static_cast<std::uint32_t>(writes.size()),
+                                   writes.data(), 0, nullptr);
         }
 
         // Set 0 the buffers, set 1 the frame set (the view's lighting), set 2
-        // the view's depth.
+        // the view's images.
         const std::array<VkDescriptorSetLayout, 3> layouts{buffers_layout_, gpu_.frame_layout,
-                                                           depth_layout_};
+                                                           view_layout_};
         const VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                        sizeof(ParticlePush)};
         VkPipelineLayoutCreateInfo plci{};
@@ -223,7 +412,14 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
         plci.pPushConstantRanges = &push;
         check(vkCreatePipelineLayout(gpu_.device, &plci, nullptr, &layout_),
               "vkCreatePipelineLayout (particles)");
-        pipeline_ = make_pipeline(gpu_.device, layout_, vertex, fragment, colour);
+        over_ = make_pipeline(gpu_.device, layout_, modules.vs_particles, modules.fs_particles,
+                              kParticleImageFormat, Blend::over);
+        under_ = make_pipeline(gpu_.device, layout_, modules.vs_particles, modules.fs_particles,
+                               kParticleImageFormat, Blend::under);
+        light_pipeline_ = make_pipeline(gpu_.device, layout_, modules.vs_light, modules.fs_light,
+                                        kLightFormat, Blend::add);
+        composite_ = make_pipeline(gpu_.device, layout_, modules.vs_composite, modules.fs_composite,
+                                   colour, Blend::composite);
     } catch (...) {
         release();
         throw;
@@ -238,14 +434,24 @@ void ParticlesGpu::release() {
     if (gpu_.device == VK_NULL_HANDLE) {
         return;
     }
-    vkDestroyPipeline(gpu_.device, pipeline_, nullptr);
+    for (VkPipeline p : {over_, under_, light_pipeline_, composite_}) {
+        vkDestroyPipeline(gpu_.device, p, nullptr);
+    }
     vkDestroyPipelineLayout(gpu_.device, layout_, nullptr);
     vkDestroyDescriptorPool(gpu_.device, pool_, nullptr);
     vkDestroyDescriptorSetLayout(gpu_.device, buffers_layout_, nullptr);
-    vkDestroyDescriptorSetLayout(gpu_.device, depth_layout_, nullptr);
+    vkDestroyDescriptorSetLayout(gpu_.device, view_layout_, nullptr);
+    vkDestroySampler(gpu_.device, light_sampler_, nullptr);
+    for (Image& i : particle_images_) {
+        destroy_image(i);
+    }
+    destroy_image(light_);
     for (Slot& s : slots_) {
         if (s.buffer != VK_NULL_HANDLE) {
             vmaDestroyBuffer(gpu_.allocator, s.buffer, s.memory);
+        }
+        if (s.order != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(gpu_.allocator, s.order, s.order_memory);
         }
     }
     gpu_.device = VK_NULL_HANDLE;
@@ -256,7 +462,8 @@ void ParticlesGpu::set_depth(std::uint32_t output, VkImageView depth) {
                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet w{};
     w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w.dstSet = depth_sets_.at(output);
+    w.dstSet = view_sets_.at(output);
+    w.dstBinding = 0;
     w.descriptorCount = 1;
     w.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     w.pImageInfo = &info;
@@ -264,14 +471,32 @@ void ParticlesGpu::set_depth(std::uint32_t output, VkImageView depth) {
 }
 
 std::size_t ParticlesGpu::pack(std::uint32_t slot, const ParticleFrame& frame, LocalTime at,
-                               const ParticleLook& look, const DVec3& anchor) noexcept {
+                               const ParticleLook& look, const DVec3& anchor,
+                               std::span<const SceneView> views, const DVec3& sun) noexcept {
     Slot& s = slots_[slot];
     auto* base = static_cast<std::uint8_t*>(s.mapped);
     const std::span<GpuOrigin> origins(reinterpret_cast<GpuOrigin*>(base), kMaxParticleOrigins);
-    const std::span<GpuParticle> particles(reinterpret_cast<GpuParticle*>(base + kOriginsBytes),
+    const std::span<GpuParticle> particles(reinterpret_cast<GpuParticle*>(base + kParticlesAt),
                                            capacity_);
     const std::size_t n = pack_particles(frame, at, look, anchor, particles, origins);
-    (void)vmaFlushAllocation(gpu_.allocator, s.memory, 0, kOriginsBytes + sizeof(GpuParticle) * n);
+    const std::span<const GpuParticle> packed = particles.first(n);
+    const std::span<Vec3> centres = std::span(centres_).first(n);
+    particle_centres(packed, origins, centres);
+    const Vec3 travel =
+        -Vec3(static_cast<float>(sun.x), static_cast<float>(sun.y), static_cast<float>(sun.z));
+    const GpuLightSpace ls = light_space(centres, packed, travel);
+    std::memcpy(base + kLightSpaceAt, &ls, sizeof(ls));
+    const std::size_t outputs = view_sets_.size();
+    auto* order = static_cast<std::uint32_t*>(s.order_mapped);
+    for (std::size_t o = 0; o < outputs && o < views.size(); ++o) {
+        const Mat4& m = views[o].ecef_to_clip;
+        const Vec3 forward(m[0][3], m[1][3], m[2][3]);  // clip w's row: the view's axis
+        const HalfAngle h = half_angle(forward, travel);
+        sort_along(centres, h.axis, keys_, scratch_, std::span(order + o * capacity_, n));
+        front_to_back_[slot * outputs + o] = h.front_to_back ? 1 : 0;
+    }
+    (void)vmaFlushAllocation(gpu_.allocator, s.memory, 0, kParticlesAt + sizeof(GpuParticle) * n);
+    (void)vmaFlushAllocation(gpu_.allocator, s.order_memory, 0, VK_WHOLE_SIZE);
     counts_[slot] = n;
     anchors_[slot] = anchor;
     return n;
@@ -279,25 +504,84 @@ std::size_t ParticlesGpu::pack(std::uint32_t slot, const ParticleFrame& frame, L
 
 void ParticlesGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
                           const SceneView& view, std::uint32_t lighting_offset,
-                          const ParticleLook& look) const {
+                          const ParticleLook& look, VkImageView target, VkExtent2D extent) const {
     const std::size_t n = counts_[slot];
     if (n == 0) {
         return;
     }
+    const Image& image = particle_images_.at(output);
     ParticlePush push;
     push.ecef_to_clip = view.ecef_to_clip;
     push.anchor = floats3(anchors_[slot] - view.eye_ecef);
     push.forward_scattering = look.forward_scattering;
     push.albedo = look.albedo;
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-    const std::array<VkDescriptorSet, 3> sets{slots_[slot].set, gpu_.frame_set,
-                                              depth_sets_.at(output)};
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0,
-                            static_cast<std::uint32_t>(sets.size()), sets.data(), 1,
-                            &lighting_offset);
-    vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof(push), &push);
-    vkCmdDraw(cmd, static_cast<std::uint32_t>(n * 6), 1, 0, 0);
+    push.order_base = static_cast<std::uint32_t>(output * capacity_);
+    const auto bind = [&](VkPipeline p) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+        const std::array<VkDescriptorSet, 3> sets{slots_[slot].set, gpu_.frame_set,
+                                                  view_sets_.at(output)};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0,
+                                static_cast<std::uint32_t>(sets.size()), sets.data(), 1,
+                                &lighting_offset);
+        vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(push), &push);
+    };
+
+    // Both images start over: the particle image after the previous frame's
+    // composite read it, the light buffer after the previous view used it.
+    const std::array<VkImageMemoryBarrier2, 2> start{
+        image_barrier(image.image, kFragmentStage, 0, kColourStage, kColourReadWrite,
+                      VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+        image_barrier(light_.image, kFragmentStage | kColourStage, kColourWrite, kColourStage,
+                      kColourReadWrite, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL)};
+    barriers(cmd, start);
+    begin(cmd, light_.view, VK_IMAGE_LAYOUT_GENERAL, {kLightSize, kLightSize},
+          VK_ATTACHMENT_LOAD_OP_CLEAR);  // no light path yet: optical depth 0
+    vkCmdEndRendering(cmd);
+
+    const bool front_to_back = front_to_back_[std::size_t{slot} * view_sets_.size() + output] != 0;
+    const std::size_t per_slice = (n + kSlices - 1) / kSlices;
+    for (std::size_t first = 0; first < n; first += per_slice) {
+        const auto count = static_cast<std::uint32_t>(std::min(per_slice, n - first));
+        // The eye's slice reads the light buffer the slices nearer the
+        // light left, and adds to the particle image.
+        const std::array<VkImageMemoryBarrier2, 2> to_eye{
+            image_barrier(light_.image, kColourStage, kColourWrite, kFragmentStage, kSampled,
+                          VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL),
+            image_barrier(image.image, kColourStage, kColourWrite, kColourStage, kColourReadWrite,
+                          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)};
+        barriers(cmd, to_eye);
+        begin(cmd, image.view, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, extent,
+              first == 0 ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD);
+        bind(front_to_back ? under_ : over_);
+        vkCmdDraw(cmd, count * 6, 1, static_cast<std::uint32_t>(first * 6), 0);
+        vkCmdEndRendering(cmd);
+        if (first + count >= n) {
+            break;  // nothing after the last slice to shadow
+        }
+        // Then into the light buffer, once the eye's slice has read it.
+        const std::array<VkImageMemoryBarrier2, 1> to_light{
+            image_barrier(light_.image, kFragmentStage | kColourStage, kColourWrite, kColourStage,
+                          kColourReadWrite, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL)};
+        barriers(cmd, to_light);
+        begin(cmd, light_.view, VK_IMAGE_LAYOUT_GENERAL, {kLightSize, kLightSize},
+              VK_ATTACHMENT_LOAD_OP_LOAD);
+        bind(light_pipeline_);
+        vkCmdDraw(cmd, count * 6, 1, static_cast<std::uint32_t>(first * 6), 0);
+        vkCmdEndRendering(cmd);
+    }
+
+    // The particle image over the scene.
+    const std::array<VkImageMemoryBarrier2, 1> done{image_barrier(
+        image.image, kColourStage, kColourWrite, kFragmentStage, kSampled,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)};
+    barriers(cmd, done);
+    begin(cmd, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, extent,
+          VK_ATTACHMENT_LOAD_OP_LOAD);
+    bind(composite_);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRendering(cmd);
 }
 
 }  // namespace fovea

@@ -141,7 +141,7 @@ When Fovea exits, it prints what the host link did: messages received and reject
 A simulation of dust, smoke or spray sends its particles to Fovea on a UDP port of their own, apart from CIGI ([D-039](decisions.md)). Each particle (a *puff*) is a sphere of uniform density with a velocity. Fovea draws them in every view ([D-040](decisions.md)):
 - each sphere's optical depth along each pixel's ray, from its bulk density;
 - cut off softly where the ground or anything else is nearer;
-- lit by the sun, moon and sky;
+- lit by the sun, moon and sky, the sun's light shadowed by the cloud itself ([D-041](decisions.md));
 - moved on its velocity between updates.
 
 ```toml
@@ -213,4 +213,4 @@ Every datagram stands alone: a header, then an origin or whole puffs. There are 
 - **Other packets:** view and sensor control, component control and the remaining packets, which are skipped.
 - **Recording:** recording and replaying CIGI traffic (#29).
 - **Control plane:** a control and stats channel separate from CIGI (milestone 12).
-- **Particle volumes:** shadows within a cloud and from the terrain on it.
+- **Particle volumes:** the terrain's shadow on the dust.

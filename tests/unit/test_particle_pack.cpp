@@ -1,8 +1,10 @@
 // Packing a frame's particles for the GPU (D-040): moved to the frame's
 // time, faded, the invisible left out, origins placed from the anchor.
 
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -84,6 +86,82 @@ TEST(ParticlePack, StopsAtTheOutputsSizeAndSkipsUnknownOrigins) {
     EXPECT_FLOAT_EQ(out[0].position[0], 0.0F);
     EXPECT_FLOAT_EQ(out[1].position[0], 2.0F);
     EXPECT_FLOAT_EQ(out[2].position[0], 3.0F);
+}
+
+}  // namespace
+}  // namespace fovea
+
+namespace fovea {
+namespace {
+
+// Green 2013's rule: the view looking the way the light travels, their
+// half vector and front to back; otherwise the reversed view's and back to
+// front.
+TEST(ParticleSlicing, TheHalfAngleFollowsTheLight) {
+    const Vec3 travel(0.0F, 0.0F, -1.0F);                                // the sun straight above
+    const HalfAngle down = half_angle(Vec3(1.0F, 0.0F, -1.0F), travel);  // looking down: with it
+    EXPECT_TRUE(down.front_to_back);
+    EXPECT_NEAR(glm::length(down.axis), 1.0F, 1e-6F);
+    EXPECT_NEAR(glm::dot(down.axis, glm::normalize(Vec3(1.0F, 0.0F, -1.0F) +
+                                                   Vec3(0.0F, 0.0F, -1.0F) * std::sqrt(2.0F))),
+                1.0F, 1e-5F);
+    const HalfAngle up = half_angle(Vec3(1.0F, 0.0F, 1.0F), travel);  // looking up: into it
+    EXPECT_FALSE(up.front_to_back);
+    // The reversed view and the light: (-1, 0, -1)/sqrt2 + (0, 0, -1), normalised.
+    const Vec3 want = glm::normalize(-glm::normalize(Vec3(1.0F, 0.0F, 1.0F)) + travel);
+    EXPECT_NEAR(glm::dot(up.axis, want), 1.0F, 1e-5F);
+    // Straight into the light: along it.
+    const HalfAngle into = half_angle(Vec3(0.0F, 0.0F, 1.0F), travel);
+    EXPECT_FALSE(into.front_to_back);
+    EXPECT_NEAR(glm::dot(into.axis, travel), 1.0F, 1e-5F);
+}
+
+TEST(ParticleSlicing, TheSortIsAscendingAndStable) {
+    std::vector<Vec3> centres;
+    std::uint32_t rng = 7;
+    for (int i = 0; i < 5000; ++i) {
+        rng = rng * 1664525U + 1013904223U;
+        const float x = static_cast<float>(static_cast<int>(rng >> 8) % 2001 - 1000) * 0.25F;
+        centres.emplace_back(x, -x * 0.5F, 3.0F);  // negatives, positives and ties
+    }
+    const Vec3 axis = glm::normalize(Vec3(1.0F, 0.2F, 0.0F));
+    std::vector<std::uint32_t> keys(centres.size() * 2);
+    std::vector<std::uint32_t> scratch(centres.size() * 2);
+    std::vector<std::uint32_t> order(centres.size());
+    sort_along(centres, axis, keys, scratch, order);
+    std::vector<std::uint32_t> want(centres.size());
+    for (std::uint32_t i = 0; i < want.size(); ++i) {
+        want[i] = i;
+    }
+    std::stable_sort(want.begin(), want.end(), [&](std::uint32_t a, std::uint32_t b) {
+        return glm::dot(axis, centres[a]) < glm::dot(axis, centres[b]);
+    });
+    EXPECT_EQ(order, want);
+}
+
+TEST(ParticleSlicing, TheLightSpaceHoldsEveryParticle) {
+    std::vector<Vec3> centres{Vec3(10.0F, 0.0F, 0.0F), Vec3(-20.0F, 5.0F, 1.0F),
+                              Vec3(3.0F, -8.0F, 12.0F)};
+    std::vector<GpuParticle> particles(3);
+    for (GpuParticle& p : particles) {
+        p.radius = 4.0F;
+    }
+    const Vec3 travel = glm::normalize(Vec3(0.3F, -0.2F, -1.0F));
+    const GpuLightSpace l = light_space(centres, particles, travel);
+    const Vec3 c(l.centre[0], l.centre[1], l.centre[2]);
+    const Vec3 u(l.u[0], l.u[1], l.u[2]);
+    const Vec3 v(l.v[0], l.v[1], l.v[2]);
+    const Vec3 w(l.travel[0], l.travel[1], l.travel[2]);
+    EXPECT_NEAR(glm::dot(u, v), 0.0F, 1e-6F);
+    EXPECT_NEAR(glm::dot(u, w), 0.0F, 1e-6F);
+    EXPECT_NEAR(glm::dot(glm::cross(u, v), w), 1.0F, 1e-5F);
+    for (std::size_t i = 0; i < centres.size(); ++i) {
+        // The whole sphere within the light buffer: |uv| + r <= 1 in radii.
+        const Vec3 d = (centres[i] - c) * l.inv_radius;
+        const float r = particles[i].radius * l.inv_radius;
+        EXPECT_LE(std::abs(glm::dot(d, u)) + r, 1.0F + 1e-5F);
+        EXPECT_LE(std::abs(glm::dot(d, v)) + r, 1.0F + 1e-5F);
+    }
 }
 
 }  // namespace

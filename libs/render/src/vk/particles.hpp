@@ -1,10 +1,11 @@
 #pragma once
 
-// Particle volumes (D-039, D-040): a host's dust, smoke or spray, drawn into
-// each view's resolved HDR target after the stars and lights, reading its
-// resolved depth (shaders/particles.slang). Each frame slot has its own
-// host-visible buffer, packed by the render thread at the frame's start
-// (pack_particles): the slot's previous frame has finished by then.
+// Particle volumes (D-039, D-040, D-041): a host's dust, smoke or spray,
+// drawn into each view's resolved HDR target after the stars and lights,
+// reading its resolved depth, shadowed by itself by half-angle slicing
+// (shaders/particles.slang). Each frame slot has its own host-visible
+// buffers, packed by the render thread at the frame's start (pack): the
+// slot's previous frame has finished by then.
 
 #include <volk.h>
 
@@ -12,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include "fovea/render/particle_pack.hpp"
@@ -22,13 +24,24 @@ namespace fovea {
 
 class ParticlesGpu {
 public:
-    // Up to `capacity` particles, `slots` frames in flight and `outputs`
-    // views. The pipeline draws into `colour`; the modules are
-    // shaders/particles.slang's vs_particles and fs_particles. Throws
-    // std::runtime_error.
+    // The slices each view's particles are drawn in (Green 2013: 32 to 128
+    // a good trade-off), and the light buffer's size (texels a side).
+    static constexpr std::uint32_t kSlices = 32;
+    static constexpr std::uint32_t kLightSize = 512;
+
+    // Up to `capacity` particles, `slots` frames in flight, one view per
+    // extent. Composites into `colour` targets. The modules are
+    // shaders/particles.slang's entry points. Throws std::runtime_error.
+    struct Modules {
+        VkShaderModule vs_particles = VK_NULL_HANDLE;
+        VkShaderModule fs_particles = VK_NULL_HANDLE;
+        VkShaderModule vs_light = VK_NULL_HANDLE;
+        VkShaderModule fs_light = VK_NULL_HANDLE;
+        VkShaderModule vs_composite = VK_NULL_HANDLE;
+        VkShaderModule fs_composite = VK_NULL_HANDLE;
+    };
     ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uint32_t slots,
-                 std::uint32_t outputs, VkFormat colour, VkShaderModule vertex,
-                 VkShaderModule fragment);
+                 std::span<const VkExtent2D> extents, VkFormat colour, const Modules& modules);
     ~ParticlesGpu();
     ParticlesGpu(const ParticlesGpu&) = delete;
     ParticlesGpu& operator=(const ParticlesGpu&) = delete;
@@ -38,39 +51,65 @@ public:
     void set_depth(std::uint32_t output, VkImageView depth);
 
     // Packs a frame into `slot` (pack_particles), relative to `anchor`
-    // (ECEF), and returns how many will be drawn. No allocation.
+    // (ECEF), and sorts it for each view along its half vector with the
+    // sun's light (`sun`: toward the sun, ECEF). Returns how many will be
+    // drawn. No allocation.
     std::size_t pack(std::uint32_t slot, const ParticleFrame& frame, LocalTime at,
-                     const ParticleLook& look, const DVec3& anchor) noexcept;
+                     const ParticleLook& look, const DVec3& anchor,
+                     std::span<const SceneView> views, const DVec3& sun) noexcept;
     void clear(std::uint32_t slot) noexcept { counts_[slot] = 0; }
     std::size_t count(std::uint32_t slot) const { return counts_.at(slot); }
 
-    // Draws `slot`'s particles for one view, inside a rendering pass on its
-    // resolved target (no depth attachment), lit by its block of the frame
-    // set. No allocation.
+    // Draws `slot`'s particles for view `output` and composites them over
+    // `target` (the view's resolved HDR target, in COLOR_ATTACHMENT_OPTIMAL,
+    // its writes so far made available to colour attachment access), lit by
+    // the view's block of the frame set. Records its own rendering passes;
+    // none may be open. No allocation.
     void record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
-                const SceneView& view, std::uint32_t lighting_offset,
-                const ParticleLook& look) const;
+                const SceneView& view, std::uint32_t lighting_offset, const ParticleLook& look,
+                VkImageView target, VkExtent2D extent) const;
 
 private:
     struct Slot {
-        VkBuffer buffer = VK_NULL_HANDLE;
+        VkBuffer buffer = VK_NULL_HANDLE;  // origins, light space, particles
         VmaAllocation memory = nullptr;
         void* mapped = nullptr;
+        VkBuffer order = VK_NULL_HANDLE;  // each view's sorted indices
+        VmaAllocation order_memory = nullptr;
+        void* order_mapped = nullptr;
         VkDescriptorSet set = VK_NULL_HANDLE;
     };
+    struct Image {
+        VkImage image = VK_NULL_HANDLE;
+        VmaAllocation memory = nullptr;
+        VkImageView view = VK_NULL_HANDLE;
+    };
     void release();
+    Image make_image(VkExtent2D extent, VkFormat format) const;
+    void destroy_image(Image& i) const;
 
     GpuContext gpu_;
     std::size_t capacity_ = 0;
     std::vector<Slot> slots_;
     std::vector<std::size_t> counts_;
     std::vector<DVec3> anchors_;
-    std::vector<VkDescriptorSet> depth_sets_;  // one per output
+    std::vector<std::uint8_t> front_to_back_;  // per slot and output
+    std::vector<VkDescriptorSet> view_sets_;   // per output: depth, light, image
+    std::vector<Image> particle_images_;       // per output, its render size
+    Image light_;                              // shared, used by one view at a time
+    VkSampler light_sampler_ = VK_NULL_HANDLE;
+    // Scratch for the sort, sized at construction.
+    std::vector<Vec3> centres_;
+    std::vector<std::uint32_t> keys_;
+    std::vector<std::uint32_t> scratch_;
     VkDescriptorSetLayout buffers_layout_ = VK_NULL_HANDLE;
-    VkDescriptorSetLayout depth_layout_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout view_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
-    VkPipeline pipeline_ = VK_NULL_HANDLE;
+    VkPipeline over_ = VK_NULL_HANDLE;   // back to front from the eye
+    VkPipeline under_ = VK_NULL_HANDLE;  // front to back from the eye
+    VkPipeline light_pipeline_ = VK_NULL_HANDLE;
+    VkPipeline composite_ = VK_NULL_HANDLE;
 };
 
 }  // namespace fovea
