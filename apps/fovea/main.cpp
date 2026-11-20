@@ -635,7 +635,7 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
             host_thread->start();
         }
         if (config.particles) {
-            // D-039: drawn in a later step; received, kept and counted now.
+            // D-039: received, kept and counted here; drawn by the renderer (D-040).
             const fovea::ParticlesConfig& pc = *config.particles;
             particle_state = std::make_unique<fovea::ParticleState>(pc.capacity);
             fovea::PuffAdapterOptions puff_options;

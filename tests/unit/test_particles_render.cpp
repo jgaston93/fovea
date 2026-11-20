@@ -64,6 +64,17 @@ SceneView eye_view() {
     return reference_scene_view(v, ReferenceScene{});
 }
 
+// A wide, lopsided channel: from 30 to 86 degrees right of its axis.
+SceneView wide_view() {
+    ChannelConfig ch;
+    ch.name = "wide";
+    ch.render_width = kW;
+    ch.render_height = kH;
+    ch.frustum = {30.0, 86.0, 17.0, -17.0};
+    const ViewDesc v = view_from_channel(ch, DisplayConfig{}, 0);
+    return reference_scene_view(v, ReferenceScene{});
+}
+
 // A frame with one origin on the ground under the eye (east, north, up).
 ParticleFrame frame_at_eye(const SceneView& view, std::size_t capacity) {
     ParticleFrame f;
@@ -229,6 +240,25 @@ TEST(ParticlesRender, ThinDustAroundTheEyeIsSeenThrough) {
     const Rgb sky = mean(thin, 0, 0, kW, 20);
     const Rgb ground = mean(thin, 0, kH - 20, kW, kH);
     EXPECT_GT(std::abs(sky.b - ground.b) + std::abs(sky.g - ground.g), 40.0);
+}
+
+// The full-view quad reaches the edges of any channel the config allows
+// (edges below 90 degrees): every column of a wide, lopsided one changes.
+TEST(ParticlesRender, TheEyeInsideAPuffFillsAWideChannel) {
+    auto r = make_renderer(10);
+    FOVEA_NEED_VULKAN(r);
+    const SceneView view = wide_view();
+    const LocalTime t = now();
+    const auto clear = draw(*r, view, nullptr, t, nullptr);
+    ParticleFrame f = frame_at_eye(view, 10);
+    add(f, t, Vec3(0.0F, 0.0F, 2.0F), 40.0F, 2e-3F);
+    const auto inside = draw(*r, view, &f, t, "particles-wide.png");
+    EXPECT_EQ(r->validation_messages(), 0U);
+    for (std::uint32_t x = 0; x < kW; x += 8) {
+        const Rgb a = mean(clear, x, 0, x + 8, kH);
+        const Rgb b = mean(inside, x, 0, x + 8, kH);
+        EXPECT_GT(std::abs(b.r - a.r) + std::abs(b.g - a.g) + std::abs(b.b - a.b), 20.0) << x;
+    }
 }
 
 TEST(ParticlesRender, FadedOrEmptyDrawsNothing) {

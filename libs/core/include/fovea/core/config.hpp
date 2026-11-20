@@ -105,8 +105,9 @@ struct ParticlesConfig {
     std::uint16_t port = 0;  // required
     // The local address to listen on: all interfaces when unset.
     std::optional<std::uint32_t> listen_address;
-    // The most particles kept; each costs about 300 bytes in all (three
-    // published frames, the adapter's table and its index).
+    // The most particles kept; each costs about 300 bytes of memory (three
+    // published frames, the adapter's table and its index) and 64 of the
+    // GPU's (a frame slot's buffer each, two slots).
     std::uint32_t capacity = 200000;
     // How long a particle fades in when it first arrives, and out when its
     // sender stops refreshing it.
@@ -115,7 +116,7 @@ struct ParticlesConfig {
     // not measured values. Optical depth per kg/m^2 of particles along a
     // ray; the light they scatter as a fraction of what falls on them, in
     // linear sRGB (albedo times colour); and how forward their scattering
-    // is (Henyey-Greenstein's g: 0 even, toward 1 forward).
+    // is (the Cornette-Shanks phase's g: 0 even, toward 1 forward).
     double extinction_m2_per_kg = 500.0;
     std::array<double, 3> albedo{0.62, 0.52, 0.40};
     double forward_scattering = 0.6;

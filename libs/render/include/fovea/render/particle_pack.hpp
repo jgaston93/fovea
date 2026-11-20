@@ -30,8 +30,9 @@ struct ParticleLook {
     // The light a particle scatters, as a fraction of what falls on it, in
     // linear sRGB: its single-scattering albedo times its colour.
     std::array<float, 3> albedo{0.62F, 0.52F, 0.40F};
-    // Henyey-Greenstein asymmetry: 0 scatters evenly, toward 1 mostly
-    // forward (dust glows looking toward the sun).
+    // The phase function's asymmetry g (Cornette-Shanks, as the sky's Mie
+    // phase): 0 scatters evenly, toward 1 mostly forward (dust glows
+    // looking toward the sun).
     float forward_scattering = 0.6F;
     // A particle's fade in and out (as the adapter's).
     std::chrono::duration<float> fade{0.25F};

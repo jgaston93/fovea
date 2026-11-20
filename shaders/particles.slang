@@ -92,9 +92,11 @@ ParticleVertex vs_particles(uint id: SV_VulkanVertexID) {
     float3 at;
     if (d <= p.radius * 1.02 + 4.0 * near) {
         // The eye inside it, or nearly: a quad across the whole view, past
-        // the near plane (wider than any channel's field of view).
+        // the near plane, out to 89.94 degrees from the view's axis (tan
+        // 1000): wider than any channel (the config allows edges below 90).
+        // The rasterizer clips what's outside the view.
         const float D = 8.0 * near;
-        at = forward * D + (right * corner.x + up * corner.y) * (8.0 * D);
+        at = forward * D + (right * corner.x + up * corner.y) * (1000.0 * D);
     } else {
         // Facing the eye, through the centre, as wide as the cone of rays
         // that touch the sphere is there.
@@ -139,9 +141,13 @@ static const float kOctaveEnergy = 1.75;  // 1 + 1/2 + 1/4: the octaves' sum for
 [shader("fragment")]
 float4 fs_particles(ParticleVertex i) : SV_Target {
     const float3 dir = normalize(i.ray);
-    // Where the ray enters and leaves the sphere.
+    // Where the ray enters and leaves the sphere: b along the ray to the
+    // point nearest the centre, h from there to the centre. r^2 - h^2, not
+    // b^2 - (|c|^2 - r^2), which loses a small far puff to cancellation in
+    // floats (as atmosphere.slang's discriminant).
     const float b = dot(dir, i.centre);
-    const float disc = b * b - (dot(i.centre, i.centre) - i.radius * i.radius);
+    const float3 h = i.centre - b * dir;
+    const float disc = i.radius * i.radius - dot(h, h);
     if (disc <= 0.0) {
         discard;
     }
