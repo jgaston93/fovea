@@ -4,6 +4,7 @@
 add_library(fovea_render STATIC
     src/display_clock.cpp
     src/frame_loop.cpp
+    src/particle_pack.cpp
     src/resolve.cpp
     src/scene_view.cpp
     src/shadow_cascades.cpp
@@ -13,6 +14,7 @@ add_library(fovea_render STATIC
     src/vk/lights.cpp
     src/vk/models.cpp
     src/vk/overlay_ui.cpp
+    src/vk/particles.cpp
     src/vk/renderer.cpp
     src/vk/shadows.cpp
     src/vk/sky.cpp
@@ -74,5 +76,10 @@ fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/stars.slang" fs_sta
 # The airport lights (milestone 6 step 8).
 fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/lights.slang" vs_lights vertex kVsLights)
 fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/lights.slang" fs_lights fragment kFsLights)
+# Particle volumes (D-040).
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" vs_particles vertex
+                 kVsParticles)
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" fs_particles fragment
+                 kFsParticles)
 # Just the generated shader headers: what clang-tidy needs from a build.
 add_custom_target(fovea_shaders DEPENDS ${FOVEA_SHADER_HEADERS})

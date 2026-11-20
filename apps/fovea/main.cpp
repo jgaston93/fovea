@@ -345,6 +345,15 @@ fovea::RendererOptions renderer_options(const fovea::DisplayConfig& config) {
     fovea::RendererOptions r;
     r.msaa = config.msaa;
     r.frame_rate_hz = config.target_hz;
+    if (config.particles) {
+        const fovea::ParticlesConfig& p = *config.particles;
+        r.particle_capacity = p.capacity;
+        r.particle_look.extinction_m2_per_kg = static_cast<float>(p.extinction_m2_per_kg);
+        r.particle_look.albedo = {static_cast<float>(p.albedo[0]), static_cast<float>(p.albedo[1]),
+                                  static_cast<float>(p.albedo[2])};
+        r.particle_look.forward_scattering = static_cast<float>(p.forward_scattering);
+        r.particle_look.fade = std::chrono::duration<float>(static_cast<float>(p.fade_s));
+    }
     return r;
 }
 
@@ -626,7 +635,7 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
             host_thread->start();
         }
         if (config.particles) {
-            // D-039: drawn in a later step; received, kept and counted now.
+            // D-039: received, kept and counted here; drawn by the renderer (D-040).
             const fovea::ParticlesConfig& pc = *config.particles;
             particle_state = std::make_unique<fovea::ParticleState>(pc.capacity);
             fovea::PuffAdapterOptions puff_options;
@@ -648,6 +657,7 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
             puff_thread =
                 std::make_unique<fovea::PollThread>([a = puff_adapter.get()] { return a->poll(); });
             puff_thread->start();
+            loop_options.particles = particle_state.get();
         }
         loop = std::make_unique<fovea::FrameLoop>(*renderer, *scene_state, views, loop_options,
                                                   stats.get());

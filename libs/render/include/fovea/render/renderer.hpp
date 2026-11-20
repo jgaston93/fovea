@@ -15,9 +15,11 @@
 
 #include "fovea/core/config.hpp"
 #include "fovea/core/math.hpp"
+#include "fovea/core/particles.hpp"
 #include "fovea/core/scene.hpp"
 #include "fovea/platform/platform.hpp"
 #include "fovea/render/atmosphere.hpp"
+#include "fovea/render/particle_pack.hpp"
 #include "fovea/render/view.hpp"
 #include "fovea/terrain/database.hpp"
 
@@ -38,6 +40,10 @@ struct RendererOptions {
     // The frame clock's rate ([display] target_hz): exposure adapts by a
     // frame period each frame drawn (D-031).
     double frame_rate_hz = 60.0;
+    // Particle volumes (D-039, D-040): room for this many on the GPU each
+    // frame (0: none drawn), and how they look.
+    std::size_t particle_capacity = 0;
+    ParticleLook particle_look{};
 };
 
 struct GpuInfo {
@@ -272,6 +278,12 @@ public:
     // snow; cloud layers aren't drawn yet, #73). Until set, none.
     // No allocation; at most kMaxWeatherLayers are kept.
     void set_weather(std::span<const WeatherLayer> layers);
+    // The particle volumes the frames drawn from now on show (D-040): the
+    // frame's particles moved and faded to `at`, the time the frame is
+    // seen. The frame must stay valid until the next call (a
+    // ParticleState's latest() does until its next latest()); null shows
+    // none. Without particle_capacity, ignored. No allocation.
+    void set_particles(const ParticleFrame* frame, LocalTime at);
 
     // The sky's tables and an output's light, as the last frame left them
     // (milestone 6 step 2). For tests: waits for the GPU, and allocates.

@@ -129,8 +129,16 @@ float3 moon_disc(float3 ray, float edge_width) {
            atmosphere.sun_illuminance * through;
 }
 
+struct ScenePixel {
+    float4 colour : SV_Target;
+    // The ground plane's depth (reverse-Z) where the grid draws it, so what
+    // is drawn after the resolve and reads the depth (particles, D-040) is
+    // hidden by it; 0, the sky's, elsewhere.
+    float depth : SV_Depth;
+};
+
 [shader("fragment")]
-float4 fs_scene(Fullscreen i) : SV_Target {
+ScenePixel fs_scene(Fullscreen i) {
     // Any depth works for the direction; 1 is the near plane (reverse-Z).
     // The rotation leaves w alone, so the divide still gives the point.
     const float4 p = mul(scene.clip_to_local, float4(i.ndc, 1.0, 1.0));
@@ -190,7 +198,12 @@ float4 fs_scene(Fullscreen i) : SV_Target {
         const float level = abs(ray.z) / max(ray_z_width, 1e-6);
         colour = lerp(colour, kHorizonLine, 1.0 - saturate(level));
     }
-    return float4(colour, 1.0);
+    ScenePixel o;
+    o.colour = float4(colour, 1.0);
+    // p is this pixel's point on the near plane, where depth is 1: depth
+    // falls as 1 over the distance along the ray (any ray, reverse-Z).
+    o.depth = ray.z > 0.0 && scene.grid != 0 ? saturate(length(p.xyz / p.w) / t) : 0.0;
+    return o;
 }
 
 struct TonemapPush {

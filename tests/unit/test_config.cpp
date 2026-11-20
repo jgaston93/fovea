@@ -554,6 +554,19 @@ fade_s = 0.5
     EXPECT_FALSE(d.config->particles->listen_address.has_value());
     EXPECT_EQ(d.config->particles->capacity, 200000U);
     EXPECT_DOUBLE_EQ(d.config->particles->fade_s, 0.25);
+    EXPECT_DOUBLE_EQ(d.config->particles->extinction_m2_per_kg, 500.0);
+    EXPECT_DOUBLE_EQ(d.config->particles->forward_scattering, 0.6);
+    const auto look = parse(kMinimal + R"(
+[particles]
+port = 9000
+extinction_m2_per_kg = 250.0
+albedo = { r = 0.7, g = 0.6, b = 0.5 }
+forward_scattering = 0.4
+)");
+    ASSERT_TRUE(look.ok()) << look.errors[0].to_string();
+    EXPECT_DOUBLE_EQ(look.config->particles->extinction_m2_per_kg, 250.0);
+    EXPECT_DOUBLE_EQ(look.config->particles->albedo[2], 0.5);
+    EXPECT_DOUBLE_EQ(look.config->particles->forward_scattering, 0.4);
 }
 
 TEST(Config, ParticlesSectionIsChecked) {
@@ -564,6 +577,12 @@ TEST(Config, ParticlesSectionIsChecked) {
     expect_one_error(parse(head + "port = 9000\ncapacity = 0\n"), 9, "particles.capacity");
     expect_one_error(parse(head + "port = 9000\nfade_s = -1\n"), 9, "particles.fade_s");
     expect_one_error(parse(head + "port = 9000\nrate = 3\n"), 9, "rate");
+    expect_one_error(parse(head + "port = 9000\nextinction_m2_per_kg = 0\n"), 9,
+                     "particles.extinction_m2_per_kg");
+    expect_one_error(parse(head + "port = 9000\nalbedo = { r = 1.2, g = 0.5, b = 0.5 }\n"), 9,
+                     "particles.albedo");
+    expect_one_error(parse(head + "port = 9000\nforward_scattering = 1.0\n"), 9,
+                     "particles.forward_scattering");
 }
 
 }  // namespace

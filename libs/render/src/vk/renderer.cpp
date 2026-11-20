@@ -33,6 +33,7 @@
 #include "fovea/core/geodesy.hpp"
 #include "fovea/render/renderer.hpp"
 #include "overlay_ui.hpp"
+#include "particles.hpp"
 #include "shaders/kCsAerial.hpp"
 #include "shaders/kCsExposure.hpp"
 #include "shaders/kCsIrradiance.hpp"
@@ -42,6 +43,7 @@
 #include "shaders/kFsLights.hpp"
 #include "shaders/kFsModel.hpp"
 #include "shaders/kFsModelShadow.hpp"
+#include "shaders/kFsParticles.hpp"
 #include "shaders/kFsResolve.hpp"
 #include "shaders/kFsScene.hpp"
 #include "shaders/kFsStars.hpp"
@@ -51,6 +53,7 @@
 #include "shaders/kVsLights.hpp"
 #include "shaders/kVsModel.hpp"
 #include "shaders/kVsModelShadow.hpp"
+#include "shaders/kVsParticles.hpp"
 #include "shaders/kVsStars.hpp"
 #include "shaders/kVsTerrain.hpp"
 #include "shaders/kVsTerrainShadow.hpp"
@@ -485,6 +488,13 @@ struct Renderer::Impl {
     // each frame before the views; the inputs sized once.
     std::unique_ptr<SkyGpu> sky_tables;
     std::unique_ptr<StarsGpu> stars;  // step 4
+    // Particle volumes (D-040): made when particle_capacity isn't 0; the
+    // frame set_particles left, packed at each frame's start.
+    std::unique_ptr<ParticlesGpu> particles;
+    std::size_t particle_capacity = 0;
+    ParticleLook particle_look;
+    const ParticleFrame* particle_frame = nullptr;
+    LocalTime particle_time;
     // The weather's layers (step 6), as set_weather left them.
     FixedArray<WeatherLayer, kMaxWeatherLayers> weather;
     // The shadow maps (step 5): each view's cascades and their light this
@@ -1261,7 +1271,8 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     check(vkCreatePipelineLayout(device.device, &tonemap_lci, nullptr, &tonemap_layout),
           "vkCreatePipelineLayout");
 
-    scene_pipeline = make_pipeline(scene_layout, fs_scene, kHdrFormat, kDepthFormat, samples);
+    // The reference grid writes its ground's depth (D-040: particles read it).
+    scene_pipeline = make_pipeline(scene_layout, fs_scene, kHdrFormat, kDepthFormat, samples, true);
     if (samples != VK_SAMPLE_COUNT_1_BIT) {
         fs_resolve = make_module(kFsResolve);
         VkPushConstantRange resolve_push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ResolvePush)};
@@ -1305,7 +1316,8 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
               "vmaCreateImage");
         t.view = make_view(t.image, kHdrFormat);
         ici.format = kDepthFormat;
-        ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        // Sampled too: the particles read it (D-040).
+        ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         check(vmaCreateImage(allocator, &ici, &aci, &t.depth, &t.depth_memory, nullptr),
               "vmaCreateImage (depth)");
         t.depth_view = make_view(t.depth, kDepthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
@@ -1355,6 +1367,24 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
         write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         write.pImageInfo = &image_info;
         vkUpdateDescriptorSets(device.device, 1, &write, 0, nullptr);
+    }
+    if (particle_capacity > 0) {
+        VkShaderModule vs_particles = make_module(kVsParticles);
+        VkShaderModule fs_particles = make_module(kFsParticles);
+        try {
+            particles = std::make_unique<ParticlesGpu>(
+                gpu_context(), particle_capacity, kFramesInFlight,
+                static_cast<std::uint32_t>(hdr.size()), kHdrFormat, vs_particles, fs_particles);
+        } catch (...) {
+            vkDestroyShaderModule(device.device, vs_particles, nullptr);
+            vkDestroyShaderModule(device.device, fs_particles, nullptr);
+            throw;
+        }
+        vkDestroyShaderModule(device.device, vs_particles, nullptr);
+        vkDestroyShaderModule(device.device, fs_particles, nullptr);
+        for (std::size_t i = 0; i < hdr.size(); ++i) {
+            particles->set_depth(static_cast<std::uint32_t>(i), hdr[i].depth_view);
+        }
     }
 }
 
@@ -1681,6 +1711,28 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
         terrain->draw_lights(cmd, view, t.extent, lighting_offset(slot, i));
     }
     vkCmdEndRendering(cmd);
+    if (particles && particles->count(static_cast<std::uint32_t>(slot)) > 0) {
+        // Particle volumes (D-040), over the stars and lights, reading the
+        // resolved depth: after the writes to the target and the depth
+        // tests. The next frame's depth barrier waits for the read (its
+        // source stages include the fragment shader).
+        std::array<VkImageMemoryBarrier2, 2> pbs = sbs;
+        pbs[0].srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        pbs[1].srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        pbs[1].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        pbs[1].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        pbs[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkDependencyInfo pdep{};
+        pdep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        pdep.imageMemoryBarrierCount = static_cast<std::uint32_t>(pbs.size());
+        pdep.pImageMemoryBarriers = pbs.data();
+        vkCmdPipelineBarrier2(cmd, &pdep);
+        begin_pass(cmd, t.view, t.extent, VK_NULL_HANDLE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                   VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_LOAD);
+        particles->record(cmd, static_cast<std::uint32_t>(slot), static_cast<std::uint32_t>(i),
+                          view, lighting_offset(slot, i), particle_look);
+        vkCmdEndRendering(cmd);
+    }
     transition(cmd, t.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1692,6 +1744,16 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
     const auto started = now();  // fovea::now(), the monotonic clock
     const std::size_t slot = frame_number % kFramesInFlight;
     Frame& f = begin_frame();
+    if (particles) {
+        // The slot's previous frame is done (begin_frame waited): its
+        // buffer is free. Placed relative to the first view's eye.
+        if (particle_frame != nullptr && request.scene && !request.views.empty()) {
+            (void)particles->pack(static_cast<std::uint32_t>(slot), *particle_frame, particle_time,
+                                  particle_look, request.views[0].eye_ecef);
+        } else {
+            particles->clear(static_cast<std::uint32_t>(slot));
+        }
+    }
     if (terrain && request.scene) {
         // Tiles the paging thread has ready, and slots of frames done.
         std::uint64_t completed = 0;
@@ -2030,6 +2092,7 @@ Renderer::Impl::~Impl() {
         }
         terrain.reset();
         stars.reset();
+        particles.reset();
         sky_tables.reset();
         shadows.reset();
         vkDestroySemaphore(device.device, timeline, nullptr);
@@ -2117,6 +2180,8 @@ std::unique_ptr<Renderer> Renderer::for_windows(Platform& platform,
     impl->create_device(true);
     impl->choose_samples(options.msaa);
     impl->frame_period_s = 1.0 / std::max(options.frame_rate_hz, 1.0);
+    impl->particle_capacity = options.particle_capacity;
+    impl->particle_look = options.particle_look;
     for (Swapchain& s : impl->swapchains) {
         impl->build_swapchain(s);  // deferred while a window has no size
     }
@@ -2138,6 +2203,8 @@ std::unique_ptr<Renderer> Renderer::offscreen(std::span<const OffscreenOutput> o
     impl->create_device(false);
     impl->choose_samples(options.msaa);
     impl->frame_period_s = 1.0 / std::max(options.frame_rate_hz, 1.0);
+    impl->particle_capacity = options.particle_capacity;
+    impl->particle_look = options.particle_look;
     std::vector<VkExtent2D> render_extents;
     for (const OffscreenOutput& o : outputs) {
         impl->create_offscreen(o);
@@ -2175,6 +2242,11 @@ void Renderer::set_visibility(double visibility_m) {
     if (impl_->sky_tables) {
         impl_->sky_tables->set_visibility(visibility_m);
     }
+}
+
+void Renderer::set_particles(const ParticleFrame* frame, LocalTime at) {
+    impl_->particle_frame = frame;
+    impl_->particle_time = at;
 }
 
 void Renderer::set_weather(std::span<const WeatherLayer> layers) {
