@@ -121,6 +121,13 @@ struct ParticlesConfig {
     double extinction_m2_per_kg = 320.0;
     std::array<double, 3> albedo{0.62, 0.52, 0.40};
     double forward_scattering = 0.68;
+    // Detail in the particles (D-043; chosen, to tune by eye): how much one
+    // field of cellular noise, shared by them all, varies their density (0:
+    // uniform spheres, and no cost); its feature size in metres; and how far
+    // curl noise swirls it, in features.
+    double detail = 0.6;
+    double detail_size = 2.0;
+    double swirl = 0.5;
     // Cost against quality (D-042), fixed at start: self-shadowing by
     // half-angle slicing (D-041) and its slices and light buffer (texels a
     // side); the particles drawn at full or half the views' resolution

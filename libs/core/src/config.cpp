@@ -320,7 +320,8 @@ std::optional<std::array<double, N>> number_fields(Parser& p, const toml::node& 
 void parse_particles(Parser& p, const toml::table& t, ParticlesConfig& out) {
     p.check_keys(t,
                  {"port", "listen_address", "capacity", "fade_s", "extinction_m2_per_kg", "albedo",
-                  "forward_scattering", "self_shadowing", "slices", "light_buffer", "resolution"},
+                  "forward_scattering", "detail", "detail_size", "swirl", "self_shadowing",
+                  "slices", "light_buffer", "resolution"},
                  "particles");
     if (const auto* n = t.get("self_shadowing")) {
         if (const auto* b = n->as_boolean()) {
@@ -390,6 +391,24 @@ void parse_particles(Parser& p, const toml::table& t, ParticlesConfig& out) {
         if (auto v = p.number(*n, "particles.forward_scattering")) {
             check_range(p, *n, "particles.forward_scattering", *v, -0.95, 0.95, false);
             out.forward_scattering = *v;
+        }
+    }
+    if (const auto* n = t.get("detail")) {
+        if (auto v = p.number(*n, "particles.detail")) {
+            check_range(p, *n, "particles.detail", *v, 0.0, 1.0, false);
+            out.detail = *v;
+        }
+    }
+    if (const auto* n = t.get("detail_size")) {
+        if (auto v = p.number(*n, "particles.detail_size")) {
+            check_range(p, *n, "particles.detail_size", *v, 0.1, 100.0, false);
+            out.detail_size = *v;
+        }
+    }
+    if (const auto* n = t.get("swirl")) {
+        if (auto v = p.number(*n, "particles.swirl")) {
+            check_range(p, *n, "particles.swirl", *v, 0.0, 4.0, false);
+            out.swirl = *v;
         }
     }
 }

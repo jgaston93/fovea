@@ -142,6 +142,7 @@ A simulation of dust, smoke or spray sends its particles to Fovea on a UDP port 
 - each sphere's optical depth along each pixel's ray, from its bulk density;
 - cut off softly where the ground or anything else is nearer;
 - lit by the sun, moon and sky, the sun's light shadowed by the cloud itself ([D-041](decisions.md));
+- its density varied by one field of billowy noise across the whole cloud, swirled and drifting, the mass kept on average ([D-043](decisions.md));
 - moved on its velocity between updates.
 
 ```toml
@@ -154,6 +155,10 @@ fade_s = 0.25                # fade in when new, and out when no longer refreshe
 extinction_m2_per_kg = 320.0 # optical depth per kg/m^2 along a ray: mineral dust's (Mie, from measured sizes)
 albedo = { r = 0.62, g = 0.52, b = 0.40 }  # the light scattered, linear sRGB: a chosen tan, tune by eye
 forward_scattering = 0.68    # Cornette-Shanks g: 0 even, toward 1 forward; the same dust's asymmetry
+# Detail (D-043; chosen, tune by eye): one field of noise shared by all the particles
+detail = 0.6                 # 0 to 1: how much it varies their density, mass kept on average (0: uniform spheres, no cost)
+detail_size = 2.0            # 0.1 to 100: its features, metres
+swirl = 0.5                  # 0 to 4: curl noise swirling it, in features; it drifts in time
 # Cost against look (D-042; the overlay and --stats show the particle pass's GPU time):
 self_shadowing = true        # false: no light pass, one slice
 slices = 32                  # 1 to 128

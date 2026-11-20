@@ -4,6 +4,7 @@
 add_library(fovea_render STATIC
     src/display_clock.cpp
     src/frame_loop.cpp
+    src/particle_noise.cpp
     src/particle_pack.cpp
     src/resolve.cpp
     src/scene_view.cpp

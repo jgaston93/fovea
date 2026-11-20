@@ -103,6 +103,9 @@ frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
 # extinction_m2_per_kg = 320.0 # how they look (D-040 has the sources): mineral dust's (Mie, measured sizes)
 # albedo = { r = 0.62, g = 0.52, b = 0.40 }  # a chosen tan, to tune by eye
 # forward_scattering = 0.68    # the same dust's asymmetry
+# detail = 0.6                 # D-043, chosen: density varied by one noise field, billows (0: none, no cost)
+# detail_size = 2.0            # the noise's features, metres
+# swirl = 0.5                  # curl noise swirling the detail, in features; it drifts in time
 # self_shadowing = true        # cost against look (D-042): false, no light pass
 # slices = 32                  # 1 to 128
 # light_buffer = 512           # texels a side, 64 to 2048

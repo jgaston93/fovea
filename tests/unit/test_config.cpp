@@ -556,14 +556,23 @@ fade_s = 0.5
     EXPECT_DOUBLE_EQ(d.config->particles->fade_s, 0.25);
     EXPECT_DOUBLE_EQ(d.config->particles->extinction_m2_per_kg, 320.0);
     EXPECT_DOUBLE_EQ(d.config->particles->forward_scattering, 0.68);
+    EXPECT_DOUBLE_EQ(d.config->particles->detail, 0.6);
+    EXPECT_DOUBLE_EQ(d.config->particles->detail_size, 2.0);
+    EXPECT_DOUBLE_EQ(d.config->particles->swirl, 0.5);
     const auto look = parse(kMinimal + R"(
 [particles]
 port = 9000
 extinction_m2_per_kg = 250.0
 albedo = { r = 0.7, g = 0.6, b = 0.5 }
 forward_scattering = 0.4
+detail = 0.0
+detail_size = 1.5
+swirl = 2.0
 )");
     ASSERT_TRUE(look.ok()) << look.errors[0].to_string();
+    EXPECT_DOUBLE_EQ(look.config->particles->detail, 0.0);
+    EXPECT_DOUBLE_EQ(look.config->particles->detail_size, 1.5);
+    EXPECT_DOUBLE_EQ(look.config->particles->swirl, 2.0);
     EXPECT_DOUBLE_EQ(look.config->particles->extinction_m2_per_kg, 250.0);
     EXPECT_DOUBLE_EQ(look.config->particles->albedo[2], 0.5);
     EXPECT_DOUBLE_EQ(look.config->particles->forward_scattering, 0.4);
@@ -600,6 +609,9 @@ TEST(Config, ParticlesSectionIsChecked) {
                      "particles.albedo");
     expect_one_error(parse(head + "port = 9000\nforward_scattering = 1.0\n"), 9,
                      "particles.forward_scattering");
+    expect_one_error(parse(head + "port = 9000\ndetail = 1.5\n"), 9, "particles.detail");
+    expect_one_error(parse(head + "port = 9000\ndetail_size = 0\n"), 9, "particles.detail_size");
+    expect_one_error(parse(head + "port = 9000\nswirl = -1\n"), 9, "particles.swirl");
     expect_one_error(parse(head + "port = 9000\nself_shadowing = 1\n"), 9,
                      "particles.self_shadowing");
     expect_one_error(parse(head + "port = 9000\nslices = 0\n"), 9, "particles.slices");

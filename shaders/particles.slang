@@ -74,6 +74,11 @@ struct LightSpace {
 [[vk::binding(2, 2)]] SamplerState light_sampler;
 // The view's particle image (premultiplied), for the composite.
 [[vk::binding(3, 2)]] Texture2D<float4> particle_image;
+// The detail's noise (D-043, particle_noise.hpp): inverted cellular noise,
+// and curl noise, each tiling, sampled linearly and wrapping.
+[[vk::binding(4, 2)]] Texture3D<float> detail_noise;
+[[vk::binding(5, 2)]] Texture3D<float4> curl_noise;
+[[vk::binding(6, 2)]] SamplerState noise_sampler;
 
 // Mirrors ParticlePush in particles.cpp.
 struct ParticlePush {
@@ -85,6 +90,10 @@ struct ParticlePush {
     uint depth_scale;  // scene depth pixels per particle image pixel: 1, or 2 at half resolution
     float unused;
     float2 inv_target;  // 1 / the view's render size, pixels (the composite)
+    float time;         // seconds the detail has drifted (D-043)
+    float detail;       // 0 to 1: how much of the density the noise erodes
+    float detail_size;  // the noise's features, metres
+    float swirl;        // the curl's reach, in features
 };
 [[vk::push_constant]] ConstantBuffer<ParticlePush> push;
 
@@ -94,6 +103,8 @@ struct ParticleVertex {
     [[vk::location(1)]] nointerpolation float3 centre;
     [[vk::location(2)]] nointerpolation float radius;
     [[vk::location(3)]] nointerpolation float extinction;
+    [[vk::location(4)]] nointerpolation float3 enu;  // its centre, east, north, up from its origin
+    [[vk::location(5)]] nointerpolation uint origin;
 };
 
 // The near plane's distance: with an infinite reverse-Z projection, clip z
@@ -157,6 +168,8 @@ ParticleVertex vs_particles(uint id: SV_VulkanVertexID) {
     o2.centre = c;
     o2.radius = p.radius;
     o2.extinction = p.extinction;
+    o2.enu = p.position;
+    o2.origin = p.origin;
     if (p.extinction <= 0.0) {
         o2.position = float4(2.0, 2.0, 0.0, 1.0);  // outside the view
     }
@@ -199,6 +212,63 @@ float multiple_scattering_phase(float g, float c, float depth) {
     return sum;
 }
 static const float kOctaveEnergy = 1.75;  // b^0 + b^1 + b^2: the octaves' sum for an isotropic light
+
+// Detail in the particles (D-043): the density at a point as a fraction of
+// a particle's uniform density, `enu` the point in the particle's origin's
+// frame (metres), `r2` its squared distance from the particle's centre in
+// radii. After Schneider and Vos ("The Real-time Volumetric Cloudscapes of
+// Horizon: Zero Dawn", SIGGRAPH 2015 Advances in Real-Time Rendering; the
+// slides read), whose detail is inverted cellular noise at increasing
+// frequencies ("tightly packed billow shapes", slides 31 and 34), applied
+// to the cloud's base shape and "distort[ed] ... by our 2d curl noise to
+// fake the swirly distortions from atmospheric turbulence" (slide 39). As
+// theirs, the noise is one field in the world (here the origin's frame),
+// not one per particle: overlapping particles make one cloud, and its
+// billows run across them. Theirs erodes only the edges of a cloud they
+// draw from one density field; here a cloud is many particles, its inside
+// the inside of each, so the field varies the density everywhere: the
+// fraction is base x (1 - detail (1 - n)) / (1 - detail kDetailMean'),
+// the division keeping the particles' mass on average (the sender's
+// density is a mass; the detail moves it, doesn't remove it). The base is
+// the sphere softened over its outer part, min(1, 3 (1 - r^2)): 1 inside
+// r^2 = 2/3, 0 at the surface, so a particle's own edge doesn't show as a
+// sphere's; divided by its mean over the sphere's volume, the integral of
+// 3 r^2 min(1, 3 (1 - r^2)) from 0 to 1, 0.7645, so it keeps the mass too
+// (the outer shell holds 46 % of the volume). Their
+// curl texture is 2D; here it's a 3D volume, the curl of a vector
+// potential (Bridson, Hourihan and Nordenstam, "Curl-Noise for Procedural
+// Fluid Flow", SIGGRAPH 2007, equation 1; read), drifting in time: billows
+// that swirl without gathering anywhere, as the curl has no sinks. Both
+// volumes are 32^3 with 4 features a side at their first octave, so a tile
+// spans 4 features of detail_size metres.
+static const float kDetailMean = 0.4586;  // the detail volume's mean (particle_noise.hpp; tested)
+static const float kBaseMean = 0.7645;    // the base's mean over the sphere
+// The noise's factor at a point (metres in the origin's frame): 1 on
+// average over the field.
+float detail_factor(float3 enu) {
+    float3 at = enu / (4.0 * push.detail_size);
+    const float3 curl_at = at * 0.5 + float3(0.0, 0.0, 0.03 * push.time);
+    at += curl_noise.SampleLevel(noise_sampler, curl_at, 0.0).xyz * (0.25 * push.swirl);
+    const float n = detail_noise.SampleLevel(noise_sampler, at, 0.0);
+    return (1.0 - push.detail * (1.0 - n)) / (1.0 - push.detail * (1.0 - kDetailMean));
+}
+// The base, min(1, 3 (1 - r^2)), integrated along a line `b2` (squared, in
+// radii) from the centre, from its closest point to `s` radii along it
+// (odd in s). Exact: 1 while r^2 < 2/3, then 3 (1 - b2 - s^2), to the
+// surface; the samples would miss the soft ends of every chord (on the
+// one through the centre, 4 midpoints all fall where the base is 1: 10 %
+// too much).
+float base_along(float s, float b2) {
+    const float a = sqrt(max(2.0 / 3.0 - b2, 0.0));  // where r^2 reaches 2/3
+    const float e = sqrt(max(1.0 - b2, 0.0));        // the surface
+    const float x = min(abs(s), e);
+    float g = min(x, a);
+    if (x > a) {
+        g += 3.0 * ((1.0 - b2) * (x - a) - (x * x * x - a * a * a) / 3.0);
+    }
+    return s < 0.0 ? -g : g;
+}
+static const int kDetailSamples = 4;  // along each pixel's chord through a puff
 
 [shader("fragment")]
 float4 fs_particles(ParticleVertex i) : SV_Target {
@@ -259,7 +329,35 @@ float4 fs_particles(ParticleVertex i) : SV_Target {
     if (length_inside <= 0.0) {
         discard;
     }
-    const float opacity = 1.0 - exp(-i.extinction * length_inside);
+    // The chord's optical depth: uniform, or with detail the mean of the
+    // eroded density at kDetailSamples points along it (D-043).
+    float density = 1.0;
+    if (push.detail > 0.0) {
+        // The samples' offsets from the centre turned into the origin's
+        // east, north and up (ECEF axes to ENU).
+        // The chord's base, exactly, over its length (the line's closest
+        // point to the centre is at b along the ray), then the noise's
+        // factor at kDetailSamples points along it, weighted by the base
+        // there.
+        const Origin o = origins[i.origin];
+        const float inv_r = 1.0 / i.radius;
+        const float b2 = dot(l, l) * inv_r * inv_r;  // l: the centre's offset from the ray
+        const float base = (base_along((leave - b) * inv_r, b2) - base_along((enter - b) * inv_r, b2)) /
+                           (length_inside * inv_r * kBaseMean);
+        float weighted = 0.0;
+        float weights = 0.0;
+        const float step = length_inside / float(kDetailSamples);
+        for (int k = 0; k < kDetailSamples; ++k) {
+            const float t = enter + (float(k) + 0.5) * step;
+            const float3 off = dir * t - i.centre;
+            const float w = saturate((1.0 - dot(off, off) * inv_r * inv_r) * 3.0);
+            const float3 enu = i.enu + float3(dot(off, o.east), dot(off, o.north), dot(off, o.up));
+            weighted += w * detail_factor(enu);
+            weights += w;
+        }
+        density = base * (weights > 0.0 ? weighted / weights : 1.0);
+    }
+    const float opacity = 1.0 - exp(-i.extinction * density * length_inside);
     if (opacity < 1e-4) {
         discard;
     }
