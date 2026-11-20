@@ -19,7 +19,7 @@ Fovea is in active development. The first database covers Huntsville Internation
 - **Airport lights:** runway edge, threshold and end, centreline and touchdown zone lights and PAPIs, laid out from the FAA's data and standard (AC 150/5340-30J) and drawn as points with their colours by side and through the air and fog.
 - **Weather:** visibility and ground fog.
 - **Host control:** a host drives the eyepoint, time and weather over CIGI, and asks for terrain heights (HAT/HOT).
-- **Particle volumes:** a simulation's dust, smoke or spray particles received over UDP as a stream of puffs (D-039); drawing them is next.
+- **Particle volumes:** a simulation's dust, smoke or spray, received over UDP as a stream of puffs (D-039) and drawn in every view as lit, soft volumes that meet the ground without a seam (D-040).
 
 **Next:**
 - **Airport lights:** approach lighting systems (MALSR, ALSF-2), whose layouts are in FAA JO 6850.2, and the fixtures' photometry from AC 150/5345-46 in place of today's approximate intensities.

@@ -138,7 +138,11 @@ When Fovea exits, it prints what the host link did: messages received and reject
 
 ## Particle volumes
 
-A simulation of dust, smoke or spray sends its particles to Fovea on a UDP port of their own, apart from CIGI ([D-039](decisions.md)). Each particle (a *puff*) is a sphere of uniform density with a velocity. Fovea receives and keeps them now; drawing them is the next step.
+A simulation of dust, smoke or spray sends its particles to Fovea on a UDP port of their own, apart from CIGI ([D-039](decisions.md)). Each particle (a *puff*) is a sphere of uniform density with a velocity. Fovea draws them in every view ([D-040](decisions.md)):
+- each sphere's optical depth along each pixel's ray, from its bulk density;
+- cut off softly where the ground or anything else is nearer;
+- lit by the sun, moon and sky;
+- moved on its velocity between updates.
 
 ```toml
 [particles]
@@ -146,6 +150,10 @@ port = 47102                 # required
 listen_address = "127.0.0.1" # optional: listen on one address only
 capacity = 200000            # the most particles kept (200000 if left out)
 fade_s = 0.25                # fade in when new, and out when no longer refreshed
+# How they look (starting points for dust; tune by eye):
+extinction_m2_per_kg = 500.0 # optical depth per kg/m^2 along a ray
+albedo = { r = 0.62, g = 0.52, b = 0.40 }  # the light scattered, linear sRGB
+forward_scattering = 0.6     # 0 even, toward 1 forward (glows toward the sun)
 ```
 
 Origins' heights are MSL, made ellipsoidal with `[host]`'s `geoid_height_m` (0 without a `[host]`).
@@ -205,4 +213,4 @@ Every datagram stands alone: a header, then an origin or whole puffs. There are 
 - **Other packets:** view and sensor control, component control and the remaining packets, which are skipped.
 - **Recording:** recording and replaying CIGI traffic (#29).
 - **Control plane:** a control and stats channel separate from CIGI (milestone 12).
-- **Particle volumes:** drawing them (D-039's next step).
+- **Particle volumes:** shadows within a cloud and from the terrain on it.

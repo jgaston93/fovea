@@ -295,8 +295,33 @@ void parse_host(Parser& p, const toml::table& t, HostConfig& out) {
     }
 }
 
+// Reads the listed numeric fields of an inline table, all required.
+template <std::size_t N>
+std::optional<std::array<double, N>> number_fields(Parser& p, const toml::node& node,
+                                                   const std::string& path,
+                                                   const std::array<std::string_view, N>& keys) {
+    const toml::table* t = p.table(node, path);
+    if (t == nullptr) {
+        return std::nullopt;
+    }
+    p.check_keys(*t, std::span<const std::string_view>(keys), path);
+    std::array<double, N> values{};
+    bool ok = true;
+    for (std::size_t i = 0; i < N; ++i) {
+        const toml::node* field = p.required(*t, keys[i], path);
+        const auto v =
+            field != nullptr ? p.number(*field, Parser::join(path, keys[i])) : std::nullopt;
+        ok = ok && v.has_value();
+        values[i] = v.value_or(0.0);
+    }
+    return ok ? std::optional(values) : std::nullopt;
+}
+
 void parse_particles(Parser& p, const toml::table& t, ParticlesConfig& out) {
-    p.check_keys(t, {"port", "listen_address", "capacity", "fade_s"}, "particles");
+    p.check_keys(t,
+                 {"port", "listen_address", "capacity", "fade_s", "extinction_m2_per_kg", "albedo",
+                  "forward_scattering"},
+                 "particles");
     if (const auto* n = p.required(t, "port", "particles")) {
         if (auto v = p.integer(*n, "particles.port", 1, 65535)) {
             out.port = static_cast<std::uint16_t>(*v);
@@ -324,28 +349,26 @@ void parse_particles(Parser& p, const toml::table& t, ParticlesConfig& out) {
             out.fade_s = *v;
         }
     }
-}
-
-// Reads the listed numeric fields of an inline table, all required.
-template <std::size_t N>
-std::optional<std::array<double, N>> number_fields(Parser& p, const toml::node& node,
-                                                   const std::string& path,
-                                                   const std::array<std::string_view, N>& keys) {
-    const toml::table* t = p.table(node, path);
-    if (t == nullptr) {
-        return std::nullopt;
+    if (const auto* n = t.get("extinction_m2_per_kg")) {
+        if (auto v = p.number(*n, "particles.extinction_m2_per_kg")) {
+            check_range(p, *n, "particles.extinction_m2_per_kg", *v, 0.0, 1e6, true);
+            out.extinction_m2_per_kg = *v;
+        }
     }
-    p.check_keys(*t, std::span<const std::string_view>(keys), path);
-    std::array<double, N> values{};
-    bool ok = true;
-    for (std::size_t i = 0; i < N; ++i) {
-        const toml::node* field = p.required(*t, keys[i], path);
-        const auto v =
-            field != nullptr ? p.number(*field, Parser::join(path, keys[i])) : std::nullopt;
-        ok = ok && v.has_value();
-        values[i] = v.value_or(0.0);
+    if (const auto* n = t.get("albedo")) {
+        if (auto v = number_fields<3>(p, *n, "particles.albedo", {"r", "g", "b"})) {
+            for (std::size_t i = 0; i < 3; ++i) {
+                check_range(p, *n, "particles.albedo", (*v)[i], 0.0, 1.0, false);
+            }
+            out.albedo = *v;
+        }
     }
-    return ok ? std::optional(values) : std::nullopt;
+    if (const auto* n = t.get("forward_scattering")) {
+        if (auto v = p.number(*n, "particles.forward_scattering")) {
+            check_range(p, *n, "particles.forward_scattering", *v, -0.95, 0.95, false);
+            out.forward_scattering = *v;
+        }
+    }
 }
 
 void parse_reference_scene(Parser& p, const toml::table& t, ReferenceScene& out) {

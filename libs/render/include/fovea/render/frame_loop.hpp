@@ -20,6 +20,7 @@
 
 #include "fovea/core/frame_events.hpp"
 #include "fovea/core/log.hpp"
+#include "fovea/core/particles.hpp"
 #include "fovea/core/scene.hpp"
 #include "fovea/core/time.hpp"
 #include "fovea/render/display_clock.hpp"
@@ -48,6 +49,10 @@ struct FrameLoopOptions {
     // ones given. Must outlive the loop, and have as many views as the loop
     // (the constructor throws std::invalid_argument otherwise).
     const ViewRig* rig = nullptr;
+    // A host's particle volumes (D-039, D-040): each frame, the newest
+    // published frame is drawn, moved to when the frame is seen. Must
+    // outlive the loop.
+    ParticleState* particles = nullptr;
 };
 
 // Recent frame intervals for the overlay's graph.

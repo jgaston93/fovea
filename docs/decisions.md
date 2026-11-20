@@ -270,3 +270,20 @@ A particle simulation (rotor-wash dust, smoke, spray) sends what it simulates to
 
 The format is in `docs/integration-guide.md` ("Particle volumes").
 
+## D-040 Particle volumes are drawn as spheres of uniform density, unsorted, after the resolve
+
+**Status:** Accepted (2026-11-19)
+
+The particles D-039 receives are drawn into each view's resolved HDR target after the stars and airport lights, single-sampled (`shaders/particles.slang`, `ParticlesGpu`).
+
+- **Each particle is a sphere of uniform density.** It is drawn as a quad facing the eye that exactly covers the sphere's silhouette, or covers the whole view when the eye is inside it or close to it. Each pixel takes the length of its ray inside the sphere as optical depth, giving opacity 1 − e^(−σℓ), with σ the particle's bulk density times a configured mass extinction coefficient. The edge is soft by itself: the chord goes to nothing at the rim.
+- **Cut at the scene's depth.** The chord ends where the resolved depth says something nearer is, so dust meets the ground and the aircraft softly, with no seam, and dust behind a hill isn't drawn. The resolved depth is sampled for this, and the reference grid now writes its ground's depth so it does the same with no database.
+- **Lit by the view's sun, moon and sky** (`ViewSky`, at the view's exposure). Each is scattered with Cornette–Shanks' phase function (the sky's Mie phase, D-030) at a configured asymmetry. Light scattered more than once, which is what makes a thick cloud bright, uses Wrenninge et al.'s octaves ("Oz: The Great and Volumetric", 2013; used by Hillaire in Frostbite, 2016): three octaves, each with half the energy and half the asymmetry of the one before. Single scattering alone left sunlit dust several times darker than the ground. Shadows within the cloud and from the terrain aren't drawn yet.
+- **Unsorted.** Each particle is composited over what is behind it, premultiplied. Particles of one colour give the same result in any order, and here their colours differ only smoothly, with the angle to the sun. Sorting 200 000 particles each frame, or a weighted order-independent pass, is left until the order is seen to show.
+- **Packed by the render thread at the frame's start.** Each particle is moved on its velocity to when the frame is seen, faded, and has its extinction folded in; invisible ones are left out. The result goes into a host-visible buffer per frame slot, with no allocation. The origins are placed relative to the first view's eye in double, so the GPU sees offsets of metres.
+- **The look is configuration** (`[particles]`: `extinction_m2_per_kg`, `albedo`, `forward_scattering`). The defaults are a starting point for dust, to be tuned by eye against video, not measured values:
+  - 500 m²/kg puts visibility under about 30 m at 0.3 g/m³;
+  - albedo 0.62, 0.52, 0.40 is a tan;
+  - g = 0.6 is forward-peaked.
+- **Not measured yet:** the cost at 200 000 particles on a real GPU with the eye inside the cloud (overdraw). A volume filled from the particles each frame and marched (a game engine's fog technique) stays the fallback if quads can't hold 60 Hz there.
+

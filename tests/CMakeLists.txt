@@ -9,6 +9,7 @@ add_executable(fovea_unit_tests
     unit/test_cigi.cpp
     unit/test_cigi_adapter.cpp
     unit/test_cigi_test_host.cpp
+    unit/test_particle_pack.cpp
     unit/test_puff_stream.cpp
     unit/test_config.cpp
     unit/test_containers.cpp
@@ -54,6 +55,7 @@ add_executable(fovea_gpu_tests
     unit/test_frame_loop.cpp
     unit/test_golden.cpp
     unit/test_host_environment.cpp
+    unit/test_particles_render.cpp
     unit/test_renderer.cpp
     unit/test_sky.cpp
     unit/test_terrain_render.cpp)
