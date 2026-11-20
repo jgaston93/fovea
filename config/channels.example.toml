@@ -100,6 +100,6 @@ frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
 # listen_address = "127.0.0.1" # listen on this address only (left out: every interface)
 # capacity = 200000            # the most particles kept (each about 300 bytes, and 64 on the GPU)
 # fade_s = 0.25                # a particle fades in, and out when no longer refreshed
-# extinction_m2_per_kg = 500.0 # how they look: starting points for dust, tuned by eye
-# albedo = { r = 0.62, g = 0.52, b = 0.40 }
-# forward_scattering = 0.6
+# extinction_m2_per_kg = 320.0 # how they look (D-040 has the sources): measured dust's
+# albedo = { r = 0.62, g = 0.52, b = 0.40 }  # a chosen tan, to tune by eye
+# forward_scattering = 0.68    # measured dust's asymmetry

@@ -19,21 +19,29 @@
 
 namespace fovea {
 
-// How the particles look ([particles] in the config). The defaults are a
-// starting point for dust, to be tuned by eye against video, not measured
-// values (D-040).
+// How the particles look ([particles] in the config). The extinction and
+// the phase function's g are measured mineral dust's; the albedo is a chosen
+// colour, to be tuned by eye against video (D-040).
 struct ParticleLook {
     // Mass extinction coefficient: optical depth per kg/m^2 of particles
     // along a ray. A particle's extinction per metre is its bulk density
-    // times this.
-    float extinction_m2_per_kg = 500.0F;
+    // times this. 320: Saharan dust over its full size range (0.1 to 100
+    // um) at 550 nm, measured 0.27 to 0.35 m^2/g, mean 0.32 (Ryder et al.,
+    // Atmos. Chem. Phys. 18, 17225-17257, 2018, doi:10.5194/acp-18-17225-2018).
+    float extinction_m2_per_kg = 320.0F;
     // The light a particle scatters, as a fraction of what falls on it, in
-    // linear sRGB: its single-scattering albedo times its colour.
+    // linear sRGB. Chosen, not measured: dust's single-scattering albedo is
+    // about 0.95 at 550 nm (Ryder et al., above), and a thick cloud's tan
+    // comes from many scatterings compounding its small spectral
+    // differences, which the multiple-scattering approximation doesn't
+    // model (particles.slang); so the colour is set here and tuned by eye.
     std::array<float, 3> albedo{0.62F, 0.52F, 0.40F};
-    // The phase function's asymmetry g (Cornette-Shanks, as the sky's Mie
-    // phase): 0 scatters evenly, toward 1 mostly forward (dust glows
-    // looking toward the sun).
-    float forward_scattering = 0.6F;
+    // The Cornette-Shanks phase function's g (the sky's Mie phase): 0
+    // scatters evenly, toward 1 mostly forward (dust glows looking toward
+    // the sun). Its g isn't the asymmetry parameter (the mean cosine); 0.68
+    // gives a mean cosine of 0.74, computed numerically, the asymmetry
+    // Ryder et al. (above) measured for Saharan dust.
+    float forward_scattering = 0.68F;
     // A particle's fade in and out (as the adapter's).
     std::chrono::duration<float> fade{0.25F};
 };

@@ -554,8 +554,8 @@ fade_s = 0.5
     EXPECT_FALSE(d.config->particles->listen_address.has_value());
     EXPECT_EQ(d.config->particles->capacity, 200000U);
     EXPECT_DOUBLE_EQ(d.config->particles->fade_s, 0.25);
-    EXPECT_DOUBLE_EQ(d.config->particles->extinction_m2_per_kg, 500.0);
-    EXPECT_DOUBLE_EQ(d.config->particles->forward_scattering, 0.6);
+    EXPECT_DOUBLE_EQ(d.config->particles->extinction_m2_per_kg, 320.0);
+    EXPECT_DOUBLE_EQ(d.config->particles->forward_scattering, 0.68);
     const auto look = parse(kMinimal + R"(
 [particles]
 port = 9000

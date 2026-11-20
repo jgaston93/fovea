@@ -276,14 +276,37 @@ The format is in `docs/integration-guide.md` ("Particle volumes").
 
 The particles D-039 receives are drawn into each view's resolved HDR target after the stars and airport lights, single-sampled (`shaders/particles.slang`, `ParticlesGpu`).
 
-- **Each particle is a sphere of uniform density.** It is drawn as a quad facing the eye that exactly covers the sphere's silhouette, or covers the whole view when the eye is inside it or close to it. Each pixel takes the length of its ray inside the sphere as optical depth, giving opacity 1 − e^(−σℓ), with σ the particle's bulk density times a configured mass extinction coefficient. The edge is soft by itself: the chord goes to nothing at the rim.
+- **Each particle is a sphere of uniform density.** It is drawn as a quad facing the eye that exactly covers the sphere's silhouette, or covers the whole view when the eye is inside it or close to it. Each pixel takes the length of its ray inside the sphere as optical depth, giving opacity 1 − e^(−σℓ), with σ the particle's bulk density times a configured mass extinction coefficient. The edge is soft by itself: the chord goes to nothing at the rim. The intersection is computed as in Ray Tracing Gems, chapter 7 [RTG7], for float precision: the discriminant as r² − l² (its equation 5), so a small puff far off isn't lost, and the roots as q and c/q (its equation 10), so the nearer isn't lost when the eye is close to a large puff's surface.
 - **Cut at the scene's depth.** The chord ends where the resolved depth says something nearer is, so dust meets the ground and the aircraft softly, with no seam, and dust behind a hill isn't drawn. The resolved depth is sampled for this, and the reference grid now writes its ground's depth so it does the same with no database.
-- **Lit by the view's sun, moon and sky** (`ViewSky`, at the view's exposure). Each is scattered with Cornette–Shanks' phase function (the sky's Mie phase, D-030) at a configured asymmetry. Light scattered more than once, which is what makes a thick cloud bright, uses Wrenninge et al.'s octaves ("Oz: The Great and Volumetric", 2013; used by Hillaire in Frostbite, 2016): three octaves, each with half the energy and half the asymmetry of the one before. Single scattering alone left sunlit dust several times darker than the ground. Shadows within the cloud and from the terrain aren't drawn yet.
+- **Lit by the view's sun, moon and sky** (`ViewSky`, at the view's exposure).
+  - The sun and moon are scattered with the Cornette–Shanks phase function [CS92], the sky's Mie phase (D-030), in the form Hillaire gives [H20, section 4]. It integrates to 1 over the sphere (checked numerically).
+  - The sky's light is taken as coming evenly from the upper hemisphere: its irradiance over 2π.
+- **Light scattered more than once** is what makes a thick cloud bright. It is adapted from Wrenninge, Kulla and Lundqvist's octaves [WKL13, equations 1 and 2], which Hillaire used for Frostbite's clouds [H16, page 41].
+  - b = c = ½, their defaults: each octave carries half the light and half the eccentricity of the one before.
+  - Three octaves, not their default eight: they're evaluated for every pixel of every overlapping puff, and the five left out add an eighth of the light.
+  - No a: they scale the light path's extinction by aⁱ, and the light's path through the cloud isn't traced here (no self-shadowing), so its transmittance is taken as 1.
+  - So it **isn't energy-conserving**. Hillaire requires a ≤ b for that [H16, page 41]. The octaves sum to 1.75 times the light once scattered, so an albedo over 1/1.75 scatters more light than falls on a puff. The albedo is a tuned colour, not a measured one (below).
+  - Single scattering alone left sunlit dust several times darker than the ground.
+- **Shadows** within the cloud and from the terrain aren't drawn yet.
 - **Unsorted.** Each particle is composited over what is behind it, premultiplied. Particles of one colour give the same result in any order, and here their colours differ only smoothly, with the angle to the sun. Sorting 200 000 particles each frame, or a weighted order-independent pass, is left until the order is seen to show.
 - **Packed by the render thread at the frame's start.** Each particle is moved on its velocity to when the frame is seen, faded, and has its extinction folded in; invisible ones are left out. The result goes into a host-visible buffer per frame slot, with no allocation. The origins are placed relative to the first view's eye in double, so the GPU sees offsets of metres.
-- **The look is configuration** (`[particles]`: `extinction_m2_per_kg`, `albedo`, `forward_scattering`). The defaults are a starting point for dust, to be tuned by eye against video, not measured values:
-  - 500 m²/kg puts visibility under about 30 m at 0.3 g/m³;
-  - albedo 0.62, 0.52, 0.40 is a tan;
-  - g = 0.6 is forward-peaked.
+- **The look is configuration** (`[particles]`: `extinction_m2_per_kg`, `albedo`, `forward_scattering`). Two defaults are measured mineral dust's; one is chosen:
+  - **Extinction, 320 m²/kg.** Saharan dust over its full size range (0.1 to 100 µm) at 550 nm measured 0.27 to 0.35 m²/g, mean 0.32 [R18].
+  - **g, 0.68.** The same dust's measured asymmetry parameter is 0.74 [R18]. Cornette–Shanks' g isn't the asymmetry parameter (the mean cosine), and 0.68 gives a mean cosine of 0.74, computed numerically.
+  - **Albedo 0.62, 0.52, 0.40, chosen, a tan.** The same dust's single-scattering albedo is about 0.95 at 550 nm [R18]. A thick cloud's tan comes from many scatterings compounding small spectral differences in it, which the octaves don't model, so the colour is set and tuned by eye against video instead.
+  - **A check of the extinction against the conditions it meets.** Visibility is about 3.912 over the extinction, for the eye's 2 % contrast threshold (Koschmieder; [LS16]). At 320 m²/kg:
+    - a 10 mg/m³ dust storm gives about 1.2 km;
+    - the 3500 mg/m³ measured in a V-22's brownout cloud [E19] gives about 3.5 m;
+    - 0.1 mg/m³, a dusty background [E19], gives about 120 km.
 - **Not measured yet:** the cost at 200 000 particles on a real GPU with the eye inside the cloud (overdraw). A volume filled from the particles each frame and marched (a game engine's fog technique) stays the fallback if quads can't hold 60 Hz there.
+
+Sources (each read for this, 2026-11-19, except where said):
+- [CS92] W. M. Cornette and J. G. Shanks, "Physically reasonable analytic expression for the single-scattering phase function", Applied Optics 31(16), 3152–3160 (1992), doi:10.1364/AO.31.003152. Not read: paywalled, as is its erratum (Applied Optics 34(4), 641, 1995). The formula used is as [H20] gives it, and Bruneton's reference implementation (precomputed_atmospheric_scattering, `MiePhaseFunction`) agrees.
+- [H20] S. Hillaire, "A Scalable and Production Ready Sky and Atmosphere Rendering Technique", Computer Graphics Forum 39(4) (EGSR 2020), section 4. Its source for the formula is Thomas and Stamnes, *Radiative Transfer in the Atmosphere and Ocean*, Cambridge University Press (1999).
+- [WKL13] M. Wrenninge, C. Kulla and V. Lundqvist, "Oz: The Great and Volumetric", ACM SIGGRAPH 2013 Talks, 46:1, doi:10.1145/2504459.2504518. Equations 1 and 2 and their defaults.
+- [H16] S. Hillaire, "Physically Based Sky, Atmosphere and Cloud Rendering in Frostbite", SIGGRAPH 2016 course: Physically Based Shading in Theory and Practice, course notes, section 5, page 41 (equations 19 and 20, and the a ≤ b condition).
+- [RTG7] E. Haines, J. Günther and T. Akenine-Möller, "Precision Improvements for Ray/Sphere Intersection", in Ray Tracing Gems, E. Haines and T. Akenine-Möller (eds.), Apress (2019), chapter 7, equations 5 and 10. Equation 5 is after Hearn and Baker, equation 10 after Press et al.
+- [R18] C. L. Ryder et al., "Coarse-mode mineral dust size distributions, composition and optical properties from AER-D aircraft measurements over the tropical eastern Atlantic", Atmospheric Chemistry and Physics 18, 17225–17257 (2018), doi:10.5194/acp-18-17225-2018. A corrigendum exists; the values above are as the article states them. The asymmetry parameter's wavelength isn't stated in the passage read.
+- [LS16] Z. Lee and S. Shang, "Visibility: How Applicable is the Century-Old Koschmieder Model?", Journal of the Atmospheric Sciences 73 (2016), doi:10.1175/JAS-D-16-0102.1. Its equation 8, with the threshold 0.02.
+- [E19] M. Ellis et al., "Reduced-Order Modelling of Mineral Dust Deposition in Turboshaft Engine Hot Sections", 45th European Rotorcraft Forum (2019), paper 37, page 2. The V-22 figure is its reference 3's, not read.
 

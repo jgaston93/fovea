@@ -8,9 +8,14 @@
 // is (so dust meets the ground and the aircraft softly, without a seam), as
 // optical depth: opacity 1 - exp(-extinction x length). Its colour is the
 // sun's, the moon's and the sky's light at the eye, scattered toward the eye
-// by the particles' albedo and phase function (forward-peaked: dust glows
-// looking toward the sun). Shadows within the cloud and from the terrain
-// aren't drawn yet.
+// by the particles' albedo and phase function: Cornette and Shanks', "Physically
+// reasonable analytic expression for the single-scattering phase function",
+// Applied Optics 31(16), 3152-3160 (1992), doi:10.1364/AO.31.003152, as given
+// by Hillaire, "A Scalable and Production Ready Sky and Atmosphere Rendering
+// Technique", EGSR 2020, section 4 (atmosphere.slang's mie_phase; checked
+// to integrate to 1 over the sphere). Forward-peaked: dust glows looking
+// toward the sun. Shadows within the cloud and from the terrain aren't drawn
+// yet.
 //
 // Particles aren't sorted: each is composited over what's behind it
 // ("over", premultiplied). Particles of one colour composite to the same
@@ -121,11 +126,24 @@ ParticleVertex vs_particles(uint id: SV_VulkanVertexID) {
 
 // Light scattered more than once inside a thick cloud is what makes it
 // bright, as clouds are white though a droplet scatters mostly forward.
-// Wrenninge et al.'s approximation ("Oz: The Great and Volumetric", 2013;
-// used by Hillaire, Frostbite, 2016): octaves of the phase function, each
-// with half the energy and half the asymmetry of the one before. Without
-// the light's own path through the cloud (no self-shadowing yet), a thin
-// puff is lit as a thick one's surface would be; its opacity is low anyway.
+// Adapted from Wrenninge, Kulla and Lundqvist, "Oz: The Great and
+// Volumetric", ACM SIGGRAPH 2013 Talks, 46:1, doi:10.1145/2504459.2504518,
+// equations 1 and 2: L = sum over octaves i < N of
+//   sigma_s b^i L_light p(w_i, w_o, c^i g) exp(-a^i * the light path's optical depth)
+// with their defaults a = b = c = 1/2 (and N = 8). Hillaire used it for
+// Frostbite's clouds ("Physically Based Sky, Atmosphere and Cloud Rendering
+// in Frostbite", SIGGRAPH 2016 course notes, section 5, page 41). Here:
+//   - b = c = 1/2, as their defaults: each octave half the light and half
+//     the phase function's eccentricity of the one before;
+//   - N = 3, not 8: the octaves are evaluated for every pixel of every
+//     overlapping puff, and the five left out add an eighth of the light;
+//   - no a: the light's path through the cloud isn't traced (no
+//     self-shadowing yet), so its transmittance is taken as 1 for every
+//     octave, and a has nothing to scale.
+// So it isn't energy-conserving (Hillaire, page 41, requires a <= b for
+// that): the octaves sum to 1.75 times the light once scattered, and an
+// albedo over 1/1.75 scatters more than falls on the puff. The look is
+// tuned by [particles]' albedo, not derived (D-040).
 float multiple_scattering_phase(float g, float c) {
     float sum = 0.0;
     float energy = 1.0;
@@ -136,24 +154,31 @@ float multiple_scattering_phase(float g, float c) {
     }
     return sum;
 }
-static const float kOctaveEnergy = 1.75;  // 1 + 1/2 + 1/4: the octaves' sum for an isotropic light
+static const float kOctaveEnergy = 1.75;  // b^0 + b^1 + b^2: the octaves' sum for an isotropic light
 
 [shader("fragment")]
 float4 fs_particles(ParticleVertex i) : SV_Target {
     const float3 dir = normalize(i.ray);
-    // Where the ray enters and leaves the sphere: b along the ray to the
-    // point nearest the centre, h from there to the centre. r^2 - h^2, not
-    // b^2 - (|c|^2 - r^2), which loses a small far puff to cancellation in
-    // floats (as atmosphere.slang's discriminant).
+    // Where the ray enters and leaves the sphere, in floats: Haines, Guenther
+    // and Akenine-Moeller, "Precision Improvements for Ray/Sphere
+    // Intersection", Ray Tracing Gems (2019), chapter 7. The discriminant as
+    // r^2 - l^2 (their equation 5, after Hearn and Baker), l the centre's
+    // distance from the ray, not b^2 - (|c|^2 - r^2), which loses a small
+    // puff far off; the roots as q and c/q (their equation 10, after Press et
+    // al.), not b -/+ sqrt, which loses the nearer one when the eye is close
+    // to a large puff's surface. Here the centre is relative to the eye and
+    // the ray's direction is a unit vector, so their b' is b and a is 1.
     const float b = dot(dir, i.centre);
-    const float3 h = i.centre - b * dir;
-    const float disc = i.radius * i.radius - dot(h, h);
+    const float3 l = i.centre - b * dir;
+    const float disc = i.radius * i.radius - dot(l, l);
     if (disc <= 0.0) {
         discard;
     }
-    const float s = sqrt(disc);
-    const float enter = max(b - s, 0.0);
-    float leave = b + s;
+    const float q = b + (b >= 0.0 ? sqrt(disc) : -sqrt(disc));  // not 0: disc > 0
+    const float root_q = q;
+    const float root_cq = (dot(i.centre, i.centre) - i.radius * i.radius) / q;
+    const float enter = max(min(root_q, root_cq), 0.0);
+    float leave = max(root_q, root_cq);
     // Cut off where the scene is nearer: depth 0 is the sky.
     const float depth = scene_depth.Load(int3(int2(i.position.xy), 0));
     if (depth > 0.0) {
