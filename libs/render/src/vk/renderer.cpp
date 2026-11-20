@@ -497,6 +497,7 @@ struct Renderer::Impl {
     std::unique_ptr<ParticlesGpu> particles;
     std::size_t particle_capacity = 0;
     ParticleLook particle_look;
+    ParticleQuality particle_quality;
     const ParticleFrame* particle_frame = nullptr;
     LocalTime particle_time;
     // The weather's layers (step 6), as set_weather left them.
@@ -542,7 +543,10 @@ struct Renderer::Impl {
     double timestamp_period_ns = 0.0;                         // 0: no timestamps on this queue
     std::uint64_t timestamp_mask = ~std::uint64_t{0};         // the queue's valid timestamp bits
     std::array<std::uint64_t, kFramesInFlight> slot_frame{};  // frame number in each slot
-    std::vector<std::uint64_t> query_results;                 // sized once
+    // Per output: its work's start and end, then its particle pass's (D-042).
+    static constexpr std::uint32_t kQueriesPerOutput = 4;
+    std::uint32_t frame_first_query = 0;       // this frame's first, for record_scene
+    std::vector<std::uint64_t> query_results;  // sized once
     FrameTiming timing;
 
     // The debug overlay (Dear ImGui), on one output.
@@ -1392,8 +1396,9 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
             m.fs_light = make_module(kFsParticleLight);
             m.vs_composite = make_module(kVsParticleComposite);
             m.fs_composite = make_module(kFsParticleComposite);
-            particles = std::make_unique<ParticlesGpu>(gpu_context(), particle_capacity,
-                                                       kFramesInFlight, extents, kHdrFormat, m);
+            particles =
+                std::make_unique<ParticlesGpu>(gpu_context(), particle_capacity, kFramesInFlight,
+                                               extents, kHdrFormat, m, particle_quality);
         } catch (...) {
             free_modules();
             throw;
@@ -1433,13 +1438,13 @@ void Renderer::Impl::create_timestamps() {
     timestamp_period_ns = static_cast<double>(physical.properties.limits.timestampPeriod);
     const std::uint32_t bits = families[queue_family].timestampValidBits;
     timestamp_mask = bits >= 64 ? ~std::uint64_t{0} : (std::uint64_t{1} << bits) - 1;
-    const std::uint32_t count = kFramesInFlight * output_total() * 2;
+    const std::uint32_t count = kFramesInFlight * output_total() * kQueriesPerOutput;
     VkQueryPoolCreateInfo ci{};
     ci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
     ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
     ci.queryCount = count;
     check(vkCreateQueryPool(device.device, &ci, nullptr, &timestamps), "vkCreateQueryPool");
-    query_results.resize(static_cast<std::size_t>(output_total()) * std::size_t{2});
+    query_results.resize(static_cast<std::size_t>(output_total()) * kQueriesPerOutput);
 }
 
 // The GPU times of the frame last drawn in this slot, now that its fence has
@@ -1448,7 +1453,7 @@ void Renderer::Impl::read_gpu_times(std::size_t slot) {
     if (timestamps == VK_NULL_HANDLE || frame_number < kFramesInFlight) {
         return;  // nothing recorded in this slot yet
     }
-    const std::uint32_t n = output_total() * 2;
+    const std::uint32_t n = output_total() * kQueriesPerOutput;
     const VkResult r =
         vkGetQueryPoolResults(device.device, timestamps, static_cast<std::uint32_t>(slot) * n, n,
                               query_results.size() * sizeof(std::uint64_t), query_results.data(),
@@ -1459,11 +1464,15 @@ void Renderer::Impl::read_gpu_times(std::size_t slot) {
     timing.gpu_frame = slot_frame[slot];
     timing.gpu_outputs = std::min<std::uint32_t>(output_total(), kMaxTimedOutputs);
     for (std::uint32_t i = 0; i < timing.gpu_outputs; ++i) {
-        const std::size_t k = std::size_t{2} * i;
+        const std::size_t k = std::size_t{kQueriesPerOutput} * i;
         // Modulo the valid bits: the counter may wrap between the two.
-        const std::uint64_t ticks = (query_results[k + 1] - query_results[k]) & timestamp_mask;
-        timing.gpu_ms[i] =
-            static_cast<float>(static_cast<double>(ticks) * timestamp_period_ns * 1e-6);
+        const auto ms = [&](std::size_t from) {
+            const std::uint64_t ticks =
+                (query_results[from + 1] - query_results[from]) & timestamp_mask;
+            return static_cast<float>(static_cast<double>(ticks) * timestamp_period_ns * 1e-6);
+        };
+        timing.gpu_ms[i] = ms(k);
+        timing.particles_ms[i] = ms(k + 2);
     }
 }
 
@@ -1728,6 +1737,16 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
         terrain->draw_lights(cmd, view, t.extent, lighting_offset(slot, i));
     }
     vkCmdEndRendering(cmd);
+    // The particle pass's GPU time (D-042): its two timestamps, written
+    // with or without particles.
+    const auto particle_stamp = [&](std::uint32_t which) {
+        if (timestamps != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp2(
+                cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, timestamps,
+                frame_first_query + static_cast<std::uint32_t>(i) * kQueriesPerOutput + which);
+        }
+    };
+    particle_stamp(2);
     if (particles && particles->count(static_cast<std::uint32_t>(slot)) > 0) {
         // Particle volumes (D-040, D-041), over the stars and lights,
         // reading the resolved depth: after the writes to the target and the
@@ -1747,6 +1766,7 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
         particles->record(cmd, static_cast<std::uint32_t>(slot), static_cast<std::uint32_t>(i),
                           view, lighting_offset(slot, i), particle_look, t.view, t.extent);
     }
+    particle_stamp(3);
     transition(cmd, t.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1822,17 +1842,20 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check(vkBeginCommandBuffer(f.cmd, &begin), "vkBeginCommandBuffer");
 
-    // Two timestamps per output, around that output's work. Every output's
-    // pair is written, drawn or not, so every query has a result.
-    const std::uint32_t queries_per_slot = output_total() * 2;
+    // Four timestamps per output: around that output's work, and around its
+    // particle pass inside it (D-042). Every one is written, drawn or not, so
+    // every query has a result.
+    const std::uint32_t queries_per_slot = output_total() * kQueriesPerOutput;
     const std::uint32_t first_query = static_cast<std::uint32_t>(slot) * queries_per_slot;
+    frame_first_query = first_query;
     if (timestamps != VK_NULL_HANDLE) {
         vkCmdResetQueryPool(f.cmd, timestamps, first_query, queries_per_slot);
     }
     const auto stamp = [&](std::size_t output, std::uint32_t which) {
         if (timestamps != VK_NULL_HANDLE) {
-            vkCmdWriteTimestamp2(f.cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, timestamps,
-                                 first_query + static_cast<std::uint32_t>(output) * 2 + which);
+            vkCmdWriteTimestamp2(
+                f.cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, timestamps,
+                first_query + static_cast<std::uint32_t>(output) * kQueriesPerOutput + which);
         }
     };
 
@@ -1874,6 +1897,8 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
         stamp(i, 0);
         sky_first();
         if (image_index[i] == UINT32_MAX) {
+            stamp(i, 2);  // no particle pass
+            stamp(i, 3);
             stamp(i, 1);
             continue;
         }
@@ -1900,6 +1925,8 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
         } else {
+            stamp(i, 2);  // no particle pass
+            stamp(i, 3);
             transition(f.cmd, image, VK_IMAGE_LAYOUT_UNDEFINED,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, first_use, 0,
                        VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -1955,6 +1982,8 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
                        VK_ACCESS_2_TRANSFER_READ_BIT);
         } else {
+            stamp(swapchains.size() + i, 2);  // no particle pass
+            stamp(swapchains.size() + i, 3);
             transition(f.cmd, o.image, VK_IMAGE_LAYOUT_UNDEFINED,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                        0, VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -2196,6 +2225,7 @@ std::unique_ptr<Renderer> Renderer::for_windows(Platform& platform,
     impl->frame_period_s = 1.0 / std::max(options.frame_rate_hz, 1.0);
     impl->particle_capacity = options.particle_capacity;
     impl->particle_look = options.particle_look;
+    impl->particle_quality = options.particle_quality;
     for (Swapchain& s : impl->swapchains) {
         impl->build_swapchain(s);  // deferred while a window has no size
     }
@@ -2219,6 +2249,7 @@ std::unique_ptr<Renderer> Renderer::offscreen(std::span<const OffscreenOutput> o
     impl->frame_period_s = 1.0 / std::max(options.frame_rate_hz, 1.0);
     impl->particle_capacity = options.particle_capacity;
     impl->particle_look = options.particle_look;
+    impl->particle_quality = options.particle_quality;
     std::vector<VkExtent2D> render_extents;
     for (const OffscreenOutput& o : outputs) {
         impl->create_offscreen(o);

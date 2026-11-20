@@ -31,7 +31,8 @@ void build_overlay_ui(const OverlayContent& c) {
         ImGui::TextUnformatted(c.note.data(), c.note.data() + c.note.size());
     }
     for (std::uint32_t i = 0; i < c.gpu_outputs; ++i) {
-        ImGui::Text("GPU output %u: %.3f ms", i, static_cast<double>(c.gpu_ms[i]));
+        ImGui::Text("GPU output %u: %.3f ms (particles %.3f)", i, static_cast<double>(c.gpu_ms[i]),
+                    static_cast<double>(c.particles_ms[i]));
     }
     // Recent frame intervals, oldest on the left; the scale tops out at three
     // periods, so a missed frame stands out as a spike.

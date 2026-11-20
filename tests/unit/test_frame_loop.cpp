@@ -260,9 +260,9 @@ TEST(FrameLoop, StatsAreCsvOneLinePerFrame) {
     ASSERT_EQ(lines.size(), 6U);  // header and 5 frames
     EXPECT_EQ(lines[0].rfind("frame,t_s,interval_ms", 0), 0U);
     // The last frame has GPU times for two outputs: 16 fixed fields (5 of
-    // them terrain) + 2.
+    // them terrain) + 2, then their particle passes' (D-042) + 2.
     const auto commas = std::count(lines[5].begin(), lines[5].end(), ',');
-    EXPECT_EQ(commas, 17);
+    EXPECT_EQ(commas, 19);
     EXPECT_EQ(lines[5].rfind("4,", 0), 0U);
 }
 

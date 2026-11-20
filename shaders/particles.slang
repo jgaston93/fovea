@@ -82,6 +82,9 @@ struct ParticlePush {
     float forward_scattering;
     float3 albedo;
     uint order_base;  // this view's first entry in `order`
+    uint depth_scale;  // scene depth pixels per particle image pixel: 1, or 2 at half resolution
+    float unused;
+    float2 inv_target;  // 1 / the view's render size, pixels (the composite)
 };
 [[vk::push_constant]] ConstantBuffer<ParticlePush> push;
 
@@ -222,8 +225,20 @@ float4 fs_particles(ParticleVertex i) : SV_Target {
     const float root_cq = (dot(i.centre, i.centre) - i.radius * i.radius) / q;
     const float enter = max(min(root_q, root_cq), 0.0);
     float leave = max(root_q, root_cq);
-    // Cut off where the scene is nearer: depth 0 is the sky.
-    const float depth = scene_depth.Load(int3(int2(i.position.xy), 0));
+    // Cut off where the scene is nearer: depth 0 is the sky. At half
+    // resolution, the nearest (reverse-Z: greatest) of the 2 x 2 scene
+    // pixels under this one, so dust doesn't show over what's in front.
+    uint depth_w;
+    uint depth_h;
+    scene_depth.GetDimensions(depth_w, depth_h);
+    const int2 px = int2(i.position.xy) * int(push.depth_scale);
+    float depth = 0.0;
+    for (uint dy = 0; dy < push.depth_scale; ++dy) {
+        for (uint dx = 0; dx < push.depth_scale; ++dx) {
+            const int2 q = min(px + int2(int(dx), int(dy)), int2(int(depth_w) - 1, int(depth_h) - 1));
+            depth = max(depth, scene_depth.Load(int3(q, 0)));
+        }
+    }
     if (depth > 0.0) {
         const float view_z = near_distance() / depth;
         const float along = dot(push.ecef_to_clip[3].xyz, dir);  // view z per metre of ray
@@ -310,5 +325,7 @@ CompositeVertex vs_composite(uint id: SV_VulkanVertexID) {
 
 [shader("fragment")]
 float4 fs_composite(CompositeVertex i) : SV_Target {
-    return particle_image.Load(int3(int2(i.position.xy), 0));
+    // Bilinear: at full resolution each pixel its own (sampled at its
+    // centre); at half, filtered up (D-042).
+    return particle_image.SampleLevel(light_sampler, i.position.xy * push.inv_target, 0.0);
 }

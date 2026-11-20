@@ -192,8 +192,9 @@ void print_summary(const fovea::FrameSummary& s) {
         static_cast<unsigned long long>(s.frames), static_cast<unsigned long long>(s.missed),
         s.interval_mean_ms, s.interval_max_ms, s.work_mean_ms, s.work_max_ms);
     for (std::uint32_t i = 0; i < s.gpu_outputs; ++i) {
-        std::printf("  GPU, output %u: mean %.3f ms, max %.3f ms\n", i, s.gpu_mean_ms[i],
-                    s.gpu_max_ms[i]);
+        std::printf(
+            "  GPU, output %u: mean %.3f ms, max %.3f ms (particles: mean %.3f, max %.3f)\n", i,
+            s.gpu_mean_ms[i], s.gpu_max_ms[i], s.particles_mean_ms[i], s.particles_max_ms[i]);
     }
     if (s.tiles_resident_max > 0) {
         std::printf(
@@ -353,6 +354,10 @@ fovea::RendererOptions renderer_options(const fovea::DisplayConfig& config) {
                                   static_cast<float>(p.albedo[2])};
         r.particle_look.forward_scattering = static_cast<float>(p.forward_scattering);
         r.particle_look.fade = std::chrono::duration<float>(static_cast<float>(p.fade_s));
+        r.particle_quality.self_shadowing = p.self_shadowing;
+        r.particle_quality.slices = p.slices;
+        r.particle_quality.light_buffer = p.light_buffer;
+        r.particle_quality.half_resolution = p.half_resolution;
     }
     return r;
 }

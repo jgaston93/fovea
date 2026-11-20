@@ -50,6 +50,15 @@ struct ParticleLook {
     std::chrono::duration<float> fade{0.25F};
 };
 
+// What the particles cost against how they look ([particles], D-042), fixed
+// when the renderer is made.
+struct ParticleQuality {
+    bool self_shadowing = true;        // half-angle slicing (D-041); off: one slice, no light pass
+    std::uint32_t slices = 32;         // the slices each view's particles are drawn in
+    std::uint32_t light_buffer = 512;  // its texels a side
+    bool half_resolution = false;      // drawn at half each view's size, composited up
+};
+
 // Mirrors Particle in shaders/particles.slang (std430).
 struct GpuParticle {
     std::array<float, 3> position{};  // [m] east, north, up from its origin, at the frame's time
