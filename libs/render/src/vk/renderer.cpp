@@ -19,9 +19,9 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <numbers>
 #include <cstdio>
 #include <cstring>
+#include <numbers>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -1575,11 +1575,10 @@ void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
     // a jump from dusk to day showed a washed-out white for seconds, and
     // from day to dusk a lag, for a change nothing in the world made.
     const DVec3 eye = views.empty() ? DVec3(0.0) : views.front().eye_ecef;
-    const bool jumped = glm::dot(sky.sun, last_sun) < kSunJumpCos ||
-                        glm::length(eye - last_eye) > kEyeJumpM;
-    const float adapt = drew_scene && !jumped
-                            ? static_cast<float>(1.0 - std::exp(-frame_period_s / 1.0))
-                            : 1.0F;
+    const bool jumped =
+        glm::dot(sky.sun, last_sun) < kSunJumpCos || glm::length(eye - last_eye) > kEyeJumpM;
+    const float adapt =
+        drew_scene && !jumped ? static_cast<float>(1.0 - std::exp(-frame_period_s / 1.0)) : 1.0F;
     drew_scene = true;
     last_sun = sky.sun;
     last_eye = eye;
