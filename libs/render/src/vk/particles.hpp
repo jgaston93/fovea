@@ -92,11 +92,13 @@ private:
     std::size_t capacity_ = 0;
     std::vector<Slot> slots_;
     std::vector<std::size_t> counts_;
+    std::vector<std::size_t> sorted_views_;  // per slot: the outputs pack sorted for
     std::vector<DVec3> anchors_;
-    std::vector<std::uint8_t> front_to_back_;  // per slot and output
-    std::vector<VkDescriptorSet> view_sets_;   // per output: depth, light, image
-    std::vector<Image> particle_images_;       // per output, its render size
-    Image light_;                              // shared, used by one view at a time
+    std::vector<std::uint8_t> front_to_back_;      // per slot and output
+    std::vector<VkDescriptorSet> view_sets_;       // per output: depth, light, image
+    std::vector<Image> particle_images_;           // per output, its render size
+    Image light_;                                  // shared, used by one view at a time
+    VkFormat light_format_ = VK_FORMAT_UNDEFINED;  // R32F where it blends and filters, else R16F
     VkSampler light_sampler_ = VK_NULL_HANDLE;
     // Scratch for the sort, sized at construction.
     std::vector<Vec3> centres_;

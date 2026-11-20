@@ -119,6 +119,12 @@ GpuLightSpace light_space(std::span<const Vec3> centres, std::span<const GpuPart
 // from the eye ("under"); otherwise of the reversed view and the light,
 // back to front from the eye ("over"). Front to back from the light
 // either way.
+// A view's central ray (ECEF, unit): where its clip x and y are 0, the
+// middle of its frustum. Not the view's axis (clip w's row) for an
+// asymmetric frustum, whose rays all lie to one side of the axis: the sort
+// is right for rays near the direction it's made for (D-041).
+Vec3 view_centre_ray(const Mat4& ecef_to_clip) noexcept;
+
 struct HalfAngle {
     Vec3 axis{0.0F, 0.0F, 1.0F};
     bool front_to_back = true;  // from the eye

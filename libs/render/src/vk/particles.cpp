@@ -18,7 +18,16 @@ static_assert(kOriginsBytes % 256 == 0 && kParticlesAt % 256 == 0,
 static_assert(sizeof(GpuLightSpace) <= 256);
 
 constexpr VkFormat kParticleImageFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-constexpr VkFormat kLightFormat = VK_FORMAT_R16_SFLOAT;
+// The light buffer: 32-bit floats where the GPU blends and filters them (a
+// thick cloud of thin puffs sums small optical depths, which half floats'
+// 11 bits stop adding near 4 to 8), else 16-bit, which every GPU does.
+VkFormat light_format_for(VkPhysicalDevice physical) {
+    VkFormatProperties p{};
+    vkGetPhysicalDeviceFormatProperties(physical, VK_FORMAT_R32_SFLOAT, &p);
+    const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT |
+                                      VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    return (p.optimalTilingFeatures & need) == need ? VK_FORMAT_R32_SFLOAT : VK_FORMAT_R16_SFLOAT;
+}
 
 // Mirrors ParticlePush in shaders/particles.slang.
 struct ParticlePush {
@@ -250,6 +259,7 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
       capacity_(capacity),
       slots_(slots),
       counts_(slots, 0),
+      sorted_views_(slots, 0),
       anchors_(slots, DVec3(0.0)),
       front_to_back_(std::size_t{slots} * extents.size(), 1),
       view_sets_(extents.size(), VK_NULL_HANDLE),
@@ -264,7 +274,8 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
         for (const VkExtent2D e : extents) {
             particle_images_.push_back(make_image(e, kParticleImageFormat));
         }
-        light_ = make_image({kLightSize, kLightSize}, kLightFormat);
+        light_format_ = light_format_for(gpu_.physical);
+        light_ = make_image({kLightSize, kLightSize}, light_format_);
         VkSamplerCreateInfo sci{};
         sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
         sci.magFilter = VK_FILTER_LINEAR;
@@ -417,7 +428,7 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
         under_ = make_pipeline(gpu_.device, layout_, modules.vs_particles, modules.fs_particles,
                                kParticleImageFormat, Blend::under);
         light_pipeline_ = make_pipeline(gpu_.device, layout_, modules.vs_light, modules.fs_light,
-                                        kLightFormat, Blend::add);
+                                        light_format_, Blend::add);
         composite_ = make_pipeline(gpu_.device, layout_, modules.vs_composite, modules.fs_composite,
                                    colour, Blend::composite);
     } catch (...) {
@@ -489,15 +500,14 @@ std::size_t ParticlesGpu::pack(std::uint32_t slot, const ParticleFrame& frame, L
     const std::size_t outputs = view_sets_.size();
     auto* order = static_cast<std::uint32_t*>(s.order_mapped);
     for (std::size_t o = 0; o < outputs && o < views.size(); ++o) {
-        const Mat4& m = views[o].ecef_to_clip;
-        const Vec3 forward(m[0][3], m[1][3], m[2][3]);  // clip w's row: the view's axis
-        const HalfAngle h = half_angle(forward, travel);
+        const HalfAngle h = half_angle(view_centre_ray(views[o].ecef_to_clip), travel);
         sort_along(centres, h.axis, keys_, scratch_, std::span(order + o * capacity_, n));
         front_to_back_[slot * outputs + o] = h.front_to_back ? 1 : 0;
     }
     (void)vmaFlushAllocation(gpu_.allocator, s.memory, 0, kParticlesAt + sizeof(GpuParticle) * n);
     (void)vmaFlushAllocation(gpu_.allocator, s.order_memory, 0, VK_WHOLE_SIZE);
     counts_[slot] = n;
+    sorted_views_[slot] = std::min(outputs, views.size());
     anchors_[slot] = anchor;
     return n;
 }
@@ -506,8 +516,8 @@ void ParticlesGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t
                           const SceneView& view, std::uint32_t lighting_offset,
                           const ParticleLook& look, VkImageView target, VkExtent2D extent) const {
     const std::size_t n = counts_[slot];
-    if (n == 0) {
-        return;
+    if (n == 0 || output >= sorted_views_[slot]) {
+        return;  // nothing, or a view pack wasn't given (its order unsorted)
     }
     const Image& image = particle_images_.at(output);
     ParticlePush push;

@@ -288,6 +288,39 @@ TEST(ParticlesRender, APuffInAnothersShadowIsDarker) {
     EXPECT_LT(b.r + b.g + b.b, 0.85 * (a.r + a.g + a.b));
 }
 
+// An output the frame wasn't given a view for draws no particles: its
+// order was never sorted (the renderer draws it with an empty view). It
+// checks the output is untouched and validation quiet; the out-of-bounds
+// read the guard prevents doesn't show on lavapipe, whose new memory is
+// zeros (index 0, drawn off the empty view).
+TEST(ParticlesRender, AnOutputWithNoViewDrawsNoParticles) {
+    RendererOptions options;
+    options.particle_capacity = 1000;
+    options.msaa = 1;
+    if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
+        options.validation = Validation::required;
+    }
+    std::unique_ptr<Renderer> r;
+    try {
+        r = Renderer::offscreen(std::vector<OffscreenOutput>{{kW, kH}, {kW, kH}}, options);
+    } catch (const std::runtime_error&) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    r->set_particles(nullptr, t);
+    r->draw_scene_frame(std::span(&view, 1));
+    const auto clear = r->read_back_rgba(1);
+    ParticleFrame f = frame_at_eye(view, 1000);
+    add_wall(f, t);
+    for (int i = 0; i < 3; ++i) {  // both frame slots
+        r->set_particles(&f, t);
+        r->draw_scene_frame(std::span(&view, 1));
+    }
+    EXPECT_EQ(r->read_back_rgba(1), clear);
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
 TEST(ParticlesRender, FadedOrEmptyDrawsNothing) {
     auto r = make_renderer(1000);
     FOVEA_NEED_VULKAN(r);

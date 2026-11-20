@@ -87,6 +87,22 @@ GpuLightSpace light_space(std::span<const Vec3> centres, std::span<const GpuPart
     return l;
 }
 
+Vec3 view_centre_ray(const Mat4& ecef_to_clip) noexcept {
+    const Mat4& m = ecef_to_clip;
+    // glm is column-major: row i is (m[0][i], m[1][i], m[2][i]). The ray
+    // lies in both clip x's and clip y's zero planes: their normals' cross
+    // product, turned to the side clip w is positive (in front).
+    const Vec3 row_x(m[0][0], m[1][0], m[2][0]);
+    const Vec3 row_y(m[0][1], m[1][1], m[2][1]);
+    const Vec3 row_w(m[0][3], m[1][3], m[2][3]);
+    Vec3 d = glm::cross(row_x, row_y);
+    if (glm::dot(d, row_w) < 0.0F) {
+        d = -d;
+    }
+    const float len = glm::length(d);
+    return len > 0.0F ? d / len : glm::normalize(row_w);
+}
+
 HalfAngle half_angle(const Vec3& view_forward, const Vec3& travel) noexcept {
     // Green 2013's pseudocode tests the dot product against 1.0; its text
     // (and Kniss's) says positive, which is what's meant.

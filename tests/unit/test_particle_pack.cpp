@@ -166,3 +166,36 @@ TEST(ParticleSlicing, TheLightSpaceHoldsEveryParticle) {
 
 }  // namespace
 }  // namespace fovea
+
+namespace fovea {
+namespace {
+
+// A lopsided channel's rays all lie to one side of its axis: the sort is
+// made for its central ray (D-041). The matrix as projection.cpp builds one
+// for the eye's frame (x forward, y right, z down): 30 to 86 degrees right.
+TEST(ParticleSlicing, TheCentralRayOfALopsidedChannel) {
+    const float l = std::tan(glm::radians(30.0F));
+    const float r = std::tan(glm::radians(86.0F));
+    const float t = std::tan(glm::radians(17.0F));
+    const float b = std::tan(glm::radians(-17.0F));
+    Mat4 m(0.0F);
+    m[0][0] = -(r + l) / (r - l);
+    m[1][0] = 2.0F / (r - l);
+    m[0][1] = (t + b) / (t - b);
+    m[2][1] = 2.0F / (t - b);
+    m[3][2] = 0.5F;
+    m[0][3] = 1.0F;
+    const Vec3 want = glm::normalize(Vec3(1.0F, (r + l) / 2.0F, -(t + b) / 2.0F));
+    const Vec3 got = view_centre_ray(m);
+    EXPECT_NEAR(glm::dot(got, want), 1.0F, 1e-5F);
+    // Not the axis (clip w's row, x forward): the middle is 63 degrees right of it.
+    EXPECT_LT(glm::dot(got, Vec3(1.0F, 0.0F, 0.0F)), 0.5F);
+    // A symmetric one's middle is its axis.
+    Mat4 s = m;
+    s[0][0] = 0.0F;
+    s[1][0] = 1.0F;
+    EXPECT_NEAR(glm::dot(view_centre_ray(s), Vec3(1.0F, 0.0F, 0.0F)), 1.0F, 1e-6F);
+}
+
+}  // namespace
+}  // namespace fovea
