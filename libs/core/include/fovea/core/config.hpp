@@ -112,14 +112,15 @@ struct ParticlesConfig {
     // How long a particle fades in when it first arrives, and out when its
     // sender stops refreshing it.
     double fade_s = 0.25;
-    // How they look (D-040): starting points for dust, to be tuned by eye,
-    // not measured values. Optical depth per kg/m^2 of particles along a
-    // ray; the light they scatter as a fraction of what falls on them, in
-    // linear sRGB (albedo times colour); and how forward their scattering
-    // is (the Cornette-Shanks phase's g: 0 even, toward 1 forward).
-    double extinction_m2_per_kg = 500.0;
+    // How they look (D-040; the defaults' sources in ParticleLook,
+    // particle_pack.hpp): optical depth per kg/m^2 of particles along a ray
+    // (mineral dust's, by Mie theory from measured sizes); the light they
+    // scatter as a fraction of what falls on them, in linear sRGB (a chosen
+    // colour, to tune by eye); and the Cornette-Shanks phase's g (0 even,
+    // toward 1 forward; the same dust's asymmetry).
+    double extinction_m2_per_kg = 320.0;
     std::array<double, 3> albedo{0.62, 0.52, 0.40};
-    double forward_scattering = 0.6;
+    double forward_scattering = 0.68;
 };
 
 // [environment] (milestone 6, D-029): the date and time, UTC, and the

@@ -150,10 +150,10 @@ port = 47102                 # required
 listen_address = "127.0.0.1" # optional: listen on one address only
 capacity = 200000            # the most particles kept (200000 if left out)
 fade_s = 0.25                # fade in when new, and out when no longer refreshed
-# How they look (starting points for dust; tune by eye):
-extinction_m2_per_kg = 500.0 # optical depth per kg/m^2 along a ray
-albedo = { r = 0.62, g = 0.52, b = 0.40 }  # the light scattered, linear sRGB
-forward_scattering = 0.6     # 0 even, toward 1 forward (glows toward the sun)
+# How they look (D-040 has the sources):
+extinction_m2_per_kg = 320.0 # optical depth per kg/m^2 along a ray: mineral dust's (Mie, from measured sizes)
+albedo = { r = 0.62, g = 0.52, b = 0.40 }  # the light scattered, linear sRGB: a chosen tan, tune by eye
+forward_scattering = 0.68    # Cornette-Shanks g: 0 even, toward 1 forward; the same dust's asymmetry
 ```
 
 Origins' heights are MSL, made ellipsoidal with `[host]`'s `geoid_height_m` (0 without a `[host]`).

@@ -150,7 +150,7 @@ void add_wall(ParticleFrame& f, LocalTime t) {
                     Vec3(-60.0F + 8.0F * static_cast<float>(i),
                          60.0F + 10.0F * static_cast<float>(j),
                          1.0F + 2.5F * static_cast<float>(k)),
-                    3.0F, 5e-4F);  // 0.25 per metre at the default 500 m^2/kg
+                    3.0F, 5e-4F);  // 0.16 per metre at the default 320 m^2/kg
             }
         }
     }
