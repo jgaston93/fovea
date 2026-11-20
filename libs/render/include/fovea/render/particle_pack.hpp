@@ -81,4 +81,61 @@ std::size_t pack_particles(const ParticleFrame& frame, LocalTime at, const Parti
                            const DVec3& anchor, std::span<GpuParticle> out,
                            std::span<GpuOrigin> origins) noexcept;
 
+// Self-shadowing by half-angle slicing (D-041): Green, "Volumetric Particle
+// Shadows", NVIDIA, 2013, after Kniss et al.'s volume shading (GPU Gems,
+// 2004). The particles are sorted along the vector halfway between the view
+// and the light's direction of travel, and drawn in slices, each into the
+// view's image and then into a light buffer of the optical depth toward
+// the light, so each slice is shadowed by those nearer the light.
+
+// Each packed particle's centre relative to the anchor, ECEF axes (what
+// the sort and the light's bounds use). No allocation.
+void particle_centres(std::span<const GpuParticle> particles, std::span<const GpuOrigin> origins,
+                      std::span<Vec3> out) noexcept;
+
+// The light's frame over the particles (mirrors LightSpace in
+// particles.slang, std430): an orthographic view along the light's travel
+// covering their bounding sphere, which the light buffer holds.
+struct GpuLightSpace {
+    std::array<float, 3> centre{};  // [m] the bounding sphere's centre from the anchor, ECEF
+    float inv_radius = 0.0F;        // 1 / its radius [1/m]
+    std::array<float, 3> u{};       // ECEF unit vectors across the light buffer
+    float unused0 = 0.0F;
+    std::array<float, 3> v{};
+    float unused1 = 0.0F;
+    std::array<float, 3> travel{};  // the light's direction of travel (away from the sun)
+    float unused2 = 0.0F;
+};
+static_assert(sizeof(GpuLightSpace) == 64, "must match LightSpace in particles.slang");
+
+// The light space over particles with these centres, for light travelling
+// along `travel` (a unit vector). No allocation.
+GpuLightSpace light_space(std::span<const Vec3> centres, std::span<const GpuParticle> particles,
+                          const Vec3& travel) noexcept;
+
+// The sort axis and order (Green 2013, "Half-Angle Slice Rendering"): with
+// the view looking the way the light travels (their dot product
+// positive), the half vector of the two, the slices drawn front to back
+// from the eye ("under"); otherwise of the reversed view and the light,
+// back to front from the eye ("over"). Front to back from the light
+// either way.
+// A view's central ray (ECEF, unit): where its clip x and y are 0, the
+// middle of its frustum. Not the view's axis (clip w's row) for an
+// asymmetric frustum, whose rays all lie to one side of the axis: the sort
+// is right for rays near the direction it's made for (D-041).
+Vec3 view_centre_ray(const Mat4& ecef_to_clip) noexcept;
+
+struct HalfAngle {
+    Vec3 axis{0.0F, 0.0F, 1.0F};
+    bool front_to_back = true;  // from the eye
+};
+HalfAngle half_angle(const Vec3& view_forward, const Vec3& travel) noexcept;
+
+// The particles' indices in ascending order of dot(axis, centre): a radix
+// sort over `keys` and `scratch` (each at least as long as centres, two
+// halves of their length each). Writes centres.size() indices into
+// `order`. No allocation.
+void sort_along(std::span<const Vec3> centres, const Vec3& axis, std::span<std::uint32_t> keys,
+                std::span<std::uint32_t> scratch, std::span<std::uint32_t> order) noexcept;
+
 }  // namespace fovea

@@ -1,6 +1,8 @@
 #include "fovea/render/particle_pack.hpp"
 
 #include <algorithm>
+#include <bit>
+#include <cmath>
 
 namespace fovea {
 
@@ -43,6 +45,120 @@ std::size_t pack_particles(const ParticleFrame& frame, LocalTime at, const Parti
         g.origin = p.origin;
     }
     return n;
+}
+
+void particle_centres(std::span<const GpuParticle> particles, std::span<const GpuOrigin> origins,
+                      std::span<Vec3> out) noexcept {
+    const std::size_t n = std::min(particles.size(), out.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        const GpuParticle& p = particles[i];
+        const GpuOrigin& o = origins[p.origin];
+        out[i] = Vec3(o.offset[0], o.offset[1], o.offset[2]) +
+                 Vec3(o.east[0], o.east[1], o.east[2]) * p.position[0] +
+                 Vec3(o.north[0], o.north[1], o.north[2]) * p.position[1] +
+                 Vec3(o.up[0], o.up[1], o.up[2]) * p.position[2];
+    }
+}
+
+GpuLightSpace light_space(std::span<const Vec3> centres, std::span<const GpuParticle> particles,
+                          const Vec3& travel) noexcept {
+    GpuLightSpace l;
+    const std::size_t n = std::min(centres.size(), particles.size());
+    Vec3 mean(0.0F);
+    for (std::size_t i = 0; i < n; ++i) {
+        mean += centres[i];
+    }
+    if (n > 0) {
+        mean /= static_cast<float>(n);
+    }
+    float radius = 1.0F;
+    for (std::size_t i = 0; i < n; ++i) {
+        radius = std::max(radius, glm::length(centres[i] - mean) + particles[i].radius);
+    }
+    const Vec3 w = glm::normalize(travel);
+    const Vec3 helper = std::abs(w.z) < 0.9F ? Vec3(0.0F, 0.0F, 1.0F) : Vec3(1.0F, 0.0F, 0.0F);
+    const Vec3 u = glm::normalize(glm::cross(helper, w));
+    const Vec3 v = glm::cross(w, u);
+    l.centre = {mean.x, mean.y, mean.z};
+    l.inv_radius = 1.0F / radius;
+    l.u = {u.x, u.y, u.z};
+    l.v = {v.x, v.y, v.z};
+    l.travel = {w.x, w.y, w.z};
+    return l;
+}
+
+Vec3 view_centre_ray(const Mat4& ecef_to_clip) noexcept {
+    const Mat4& m = ecef_to_clip;
+    // glm is column-major: row i is (m[0][i], m[1][i], m[2][i]). The ray
+    // lies in both clip x's and clip y's zero planes: their normals' cross
+    // product, turned to the side clip w is positive (in front).
+    const Vec3 row_x(m[0][0], m[1][0], m[2][0]);
+    const Vec3 row_y(m[0][1], m[1][1], m[2][1]);
+    const Vec3 row_w(m[0][3], m[1][3], m[2][3]);
+    Vec3 d = glm::cross(row_x, row_y);
+    if (glm::dot(d, row_w) < 0.0F) {
+        d = -d;
+    }
+    const float len = glm::length(d);
+    return len > 0.0F ? d / len : glm::normalize(row_w);
+}
+
+HalfAngle half_angle(const Vec3& view_forward, const Vec3& travel) noexcept {
+    // Green 2013's pseudocode tests the dot product against 1.0; its text
+    // (and Kniss's) says positive, which is what's meant.
+    HalfAngle h;
+    const Vec3 v = glm::normalize(view_forward);
+    const Vec3 l = glm::normalize(travel);
+    h.front_to_back = glm::dot(v, l) > 0.0F;
+    const Vec3 sum = h.front_to_back ? v + l : l - v;
+    const float len = glm::length(sum);
+    h.axis = len > 1e-6F ? sum / len : l;  // looking straight into the light: along it
+    return h;
+}
+
+namespace {
+
+// A float's bits, ordered as the float is (negatives flipped whole,
+// positives with the sign bit set).
+std::uint32_t sortable(float f) noexcept {
+    const auto u = std::bit_cast<std::uint32_t>(f);
+    return (u & 0x80000000U) != 0 ? ~u : u | 0x80000000U;
+}
+
+}  // namespace
+
+void sort_along(std::span<const Vec3> centres, const Vec3& axis, std::span<std::uint32_t> keys,
+                std::span<std::uint32_t> scratch, std::span<std::uint32_t> order) noexcept {
+    const std::size_t n = centres.size();
+    // keys and scratch each hold n keys then n indices: ping and pong.
+    std::uint32_t* key_a = keys.data();
+    std::uint32_t* idx_a = keys.data() + n;
+    std::uint32_t* key_b = scratch.data();
+    std::uint32_t* idx_b = scratch.data() + n;
+    for (std::size_t i = 0; i < n; ++i) {
+        key_a[i] = sortable(glm::dot(axis, centres[i]));
+        idx_a[i] = static_cast<std::uint32_t>(i);
+    }
+    // Least significant byte first, four passes: stable, so the result is
+    // in key order.
+    for (unsigned shift = 0; shift < 32; shift += 8) {
+        std::array<std::size_t, 257> start{};
+        for (std::size_t i = 0; i < n; ++i) {
+            ++start[((key_a[i] >> shift) & 0xFFU) + 1];
+        }
+        for (std::size_t b = 1; b < start.size(); ++b) {
+            start[b] += start[b - 1];
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::size_t at = start[(key_a[i] >> shift) & 0xFFU]++;
+            key_b[at] = key_a[i];
+            idx_b[at] = idx_a[i];
+        }
+        std::swap(key_a, key_b);
+        std::swap(idx_a, idx_b);
+    }
+    // Four passes: the result is back in `keys`.
+    std::copy(idx_a, idx_a + n, order.begin());
 }
 
 }  // namespace fovea

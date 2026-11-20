@@ -14,13 +14,18 @@
 // by Hillaire, "A Scalable and Production Ready Sky and Atmosphere Rendering
 // Technique", EGSR 2020, section 4 (atmosphere.slang's mie_phase; checked
 // to integrate to 1 over the sphere). Forward-peaked: dust glows looking
-// toward the sun. Shadows within the cloud and from the terrain aren't drawn
-// yet.
+// toward the sun.
 //
-// Particles aren't sorted: each is composited over what's behind it
-// ("over", premultiplied). Particles of one colour composite to the same
-// result in any order; their colours differ only by the angle to the sun,
-// smoothly, so the order shows little (D-040).
+// Shadowed by the cloud itself, by half-angle slicing (D-041): Green,
+// "Volumetric Particle Shadows", NVIDIA (2013), after Kniss et al.'s volume
+// shading (GPU Gems, 2004). The particles come sorted along the half vector
+// of the view and the light (particle_pack.hpp's half_angle and sort_along)
+// and are drawn slice by slice: each slice into the view's particle image,
+// lit by the light buffer as the slices nearer the light left it
+// (vs_particles, fs_particles), then into the light buffer (vs_light,
+// fs_light), which adds each puff's optical depth along the light. The
+// particle image is composited over the scene at the end (fs_composite).
+// Shadows from the terrain onto the dust aren't drawn yet.
 
 #include "include/atmosphere.slang"
 #define FRAME_SET 1
@@ -45,10 +50,30 @@ struct Origin {
     float3 up;
     float unused3;
 };
+// Mirrors GpuLightSpace in particle_pack.hpp: the light buffer's frame.
+struct LightSpace {
+    float3 centre;  // the particles' bounding sphere, from the anchor
+    float inv_radius;
+    float3 u;  // across the light buffer
+    float unused0;
+    float3 v;
+    float unused1;
+    float3 travel;  // the light's direction of travel
+    float unused2;
+};
 [[vk::binding(0, 0)]] StructuredBuffer<Particle> particles;
 [[vk::binding(1, 0)]] StructuredBuffer<Origin> origins;
+[[vk::binding(2, 0)]] StructuredBuffer<LightSpace> light_space;
+// Each view's drawing order (its sort along the half vector), from
+// push.order_base.
+[[vk::binding(3, 0)]] StructuredBuffer<uint> order;
 // The view's resolved depth (reverse-Z, infinite far plane), read by pixel.
 [[vk::binding(0, 2)]] Texture2D<float> scene_depth;
+// The light buffer: optical depth toward the light, by light-space position.
+[[vk::binding(1, 2)]] Texture2D<float> light_depth;
+[[vk::binding(2, 2)]] SamplerState light_sampler;
+// The view's particle image (premultiplied), for the composite.
+[[vk::binding(3, 2)]] Texture2D<float4> particle_image;
 
 // Mirrors ParticlePush in particles.cpp.
 struct ParticlePush {
@@ -56,7 +81,7 @@ struct ParticlePush {
     float3 anchor;          // the origins' anchor relative to the eye
     float forward_scattering;
     float3 albedo;
-    float unused;
+    uint order_base;  // this view's first entry in `order`
 };
 [[vk::push_constant]] ConstantBuffer<ParticlePush> push;
 
@@ -77,13 +102,24 @@ float near_distance() {
 static const float2 kCorners[6] = { float2(-1.0, -1.0), float2(1.0, -1.0), float2(1.0, 1.0),
                                     float2(-1.0, -1.0), float2(1.0, 1.0), float2(-1.0, 1.0) };
 
+// A particle's centre relative to the anchor.
+float3 centre_from_anchor(Particle p) {
+    const Origin o = origins[p.origin];
+    return o.offset + o.east * p.position.x + o.north * p.position.y + o.up * p.position.z;
+}
+
+// A point (from the anchor) in the light buffer: 0 to 1 across it.
+float2 light_uv(float3 from_anchor) {
+    const LightSpace l = light_space[0];
+    const float3 d = (from_anchor - l.centre) * l.inv_radius;
+    return float2(dot(d, l.u), dot(d, l.v)) * 0.5 + 0.5;
+}
+
 [shader("vertex")]
 ParticleVertex vs_particles(uint id: SV_VulkanVertexID) {
-    const Particle p = particles[id / 6];
-    const Origin o = origins[p.origin];
+    const Particle p = particles[order[push.order_base + id / 6]];
     const float2 corner = kCorners[id % 6];
-    const float3 c = push.anchor + o.offset + o.east * p.position.x + o.north * p.position.y +
-                     o.up * p.position.z;
+    const float3 c = push.anchor + centre_from_anchor(p);
     // The view's axes in ECEF, from its matrix's rows (projection.cpp):
     // forward is clip w's; clip x's and y's carry a forward part in an
     // asymmetric frustum, taken out so the axes are square.
@@ -138,22 +174,24 @@ ParticleVertex vs_particles(uint id: SV_VulkanVertexID) {
 //   - N = 3, not 8: the octaves are evaluated for every pixel of every
 //     overlapping puff, and the five left out are 12 % of the eight's sum
 //     (0.24 of 1.99);
-//   - no a: the light's path through the cloud isn't traced (no
-//     self-shadowing yet), so its transmittance is taken as 1 for every
-//     octave, and a has nothing to scale.
-// So it isn't energy-conserving: that needs the scattering scaled no more
-// than the extinction, b <= a in Wrenninge's letters (Hillaire, page 41,
-// equation 20, writes it a <= b, his letters swapped). The octaves sum to
-// 1.75 times the light once scattered, and an albedo over 1/1.75 = 0.57
-// scatters more than falls on the puff: the default's red, 0.62, does. The
-// look is tuned by [particles]' albedo, not derived (D-040).
-float multiple_scattering_phase(float g, float c) {
+//   - a = 1/2, their default: each octave's light reaches the point
+//     through a^i of the light path's optical depth, from the light buffer
+//     (D-041). With a = b the scattering is scaled no more than the
+//     extinction, the condition Hillaire gives for energy conservation
+//     (page 41, equation 20, his letters swapped: his a <= b is b <= a in
+//     Wrenninge's). The octaves still sum to 1.75 times the light once
+//     scattered where nothing shadows, as the approximation does; the look
+//     is tuned by [particles]' albedo (D-040).
+// `depth` is the optical depth toward the light.
+float multiple_scattering_phase(float g, float c, float depth) {
     float sum = 0.0;
     float energy = 1.0;
+    float through = 1.0;  // a^i
     for (int k = 0; k < 3; ++k) {
-        sum += energy * mie_phase(g, c);
+        sum += energy * mie_phase(g, c) * exp(-through * depth);
         energy *= 0.5;
         g *= 0.5;
+        through *= 0.5;
     }
     return sum;
 }
@@ -199,15 +237,78 @@ float4 fs_particles(ParticleVertex i) : SV_Target {
     if (opacity < 1e-4) {
         discard;
     }
-    // The light it scatters toward the eye: the sun's and the moon's by the
-    // phase function, the sky's as if from the whole upper hemisphere, each
-    // scattered several times (multiple_scattering_phase).
+    // The light it scatters toward the eye: the sun's through the cloud
+    // between it and the middle of this ray's path in the puff (the light
+    // buffer, as the slices nearer the light left it), and the moon's,
+    // unshadowed (the light buffer is the sun's), by the phase function; the
+    // sky's as if from the whole upper hemisphere; each scattered several
+    // times (multiple_scattering_phase).
+    const float3 middle = dir * (0.5 * (enter + leave)) - push.anchor;  // from the anchor
+    const float sun_depth = max(light_depth.SampleLevel(light_sampler, light_uv(middle), 0.0), 0.0);
     const ViewSky sky = view_sky[lighting.view];
     const float g = push.forward_scattering;
     const float3 light =
-        sky.sun_irradiance * multiple_scattering_phase(g, dot(dir, lighting.sun)) +
-        sky.moon_irradiance * multiple_scattering_phase(g, dot(dir, lighting.moon)) +
+        sky.sun_irradiance * multiple_scattering_phase(g, dot(dir, lighting.sun), sun_depth) +
+        sky.moon_irradiance * multiple_scattering_phase(g, dot(dir, lighting.moon), 0.0) +
         sky.sky_irradiance * (0.5 * kInvPi * kOctaveEnergy);
     const float3 radiance = push.albedo * light * sky.exposure;
     return float4(min(radiance, float3(60000.0)) * opacity, opacity);
+}
+
+// The light pass: each puff drawn as the light sees it, orthographic along
+// its travel, into the light buffer (R16F, added: optical depths sum, in
+// any order within a slice). The quad is the sphere's silhouette, exactly.
+struct LightVertex {
+    float4 position : SV_Position;
+    [[vk::location(0)]] float2 across;  // from the centre, in radii
+    [[vk::location(1)]] nointerpolation float radius;
+    [[vk::location(2)]] nointerpolation float extinction;
+};
+
+[shader("vertex")]
+LightVertex vs_light(uint id: SV_VulkanVertexID) {
+    const Particle p = particles[order[push.order_base + id / 6]];
+    const float2 corner = kCorners[id % 6];
+    const LightSpace l = light_space[0];
+    const float3 d = (centre_from_anchor(p) - l.centre) * l.inv_radius;
+    const float2 at = float2(dot(d, l.u), dot(d, l.v)) + corner * (p.radius * l.inv_radius);
+    LightVertex o;
+    o.position = float4(at, 0.5, 1.0);  // light_uv's mapping: uv = ndc / 2 + 1/2
+    o.across = corner;
+    o.radius = p.radius;
+    o.extinction = p.extinction;
+    if (p.extinction <= 0.0) {
+        o.position = float4(2.0, 2.0, 0.5, 1.0);
+    }
+    return o;
+}
+
+[shader("fragment")]
+float4 fs_light(LightVertex i) : SV_Target {
+    // A ray along the light at distance |across| radii from the centre
+    // crosses 2 sqrt(1 - |across|^2) radii of the sphere.
+    const float inside = 1.0 - dot(i.across, i.across);
+    if (inside <= 0.0) {
+        discard;
+    }
+    return float4(i.extinction * 2.0 * i.radius * sqrt(inside), 0.0, 0.0, 0.0);
+}
+
+// The composite: the view's particle image (premultiplied colour, and its
+// coverage in alpha) over the scene, one triangle covering the view.
+struct CompositeVertex {
+    float4 position : SV_Position;
+};
+
+[shader("vertex")]
+CompositeVertex vs_composite(uint id: SV_VulkanVertexID) {
+    CompositeVertex o;
+    const float2 uv = float2((id << 1) & 2, id & 2);
+    o.position = float4(uv * 2.0 - 1.0, 0.0, 1.0);
+    return o;
+}
+
+[shader("fragment")]
+float4 fs_composite(CompositeVertex i) : SV_Target {
+    return particle_image.Load(int3(int2(i.position.xy), 0));
 }

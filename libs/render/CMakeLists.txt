@@ -81,5 +81,15 @@ fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" vs
                  kVsParticles)
 fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" fs_particles fragment
                  kFsParticles)
+# Their self-shadowing by half-angle slicing (D-041): the light buffer and
+# the composite.
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" vs_light vertex
+                 kVsParticleLight)
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" fs_light fragment
+                 kFsParticleLight)
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" vs_composite vertex
+                 kVsParticleComposite)
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" fs_composite fragment
+                 kFsParticleComposite)
 # Just the generated shader headers: what clang-tidy needs from a build.
 add_custom_target(fovea_shaders DEPENDS ${FOVEA_SHADER_HEADERS})

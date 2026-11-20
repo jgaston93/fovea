@@ -43,6 +43,8 @@
 #include "shaders/kFsLights.hpp"
 #include "shaders/kFsModel.hpp"
 #include "shaders/kFsModelShadow.hpp"
+#include "shaders/kFsParticleComposite.hpp"
+#include "shaders/kFsParticleLight.hpp"
 #include "shaders/kFsParticles.hpp"
 #include "shaders/kFsResolve.hpp"
 #include "shaders/kFsScene.hpp"
@@ -53,6 +55,8 @@
 #include "shaders/kVsLights.hpp"
 #include "shaders/kVsModel.hpp"
 #include "shaders/kVsModelShadow.hpp"
+#include "shaders/kVsParticleComposite.hpp"
+#include "shaders/kVsParticleLight.hpp"
 #include "shaders/kVsParticles.hpp"
 #include "shaders/kVsStars.hpp"
 #include "shaders/kVsTerrain.hpp"
@@ -1369,19 +1373,32 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
         vkUpdateDescriptorSets(device.device, 1, &write, 0, nullptr);
     }
     if (particle_capacity > 0) {
-        VkShaderModule vs_particles = make_module(kVsParticles);
-        VkShaderModule fs_particles = make_module(kFsParticles);
+        ParticlesGpu::Modules m;
+        const auto free_modules = [&] {
+            for (VkShaderModule s : {m.vs_particles, m.fs_particles, m.vs_light, m.fs_light,
+                                     m.vs_composite, m.fs_composite}) {
+                vkDestroyShaderModule(device.device, s, nullptr);
+            }
+        };
+        std::vector<VkExtent2D> extents;
+        extents.reserve(hdr.size());
+        for (const HdrTarget& t : hdr) {
+            extents.push_back(t.extent);
+        }
         try {
-            particles = std::make_unique<ParticlesGpu>(
-                gpu_context(), particle_capacity, kFramesInFlight,
-                static_cast<std::uint32_t>(hdr.size()), kHdrFormat, vs_particles, fs_particles);
+            m.vs_particles = make_module(kVsParticles);
+            m.fs_particles = make_module(kFsParticles);
+            m.vs_light = make_module(kVsParticleLight);
+            m.fs_light = make_module(kFsParticleLight);
+            m.vs_composite = make_module(kVsParticleComposite);
+            m.fs_composite = make_module(kFsParticleComposite);
+            particles = std::make_unique<ParticlesGpu>(gpu_context(), particle_capacity,
+                                                       kFramesInFlight, extents, kHdrFormat, m);
         } catch (...) {
-            vkDestroyShaderModule(device.device, vs_particles, nullptr);
-            vkDestroyShaderModule(device.device, fs_particles, nullptr);
+            free_modules();
             throw;
         }
-        vkDestroyShaderModule(device.device, vs_particles, nullptr);
-        vkDestroyShaderModule(device.device, fs_particles, nullptr);
+        free_modules();
         for (std::size_t i = 0; i < hdr.size(); ++i) {
             particles->set_depth(static_cast<std::uint32_t>(i), hdr[i].depth_view);
         }
@@ -1712,10 +1729,10 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
     }
     vkCmdEndRendering(cmd);
     if (particles && particles->count(static_cast<std::uint32_t>(slot)) > 0) {
-        // Particle volumes (D-040), over the stars and lights, reading the
-        // resolved depth: after the writes to the target and the depth
-        // tests. The next frame's depth barrier waits for the read (its
-        // source stages include the fragment shader).
+        // Particle volumes (D-040, D-041), over the stars and lights,
+        // reading the resolved depth: after the writes to the target and the
+        // depth tests. The next frame's depth barrier waits for the read
+        // (its source stages include the fragment shader).
         std::array<VkImageMemoryBarrier2, 2> pbs = sbs;
         pbs[0].srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
         pbs[1].srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
@@ -1727,11 +1744,8 @@ void Renderer::Impl::record_scene(VkCommandBuffer cmd, std::size_t slot, std::si
         pdep.imageMemoryBarrierCount = static_cast<std::uint32_t>(pbs.size());
         pdep.pImageMemoryBarriers = pbs.data();
         vkCmdPipelineBarrier2(cmd, &pdep);
-        begin_pass(cmd, t.view, t.extent, VK_NULL_HANDLE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                   VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_LOAD);
         particles->record(cmd, static_cast<std::uint32_t>(slot), static_cast<std::uint32_t>(i),
-                          view, lighting_offset(slot, i), particle_look);
-        vkCmdEndRendering(cmd);
+                          view, lighting_offset(slot, i), particle_look, t.view, t.extent);
     }
     transition(cmd, t.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1749,7 +1763,7 @@ std::uint32_t Renderer::Impl::draw(const DrawRequest& request) {
         // buffer is free. Placed relative to the first view's eye.
         if (particle_frame != nullptr && request.scene && !request.views.empty()) {
             (void)particles->pack(static_cast<std::uint32_t>(slot), *particle_frame, particle_time,
-                                  particle_look, request.views[0].eye_ecef);
+                                  particle_look, request.views[0].eye_ecef, request.views, sky.sun);
         } else {
             particles->clear(static_cast<std::uint32_t>(slot));
         }

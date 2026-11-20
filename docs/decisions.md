@@ -284,10 +284,9 @@ The particles D-039 receives are drawn into each view's resolved HDR target afte
 - **Light scattered more than once** is what makes a thick cloud bright. It is adapted from Wrenninge, Kulla and Lundqvist's octaves [WKL13, equations 1 and 2], which Hillaire used for Frostbite's clouds [H16, page 41].
   - b = c = ½, their defaults: each octave carries half the light and half the eccentricity of the one before.
   - Three octaves, not their default eight: they're evaluated for every pixel of every overlapping puff, and the five left out are 12 % of the eight's sum (0.24 of 1.99).
-  - No a: they scale the light path's extinction by aⁱ, and the light's path through the cloud isn't traced here (no self-shadowing), so its transmittance is taken as 1.
-  - So it **isn't energy-conserving**. That needs the scattering scaled no more than the extinction: b ≤ a in Wrenninge's letters, which Hillaire writes a ≤ b with the letters swapped [H16, page 41, equation 20]. The octaves sum to 1.75 times the light once scattered, so an albedo over 1/1.75 = 0.57 scatters more light than falls on a puff, and the default's red, 0.62, does. The albedo is a tuned colour, not a physical one (below).
+  - a = ½, their default, since D-041: each octave's sun reaches the point through aⁱ of the light path's optical depth, from the light buffer. Before D-041 there was no light path and no a, and the approximation wasn't energy-conserving. With a = b the scattering is scaled no more than the extinction, which is the condition Hillaire gives [H16, page 41, equation 20, where his letters are swapped: his a ≤ b is b ≤ a in Wrenninge's]. Where nothing shadows, the octaves still sum to 1.75 times the light once scattered, as the approximation does, so the albedo stays a tuned colour (below).
   - Single scattering alone left sunlit dust several times darker than the ground.
-- **Shadows** within the cloud and from the terrain aren't drawn yet.
+- **Shadows:** the cloud shadows itself (D-041); the terrain's shadow on the dust isn't drawn yet.
 - **Unsorted.** Each particle is composited over what is behind it, premultiplied. Particles of one colour give the same result in any order, and here their colours differ only smoothly, with the angle to the sun. Sorting 200 000 particles each frame, or a weighted order-independent pass, is left until the order is seen to show.
 - **Packed by the render thread at the frame's start.** Each particle is moved on its velocity to when the frame is seen, faded, and has its extinction folded in; invisible ones are left out. The result goes into a host-visible buffer per frame slot, with no allocation. The origins are placed relative to the first view's eye in double, so the GPU sees offsets of metres.
 - **The look is configuration** (`[particles]`: `extinction_m2_per_kg`, `albedo`, `forward_scattering`). Two defaults are mineral dust's, as calculated by Mie theory (spherical particles) from size distributions measured from aircraft [R18, section 2.6, table 6]; one is chosen:
@@ -309,4 +308,26 @@ Sources (each read for this, 2026-11-19, except where said):
 - [R18] C. L. Ryder et al., "Coarse-mode mineral dust size distributions, composition and optical properties from AER-D aircraft measurements over the tropical eastern Atlantic", Atmospheric Chemistry and Physics 18, 17225–17257 (2018), doi:10.5194/acp-18-17225-2018. Its values are calculated with a Mie code, the particles taken as spheres, from size distributions measured from aircraft (section 2.6); table 6 gives them at 550 nm. Its corrigendum (2020) corrects only table 5 (the lognormal modes), the derived results unchanged.
 - [LS16] Z. Lee and S. Shang, "Visibility: How Applicable is the Century-Old Koschmieder Model?", Journal of the Atmospheric Sciences 73 (2016), doi:10.1175/JAS-D-16-0102.1. Its equations 8 and 9 (threshold 0.02, a black target), and its finding that the model doesn't hold for visual ranges of hundreds of metres.
 - [E19] M. Ellis et al., "Reduced-Order Modelling of Mineral Dust Deposition in Turboshaft Engine Hot Sections", 45th European Rotorcraft Forum (2019), paper 37, pages 1 and 2. The V-22 figure is its reference 3's, not read.
+
+## D-041 Particle volumes shadow themselves by half-angle slicing
+
+**Status:** Accepted (2026-11-20)
+
+D-040's dust was lit as if nothing stood between a puff and the sun, so a thick cloud had no shadowed side and read as a flat shape (seen in renders over KHSV). It now shadows itself by half-angle slicing [G13], after Kniss et al.'s volume shading (GPU Gems, 2004, as [G13] cites it):
+
+- **Sorted along the half vector.** The particles are sorted along the vector halfway between the view and the light's direction of travel. With the view looking the way the light travels (their dot product positive), that's the two's half vector, and the slices go front to back from the eye; otherwise it's the reversed view's and the light's, and back to front. Either way they go front to back from the light [G13]. ([G13]'s pseudocode tests the dot product against 1.0; its text, which is followed, says positive.) The sort is a radix sort on the render thread, over buffers sized at start, one per view.
+- **The view's direction is its frustum's central ray** (where clip x and y are 0), not its axis: a lopsided channel's rays all lie to one side of the axis. The order is right for rays within about 90° of the half vector, as [G13] assumes ("for a given view ray"). A ray more than about 45° off the central ray, with the sun side-on, can be composited in reverse. That's a limit for channels wider than 90°; KHSV's are 51°.
+- **Drawn in 32 slices** ([G13]: 32 to 128 a good trade-off). Each slice goes first into the view's particle image ("under" front to back, "over" back to front, premultiplied: [G13]'s blending), lit by the light buffer as the slices before it left it. Then it goes into the light buffer.
+- **The light buffer holds optical depth, added.** It is 512², orthographic along the sun's travel over the particles' bounding sphere. Each puff adds its own optical depth along the light (its extinction times the chord a light ray crosses), so the order within a slice doesn't matter. [G13] accumulates opacity instead.
+  - **Its format is R32F** where the GPU blends and filters it, else R16F, which every GPU does. Half floats' 11 bits stop adding the small depths of thin puffs once the sum nears 4 to 8, and a thick cloud's far side would come out too bright.
+  - **One buffer covers every particle.** Particles from emitters far apart (kilometres) make its texels metres wide, and small puffs then cast little or flickering shadow. That's a limit to lift with a buffer per cluster if it's ever met.
+- **Only the views the frame was given are drawn.** An output beyond them (the renderer draws it with an empty view) has no sorted order and draws no particles.
+- **The sun's light** at a puff is read at the middle of the view ray's path through it. Each multiple-scattering octave i takes e^(−aⁱτ) of it, Wrenninge et al.'s equation 2 with a = ½ [WKL13]. The sky's and the moon's light aren't shadowed: the light buffer is the sun's.
+- **The particle image is composited over the scene** at the end, premultiplied. The depth cut (D-040) stays per pixel.
+- **Costs to measure on a real GPU:** per view, a sort of the particles and 63 rendering passes (32 into the image, 31 into the light buffer). [G13] notes the technique is fill-rate bound and that the particle image can be drawn at a lower resolution; neither is measured here yet.
+
+Measured on lavapipe: a puff with a thick one between it and the sun is 22 % darker, summed over RGB, than the same puff alone, and bluer, because the sky's light isn't shadowed.
+
+Sources:
+- [G13] S. Green, "Volumetric Particle Shadows", NVIDIA (September 2013), the CUDA sample smokeParticles' paper. Read for this, 2026-11-20.
 

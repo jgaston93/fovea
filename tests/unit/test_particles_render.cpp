@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 
+#include "fovea/core/celestial.hpp"
 #include "fovea/core/geodesy.hpp"
 #include "fovea/core/image_file.hpp"
 #include "fovea/core/particles.hpp"
@@ -259,6 +260,65 @@ TEST(ParticlesRender, TheEyeInsideAPuffFillsAWideChannel) {
         const Rgb b = mean(inside, x, 0, x + 8, kH);
         EXPECT_GT(std::abs(b.r - a.r) + std::abs(b.g - a.g) + std::abs(b.b - a.b), 20.0) << x;
     }
+}
+
+// Half-angle slicing (D-041): a puff with a thick one between it and the sun
+// is darker than the same puff alone. The sun near the zenith at noon at
+// 0 N 0 E (the reference scene's origin); the blocker 20 m above the puff,
+// out of the view (its top is 17 degrees up).
+TEST(ParticlesRender, APuffInAnothersShadowIsDarker) {
+    auto r = make_renderer(10);
+    FOVEA_NEED_VULKAN(r);
+    r->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleFrame alone = frame_at_eye(view, 10);
+    add(alone, t, Vec3(0.0F, 40.0F, 3.0F), 3.0F, 1e-3F);
+    ParticleFrame shadowed = alone;
+    add(shadowed, t, Vec3(0.0F, 40.0F, 23.0F), 6.0F, 5e-3F);  // 1.6 per metre: opaque
+    // The puff's middle, where it's thick: the centre of the view, a little
+    // up (it's 1 m above the eye at 40 m).
+    const auto lit = draw(*r, view, &alone, t, "particles-lit.png");
+    const auto dark = draw(*r, view, &shadowed, t, "particles-shadowed.png");
+    EXPECT_EQ(r->validation_messages(), 0U);
+    const Rgb a = mean(lit, kW / 2 - 4, kH / 2 - 6, kW / 2 + 4, kH / 2 + 2);
+    const Rgb b = mean(dark, kW / 2 - 4, kH / 2 - 6, kW / 2 + 4, kH / 2 + 2);
+    // Measured on lavapipe: 402 lit, 313 shadowed (summed over RGB), the shadowed bluer:
+    // what's left of the light there is the sky's, which isn't shadowed.
+    EXPECT_LT(b.r + b.g + b.b, 0.85 * (a.r + a.g + a.b));
+}
+
+// An output the frame wasn't given a view for draws no particles: its
+// order was never sorted (the renderer draws it with an empty view). It
+// checks the output is untouched and validation quiet; the out-of-bounds
+// read the guard prevents doesn't show on lavapipe, whose new memory is
+// zeros (index 0, drawn off the empty view).
+TEST(ParticlesRender, AnOutputWithNoViewDrawsNoParticles) {
+    RendererOptions options;
+    options.particle_capacity = 1000;
+    options.msaa = 1;
+    if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
+        options.validation = Validation::required;
+    }
+    std::unique_ptr<Renderer> r;
+    try {
+        r = Renderer::offscreen(std::vector<OffscreenOutput>{{kW, kH}, {kW, kH}}, options);
+    } catch (const std::runtime_error&) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    r->set_particles(nullptr, t);
+    r->draw_scene_frame(std::span(&view, 1));
+    const auto clear = r->read_back_rgba(1);
+    ParticleFrame f = frame_at_eye(view, 1000);
+    add_wall(f, t);
+    for (int i = 0; i < 3; ++i) {  // both frame slots
+        r->set_particles(&f, t);
+        r->draw_scene_frame(std::span(&view, 1));
+    }
+    EXPECT_EQ(r->read_back_rgba(1), clear);
+    EXPECT_EQ(r->validation_messages(), 0U);
 }
 
 TEST(ParticlesRender, FadedOrEmptyDrawsNothing) {
