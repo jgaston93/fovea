@@ -342,6 +342,6 @@ Particle volumes (D-039 to D-041) are core, not a module. The plan's "Core servi
   - `self_shadowing` (true): off, the particles are drawn in one slice with no light pass;
   - `slices` (32, 1 to 128);
   - `light_buffer` (512 texels a side, 64 to 2048);
-  - `resolution` ("full" or "half"). Half draws the particles at half each view's width and height, about a quarter of the fill, and composites them up with bilinear filtering, Green's suggestion [G13, D-041]. Each half-size pixel is cut at the nearest of the 2 × 2 scene depths under it, so dust doesn't show over nearer scenery, but its edge against that scenery is half as sharp.
+  - `resolution` ("full" or "half"). Half draws the particles at half each view's width and height, about a quarter of the fill, and composites them up with bilinear filtering, Green's suggestion [G13, D-041]. Each half-size pixel is cut at the nearest of the scene depths it covers, so dust doesn't show over nearer scenery, but its edge against that scenery is half as sharp. That's 2 × 2 at even sizes and up to 3 a side at odd ones, where the half image is (n + 1) / 2 and a pixel covers a little under 2; the range is worked out from the sizes, checked to cover every overlapped pixel at sizes from 90 to 1920.
 - **Not measured yet:** what any of these cost on KHSV's IG. These are the levers for that measurement, and their defaults are the full look.
 

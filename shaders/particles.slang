@@ -226,17 +226,28 @@ float4 fs_particles(ParticleVertex i) : SV_Target {
     const float enter = max(min(root_q, root_cq), 0.0);
     float leave = max(root_q, root_cq);
     // Cut off where the scene is nearer: depth 0 is the sky. At half
-    // resolution, the nearest (reverse-Z: greatest) of the 2 x 2 scene
-    // pixels under this one, so dust doesn't show over what's in front.
+    // resolution, the nearest (reverse-Z: greatest) of the scene pixels
+    // this one covers, so dust doesn't show over what's in front: a half
+    // image of an odd size, (n + 1) / 2, covers a little under 2 a pixel,
+    // so the range is worked out from the sizes, up to 3 a side.
     uint depth_w;
     uint depth_h;
     scene_depth.GetDimensions(depth_w, depth_h);
-    const int2 px = int2(i.position.xy) * int(push.depth_scale);
+    const int2 full = int2(int(depth_w), int(depth_h));
+    const int2 here = int2(i.position.xy);
+    int2 lo = here;
+    int2 hi = here;
+    if (push.depth_scale > 1) {
+        const int2 half_size = (full + 1) / 2;
+        lo = (here * full) / half_size;                       // floor(here * full / half)
+        hi = ((here + 1) * full + half_size - 1) / half_size - 1;  // ceil(...) - 1
+    }
+    lo = clamp(lo, int2(0, 0), full - 1);
+    hi = clamp(hi, lo, full - 1);
     float depth = 0.0;
-    for (uint dy = 0; dy < push.depth_scale; ++dy) {
-        for (uint dx = 0; dx < push.depth_scale; ++dx) {
-            const int2 q = min(px + int2(int(dx), int(dy)), int2(int(depth_w) - 1, int(depth_h) - 1));
-            depth = max(depth, scene_depth.Load(int3(q, 0)));
+    for (int y = lo.y; y <= hi.y; ++y) {
+        for (int x = lo.x; x <= hi.x; ++x) {
+            depth = max(depth, scene_depth.Load(int3(x, y, 0)));
         }
     }
     if (depth > 0.0) {
