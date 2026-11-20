@@ -1,0 +1,17 @@
+# Headless with a host (D-044): one small offscreen channel riding the host's
+# entity, CIGI on ports of this test's own (tests/headless_host.cmake).
+[display]
+presenter = "offscreen"
+
+[[channel]]
+name = "eye"
+monitor = 0
+render_extent = [160, 120]
+frustum = { left = -30.0, right = 30.0, top = 22.0, bottom = -22.0 }
+
+[host]
+protocol = "cigi"
+port = 47304
+listen_address = "127.0.0.1"
+host_address = "127.0.0.1"
+host_port = 47305

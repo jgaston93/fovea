@@ -127,6 +127,15 @@ add_test(NAME App.HeadlessDumpsEachChannel
 set_tests_properties(App.HeadlessDumpsEachChannel PROPERTIES
     ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver" TIMEOUT 60
     PASS_REGULAR_EXPRESSION "wrote headless-dump.left\\.png.*wrote headless-dump.center\\.png.*wrote headless-dump.right\\.png.*0 validation messages")
+# Headless with a host (D-044): driven over CIGI by the test host, the last
+# frame written (a host's tests, with no display).
+add_test(NAME App.HeadlessFollowsAHost
+    COMMAND ${CMAKE_COMMAND} -DFOVEA=$<TARGET_FILE:fovea> -DHOST=$<TARGET_FILE:cigi-test-host>
+        -DCONFIG=${CMAKE_CURRENT_SOURCE_DIR}/data/headless-host.toml
+        -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/data/headless-host-script.toml
+        -DOUT=headless-host-out -P ${CMAKE_CURRENT_SOURCE_DIR}/headless_host.cmake)
+set_tests_properties(App.HeadlessFollowsAHost PROPERTIES
+    ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver" TIMEOUT 90)
 add_test(NAME App.HeadlessRefusesIdentify
     COMMAND fovea --headless --identify ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
 set_tests_properties(App.HeadlessRefusesIdentify PROPERTIES
@@ -143,7 +152,7 @@ set_tests_properties(App.DumpNeedsHeadless PROPERTIES
     TIMEOUT 20 PASS_REGULAR_EXPRESSION "--frames and --dump need --headless")
 if(NOT DEFINED ENV{FOVEA_REQUIRE_VULKAN})
     set_tests_properties(App.OffscreenRendersWithoutADisplay App.OffscreenRendersTheScene
-        App.HeadlessDumpsEachChannel PROPERTIES
+        App.HeadlessDumpsEachChannel App.HeadlessFollowsAHost PROPERTIES
         SKIP_REGULAR_EXPRESSION "no Vulkan loader found|no GPU with Vulkan 1.3")
 endif()
 add_test(NAME App.StatsNeedsTheScene

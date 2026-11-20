@@ -16,19 +16,26 @@
 //       render every channel offscreen (no display needed), N frames, and
 //       write each channel's last frame to DIR/<name>.png; an offscreen
 //       config does this without --headless
+//   fovea --headless [--seconds S] [--dump DIR] [--stats CSV] <config with [host]>
+//       driven by the host, offscreen (D-044): the windows' loop with no
+//       windows, for S seconds or until SIGINT or SIGTERM, then each
+//       channel's last frame to DIR/<name>.png
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "fovea/core/config.hpp"
@@ -388,11 +395,6 @@ fovea::EnvironmentState environment_state(const fovea::EnvironmentConfig& e, fov
 // number of frames, prints the colour read back from the middle of each
 // channel, and with --dump writes each channel's last frame as <name>.png.
 int run_headless(const Options& options, const fovea::DisplayConfig& config) {
-    if (config.host) {
-        std::printf(
-            "note: [host] is not used headless (recorded host traffic replays in "
-            "milestone 2 step 6)\n");
-    }
     // Before rendering anything: a bad directory fails at once.
     if (!options.dump.empty()) {
         std::error_code ec;
@@ -448,6 +450,296 @@ int run_headless(const Options& options, const fovea::DisplayConfig& config) {
         }
     }
     return finish(*renderer);
+}
+
+// Waits up to `timeout_ms` (-1: until something happens) for what ends a
+// run: a window closed, or headless a signal. True: stop.
+using WaitFn = std::function<bool(int timeout_ms)>;
+
+// The scene drawn on the render thread at a fixed rate from the latest scene
+// state, with the host's links (CIGI, HAT/HOT, particles) and the stats, on
+// windows or offscreen alike, until the time limit, `wait` says stop, or a
+// thread fails. The exit code.
+int run_loop(const Options& options, const fovea::DisplayConfig& config, fovea::Renderer& renderer,
+             std::span<const fovea::SceneView> views, const fovea::ViewRig& rig,
+             const WaitFn& wait) {
+    fovea::Renderer* const r = &renderer;
+    using Clock = std::chrono::steady_clock;
+    const auto deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(
+                                             std::chrono::duration<double>(options.seconds));
+    const bool timed = options.seconds > 0.0;
+    // The scene on the render thread (step 7): a fixed-rate loop drawing the
+    // latest scene state, while this (main) thread handles window events.
+    auto scene_state = std::make_unique<fovea::SceneState>();
+    // Config's environment until a host sets it: the host adapter edits the
+    // same working copy.
+    scene_state->edit().environment = environment_state(
+        config.environment, fovea::now(), config.host ? config.host->geoid_height_m : 0.0);
+    scene_state->publish();
+    // Declared before the logger, so the logger stops (flushing) before the
+    // file closes, whichever way this function exits.
+    std::unique_ptr<std::FILE, int (*)(std::FILE*)> stats_file(nullptr, &std::fclose);
+    std::unique_ptr<fovea::Logger> stats;
+    // The host link (milestone 2): the network thread receives the host's
+    // messages into the scene state and sends a Start of Frame for each of
+    // the loop's frames. Declared before the loop, so the loop stops first.
+    std::unique_ptr<fovea::FrameStartRing> frame_starts;
+    // HAT/HOT (Integration 1 step 3, D-036): the query thread, with its own
+    // reader of the database. Declared before the host link, so it stops
+    // after the network thread that asks it.
+    std::unique_ptr<fovea::TerrainDatabase> query_db;
+    std::unique_ptr<fovea::DatabaseTerrain> query_terrain;
+    std::unique_ptr<fovea::HeightQueries> height_queries;
+    std::unique_ptr<fovea::HeightQueryThread> query_thread;
+    std::unique_ptr<fovea::CigiAdapter> host_adapter;
+    std::unique_ptr<fovea::HostThread> host_thread;
+    std::unique_ptr<fovea::ParticleState> particle_state;
+    std::unique_ptr<fovea::PuffAdapter> puff_adapter;
+    std::unique_ptr<fovea::PollThread> puff_thread;
+    std::unique_ptr<fovea::FrameLoop> loop;
+    if (!options.stats.empty()) {
+        stats_file.reset(std::fopen(options.stats.c_str(), "w"));
+        if (stats_file == nullptr) {
+            (void)std::fprintf(stderr, "fovea: cannot write %s\n", options.stats.c_str());
+            return 1;
+        }
+        stats = std::make_unique<fovea::Logger>(std::size_t{16384});
+        stats->start(fovea::make_text_sink(stats_file.get()));
+    }
+    fovea::FrameLoopOptions loop_options{config.target_hz};
+    if (options.overlay) {
+        r->enable_overlay(0);  // the first channel: the debug channel
+        loop_options.overlay = true;
+    }
+    if (config.host) {
+        const fovea::HostConfig& h = *config.host;
+        fovea::CigiAdapterOptions host_options;
+        host_options.port = h.port;
+        host_options.address = h.listen_address.value_or(0);
+        if (h.host_address) {
+            host_options.host = fovea::UdpEndpoint{*h.host_address, h.host_port};
+        }
+        if (h.host_port != 0) {
+            host_options.host_port = h.host_port;
+        }
+        host_options.byte_order = h.byte_order == fovea::HostByteOrder::network
+                                      ? fovea::cigi::ByteOrder::network
+                                      : fovea::cigi::ByteOrder::native;
+        host_options.geoid_height_m = h.geoid_height_m;
+        host_options.environment = scene_state->edit().environment;
+        // Without a database (or with one that won't open: load_terrain
+        // said why), every HAT/HOT request is answered invalid.
+        if (config.terrain && !options.clear) {
+            (void)fovea::TerrainDatabase::open(config.terrain->database, query_db);
+        }
+        if (query_db) {
+            query_terrain = std::make_unique<fovea::DatabaseTerrain>(*query_db);
+            height_queries = std::make_unique<fovea::HeightQueries>();
+            query_thread =
+                std::make_unique<fovea::HeightQueryThread>(*query_terrain, *height_queries);
+            query_thread->start();
+            host_options.heights = height_queries.get();
+        }
+        frame_starts = std::make_unique<fovea::FrameStartRing>();
+        try {
+            host_adapter = std::make_unique<fovea::CigiAdapter>(host_options, frame_starts.get());
+        } catch (const std::runtime_error& e) {
+            (void)std::fprintf(stderr, "fovea: CIGI on UDP port %u: %s\n", unsigned{h.port},
+                               e.what());
+            return 1;
+        }
+        std::string reply_to = "the host's address and port, once it sends";
+        if (host_options.host) {
+            reply_to = fovea::format_endpoint(*host_options.host);
+        } else if (h.host_port != 0) {
+            reply_to =
+                "port " + std::to_string(h.host_port) + " at the host's address, once it sends";
+        }
+        std::printf(
+            "CIGI 3.3: listening on %s (receive buffer %zu KB); Start of Frame to %s, in %s "
+            "byte order\n",
+            fovea::format_endpoint({host_options.address, host_adapter->port()}).c_str(),
+            host_adapter->receive_buffer_bytes() / 1024, reply_to.c_str(),
+            h.byte_order == fovea::HostByteOrder::network ? "network" : "native");
+        loop_options.frame_starts = frame_starts.get();
+        loop_options.rig = &rig;
+        host_thread = std::make_unique<fovea::HostThread>(*host_adapter, *scene_state);
+        host_thread->start();
+    }
+    if (config.particles) {
+        // D-039: received, kept and counted here; drawn by the renderer (D-040).
+        const fovea::ParticlesConfig& pc = *config.particles;
+        particle_state = std::make_unique<fovea::ParticleState>(pc.capacity);
+        fovea::PuffAdapterOptions puff_options;
+        puff_options.port = pc.port;
+        puff_options.address = pc.listen_address.value_or(0);
+        puff_options.geoid_height_m = config.host ? config.host->geoid_height_m : 0.0;
+        puff_options.fade = std::chrono::duration<float>(static_cast<float>(pc.fade_s));
+        try {
+            puff_adapter = std::make_unique<fovea::PuffAdapter>(puff_options, *particle_state);
+        } catch (const std::runtime_error& e) {
+            (void)std::fprintf(stderr, "fovea: particles on UDP port %u: %s\n", unsigned{pc.port},
+                               e.what());
+            return 1;
+        }
+        std::printf("particles: listening on %s (receive buffer %zu KB), up to %u kept\n",
+                    fovea::format_endpoint({puff_options.address, puff_adapter->port()}).c_str(),
+                    puff_adapter->receive_buffer_bytes() / 1024, unsigned{pc.capacity});
+        puff_thread =
+            std::make_unique<fovea::PollThread>([a = puff_adapter.get()] { return a->poll(); });
+        puff_thread->start();
+        loop_options.particles = particle_state.get();
+    }
+    loop = std::make_unique<fovea::FrameLoop>(*r, *scene_state, views, loop_options, stats.get());
+    loop->start();
+
+    for (;;) {
+        if (timed && Clock::now() >= deadline) {
+            break;
+        }
+        // Rendering runs on its own thread; wake for events, or at least
+        // every 100 ms to check the time limit and the threads' health.
+        if (loop->failed() || (host_thread && host_thread->failed()) ||
+            (query_thread && query_thread->failed()) || (puff_thread && puff_thread->failed())) {
+            break;  // stop() below rethrows what went wrong
+        }
+        int timeout_ms = 100;
+        if (timed) {
+            const auto left =
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now());
+            timeout_ms = static_cast<int>(std::clamp<std::int64_t>(left.count(), 0, 100));
+        }
+        if (wait(timeout_ms)) {
+            break;
+        }
+    }
+    // Both threads stop, and both report, before either failure is
+    // rethrown (the render thread's first).
+    std::exception_ptr render_error;
+    try {
+        loop->stop();
+    } catch (...) {
+        render_error = std::current_exception();
+    }
+    // Stopped first, so its counts print whatever else failed; its error
+    // is rethrown after the render and network threads' (exit 1).
+    std::exception_ptr particle_error;
+    if (puff_thread) {
+        try {
+            puff_thread->stop();
+        } catch (...) {
+            particle_error = std::current_exception();
+        }
+        print_particle_stats(puff_adapter->stats());
+    }
+    if (host_thread) {
+        std::exception_ptr host_error;
+        try {
+            host_thread->stop();
+        } catch (...) {
+            host_error = std::current_exception();
+        }
+        if (query_thread) {
+            try {
+                query_thread->stop();
+            } catch (const std::exception& e) {
+                (void)std::fprintf(stderr, "fovea: the HAT/HOT query thread failed: %s\n",
+                                   e.what());
+            } catch (...) {
+                (void)std::fprintf(stderr, "fovea: the HAT/HOT query thread failed\n");
+            }
+        }
+        print_host_stats(*host_adapter);
+        if (host_error && !render_error) {
+            std::rethrow_exception(host_error);
+        }
+        if (host_error) {
+            try {
+                std::rethrow_exception(host_error);
+            } catch (const std::exception& e) {
+                (void)std::fprintf(stderr, "fovea: the network thread failed too: %s\n", e.what());
+            }
+        }
+    }
+    if (render_error) {
+        std::rethrow_exception(render_error);
+    }
+    if (particle_error) {
+        std::rethrow_exception(particle_error);  // a failed particle thread stopped the IG
+    }
+    if (stats) {
+        stats->stop();
+        if (stats->dropped() > 0) {
+            std::printf("stats: %llu records dropped\n",
+                        static_cast<unsigned long long>(stats->dropped()));
+        }
+    }
+    print_summary(loop->summary());
+    if (r->overlay_skipped_frames() > 0) {
+        std::printf("overlay: left out of %llu frames (a texture upload was pending)\n",
+                    static_cast<unsigned long long>(r->overlay_skipped_frames()));
+    }
+    return finish(*r);
+}
+
+// Headless with a host (D-044): the host's loop offscreen, as on windows,
+// for --seconds or until SIGINT or SIGTERM; then, with --dump, each
+// channel's last frame as <name>.png. For a host's tests: what the IG drew
+// for the host's last pose, with no display.
+std::atomic<bool> g_stop_requested{false};
+extern "C" void request_stop(int /*signal*/) {
+    g_stop_requested.store(true);
+}
+
+int run_headless_host(const Options& options, const fovea::DisplayConfig& config) {
+    if (!options.dump.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(options.dump, ec);
+        if (ec || !std::filesystem::is_directory(options.dump)) {
+            (void)std::fprintf(stderr, "fovea: cannot make the directory %s: %s\n",
+                               options.dump.c_str(),
+                               ec ? ec.message().c_str() : "a file is in the way");
+            return 1;
+        }
+    }
+    print_views(config);
+    std::vector<fovea::OffscreenOutput> outputs;
+    outputs.reserve(config.channels.size());
+    for (const fovea::ChannelConfig& ch : config.channels) {
+        outputs.push_back({ch.render_width, ch.render_height});
+    }
+    const auto renderer = fovea::Renderer::offscreen(outputs, renderer_options(config));
+    print_gpu(*renderer);
+    if (!load_terrain(*renderer, config)) {
+        return 1;
+    }
+    const std::vector<fovea::SceneView> views = fovea::reference_scene_views(config);
+    const std::vector<fovea::ViewDesc> view_descs = fovea::views_from_config(config);
+    const fovea::ViewRig rig{view_descs, config.reference_scene,
+                             config.host ? config.host->geoid_height_m : 0.0};
+    (void)std::signal(SIGINT, request_stop);
+    (void)std::signal(SIGTERM, request_stop);
+    std::printf("Headless, driven by the host: %s.\n",
+                options.seconds > 0.0 ? "until --seconds" : "until SIGINT or SIGTERM");
+    (void)std::fflush(stdout);
+    const int code = run_loop(options, config, *renderer, views, rig, [](int timeout_ms) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(std::max(timeout_ms, 1)));
+        return g_stop_requested.load();
+    });
+    if (options.dump.empty()) {
+        return code;
+    }
+    for (std::uint32_t i = 0; i < renderer->output_count(); ++i) {
+        const auto& o = outputs[i];
+        const fovea::RgbaImage image{o.width, o.height, renderer->read_back_rgba(i)};
+        const auto file = std::filesystem::path(options.dump) / (config.channels[i].name + ".png");
+        if (!fovea::write_png(file, image)) {
+            (void)std::fprintf(stderr, "fovea: cannot write %s\n", file.string().c_str());
+            return 1;
+        }
+        std::printf("  wrote %s\n", file.string().c_str());
+    }
+    return code;
 }
 
 // One window per channel on its own monitor (the multi_swapchain presenter).
@@ -538,167 +830,22 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
     std::printf("Esc or close a window to quit.\n");
     (void)std::fflush(stdout);
 
+    if (renderer && !options.clear) {
+        return run_loop(options, config, *renderer, views, rig,
+                        [&](int timeout_ms) { return platform.wait_events(timeout_ms).quit; });
+    }
     using Clock = std::chrono::steady_clock;
     const auto deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(
                                              std::chrono::duration<double>(options.seconds));
     const bool timed = options.seconds > 0.0;
-    // The scene on the render thread (step 7): a fixed-rate loop drawing the
-    // latest scene state, while this (main) thread handles window events.
-    auto scene_state = std::make_unique<fovea::SceneState>();
-    // Config's environment until a host sets it: the host adapter edits the
-    // same working copy.
-    scene_state->edit().environment = environment_state(
-        config.environment, fovea::now(), config.host ? config.host->geoid_height_m : 0.0);
-    scene_state->publish();
-    // Declared before the logger, so the logger stops (flushing) before the
-    // file closes, whichever way this function exits.
-    std::unique_ptr<std::FILE, int (*)(std::FILE*)> stats_file(nullptr, &std::fclose);
-    std::unique_ptr<fovea::Logger> stats;
-    // The host link (milestone 2): the network thread receives the host's
-    // messages into the scene state and sends a Start of Frame for each of
-    // the loop's frames. Declared before the loop, so the loop stops first.
-    std::unique_ptr<fovea::FrameStartRing> frame_starts;
-    // HAT/HOT (Integration 1 step 3, D-036): the query thread, with its own
-    // reader of the database. Declared before the host link, so it stops
-    // after the network thread that asks it.
-    std::unique_ptr<fovea::TerrainDatabase> query_db;
-    std::unique_ptr<fovea::DatabaseTerrain> query_terrain;
-    std::unique_ptr<fovea::HeightQueries> height_queries;
-    std::unique_ptr<fovea::HeightQueryThread> query_thread;
-    std::unique_ptr<fovea::CigiAdapter> host_adapter;
-    std::unique_ptr<fovea::HostThread> host_thread;
-    std::unique_ptr<fovea::ParticleState> particle_state;
-    std::unique_ptr<fovea::PuffAdapter> puff_adapter;
-    std::unique_ptr<fovea::PollThread> puff_thread;
-    std::unique_ptr<fovea::FrameLoop> loop;
-    if (renderer && !options.clear) {
-        if (!options.stats.empty()) {
-            stats_file.reset(std::fopen(options.stats.c_str(), "w"));
-            if (stats_file == nullptr) {
-                (void)std::fprintf(stderr, "fovea: cannot write %s\n", options.stats.c_str());
-                return 1;
-            }
-            stats = std::make_unique<fovea::Logger>(std::size_t{16384});
-            stats->start(fovea::make_text_sink(stats_file.get()));
-        }
-        fovea::FrameLoopOptions loop_options{config.target_hz};
-        if (options.overlay) {
-            renderer->enable_overlay(0);  // the first channel: the debug channel
-            loop_options.overlay = true;
-        }
-        if (config.host) {
-            const fovea::HostConfig& h = *config.host;
-            fovea::CigiAdapterOptions host_options;
-            host_options.port = h.port;
-            host_options.address = h.listen_address.value_or(0);
-            if (h.host_address) {
-                host_options.host = fovea::UdpEndpoint{*h.host_address, h.host_port};
-            }
-            if (h.host_port != 0) {
-                host_options.host_port = h.host_port;
-            }
-            host_options.byte_order = h.byte_order == fovea::HostByteOrder::network
-                                          ? fovea::cigi::ByteOrder::network
-                                          : fovea::cigi::ByteOrder::native;
-            host_options.geoid_height_m = h.geoid_height_m;
-            host_options.environment = scene_state->edit().environment;
-            // Without a database (or with one that won't open: load_terrain
-            // said why), every HAT/HOT request is answered invalid.
-            if (config.terrain && !options.clear) {
-                (void)fovea::TerrainDatabase::open(config.terrain->database, query_db);
-            }
-            if (query_db) {
-                query_terrain = std::make_unique<fovea::DatabaseTerrain>(*query_db);
-                height_queries = std::make_unique<fovea::HeightQueries>();
-                query_thread =
-                    std::make_unique<fovea::HeightQueryThread>(*query_terrain, *height_queries);
-                query_thread->start();
-                host_options.heights = height_queries.get();
-            }
-            frame_starts = std::make_unique<fovea::FrameStartRing>();
-            try {
-                host_adapter =
-                    std::make_unique<fovea::CigiAdapter>(host_options, frame_starts.get());
-            } catch (const std::runtime_error& e) {
-                (void)std::fprintf(stderr, "fovea: CIGI on UDP port %u: %s\n", unsigned{h.port},
-                                   e.what());
-                return 1;
-            }
-            std::string reply_to = "the host's address and port, once it sends";
-            if (host_options.host) {
-                reply_to = fovea::format_endpoint(*host_options.host);
-            } else if (h.host_port != 0) {
-                reply_to =
-                    "port " + std::to_string(h.host_port) + " at the host's address, once it sends";
-            }
-            std::printf(
-                "CIGI 3.3: listening on %s (receive buffer %zu KB); Start of Frame to %s, in %s "
-                "byte order\n",
-                fovea::format_endpoint({host_options.address, host_adapter->port()}).c_str(),
-                host_adapter->receive_buffer_bytes() / 1024, reply_to.c_str(),
-                h.byte_order == fovea::HostByteOrder::network ? "network" : "native");
-            loop_options.frame_starts = frame_starts.get();
-            loop_options.rig = &rig;
-            host_thread = std::make_unique<fovea::HostThread>(*host_adapter, *scene_state);
-            host_thread->start();
-        }
-        if (config.particles) {
-            // D-039: received, kept and counted here; drawn by the renderer (D-040).
-            const fovea::ParticlesConfig& pc = *config.particles;
-            particle_state = std::make_unique<fovea::ParticleState>(pc.capacity);
-            fovea::PuffAdapterOptions puff_options;
-            puff_options.port = pc.port;
-            puff_options.address = pc.listen_address.value_or(0);
-            puff_options.geoid_height_m = config.host ? config.host->geoid_height_m : 0.0;
-            puff_options.fade = std::chrono::duration<float>(static_cast<float>(pc.fade_s));
-            try {
-                puff_adapter = std::make_unique<fovea::PuffAdapter>(puff_options, *particle_state);
-            } catch (const std::runtime_error& e) {
-                (void)std::fprintf(stderr, "fovea: particles on UDP port %u: %s\n",
-                                   unsigned{pc.port}, e.what());
-                return 1;
-            }
-            std::printf(
-                "particles: listening on %s (receive buffer %zu KB), up to %u kept\n",
-                fovea::format_endpoint({puff_options.address, puff_adapter->port()}).c_str(),
-                puff_adapter->receive_buffer_bytes() / 1024, unsigned{pc.capacity});
-            puff_thread =
-                std::make_unique<fovea::PollThread>([a = puff_adapter.get()] { return a->poll(); });
-            puff_thread->start();
-            loop_options.particles = particle_state.get();
-        }
-        loop = std::make_unique<fovea::FrameLoop>(*renderer, *scene_state, views, loop_options,
-                                                  stats.get());
-        loop->start();
-    }
-
     std::uint64_t frames = 0;
     for (;;) {
         if (timed && Clock::now() >= deadline) {
             break;
         }
-        if (loop) {
-            // Rendering runs on its own thread; wake for events, or at least
-            // every 100 ms to check the time limit and the loop's health.
-            if (loop->failed() || (host_thread && host_thread->failed()) ||
-                (query_thread && query_thread->failed()) ||
-                (puff_thread && puff_thread->failed())) {
-                break;  // stop() below rethrows what went wrong
-            }
-            int timeout_ms = 100;
-            if (timed) {
-                const auto left =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now());
-                timeout_ms = static_cast<int>(std::clamp<std::int64_t>(left.count(), 0, 100));
-            }
-            if (platform.wait_events(timeout_ms).quit) {
-                break;
-            }
-            continue;
-        }
         if (renderer) {
-            // Draw continuously; FIFO presentation paces the loop at the
-            // display rate (the fixed 60 Hz clock arrives in step 7).
+            // --clear: draw continuously; FIFO presentation paces the loop
+            // at the display rate.
             if (platform.poll_events().quit) {
                 break;
             }
@@ -730,76 +877,6 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
             paint();
         }
     }
-    if (loop) {
-        // Both threads stop, and both report, before either failure is
-        // rethrown (the render thread's first).
-        std::exception_ptr render_error;
-        try {
-            loop->stop();
-        } catch (...) {
-            render_error = std::current_exception();
-        }
-        // Stopped first, so its counts print whatever else failed; its error
-        // is rethrown after the render and network threads' (exit 1).
-        std::exception_ptr particle_error;
-        if (puff_thread) {
-            try {
-                puff_thread->stop();
-            } catch (...) {
-                particle_error = std::current_exception();
-            }
-            print_particle_stats(puff_adapter->stats());
-        }
-        if (host_thread) {
-            std::exception_ptr host_error;
-            try {
-                host_thread->stop();
-            } catch (...) {
-                host_error = std::current_exception();
-            }
-            if (query_thread) {
-                try {
-                    query_thread->stop();
-                } catch (const std::exception& e) {
-                    (void)std::fprintf(stderr, "fovea: the HAT/HOT query thread failed: %s\n",
-                                       e.what());
-                } catch (...) {
-                    (void)std::fprintf(stderr, "fovea: the HAT/HOT query thread failed\n");
-                }
-            }
-            print_host_stats(*host_adapter);
-            if (host_error && !render_error) {
-                std::rethrow_exception(host_error);
-            }
-            if (host_error) {
-                try {
-                    std::rethrow_exception(host_error);
-                } catch (const std::exception& e) {
-                    (void)std::fprintf(stderr, "fovea: the network thread failed too: %s\n",
-                                       e.what());
-                }
-            }
-        }
-        if (render_error) {
-            std::rethrow_exception(render_error);
-        }
-        if (particle_error) {
-            std::rethrow_exception(particle_error);  // a failed particle thread stopped the IG
-        }
-        if (stats) {
-            stats->stop();
-            if (stats->dropped() > 0) {
-                std::printf("stats: %llu records dropped\n",
-                            static_cast<unsigned long long>(stats->dropped()));
-            }
-        }
-        print_summary(loop->summary());
-        if (renderer->overlay_skipped_frames() > 0) {
-            std::printf("overlay: left out of %llu frames (a texture upload was pending)\n",
-                        static_cast<unsigned long long>(renderer->overlay_skipped_frames()));
-        }
-        return finish(*renderer);
-    }
     if (renderer) {
         std::printf("%llu frames\n", static_cast<unsigned long long>(frames));
         return finish(*renderer);
@@ -822,11 +899,22 @@ int run(const Options& options) {
     }
     const fovea::DisplayConfig& config = *result.config;
     if (options.headless || config.presenter == fovea::PresenterKind::offscreen) {
+        // With a host, the host drives it (D-044): its loop, offscreen, for
+        // --seconds or until a signal, the last frames written with --dump.
+        if (config.host && !options.clear) {
+            if (options.identify) {
+                (void)std::fprintf(stderr, "%s: --identify is for on-screen runs\n",
+                                   options.config.c_str());
+                return 1;
+            }
+            return run_headless_host(options, config);
+        }
         if (options.overlay || !options.stats.empty() || options.seconds > 0.0 ||
             options.identify) {
             (void)std::fprintf(stderr,
                                "%s: --overlay, --stats, --seconds and --identify are for "
-                               "on-screen runs; headless renders --frames frames\n",
+                               "on-screen runs, or headless with a [host]; headless renders "
+                               "--frames frames\n",
                                options.config.c_str());
             return 1;
         }

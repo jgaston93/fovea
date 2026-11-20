@@ -373,3 +373,14 @@ Sources:
 - [SV15] A. Schneider and N. Vos, "The Real-time Volumetric Cloudscapes of Horizon: Zero Dawn", SIGGRAPH 2015, Advances in Real-Time Rendering in Games (slides, PDF, http://advances.realtimerendering.com/s2015/). Read for this, 2026-11-20: slides 31, 34, 35, 39 and 78. The exact remapping of Schneider's later chapter (GPU Pro 7, 2016) wasn't read, and isn't used.
 - [BHN07] R. Bridson, J. Hourihan and M. Nordenstam, "Curl-Noise for Procedural Fluid Flow", ACM Transactions on Graphics 26(3), SIGGRAPH 2007, article 46, doi:10.1145/1239451.1239497. Read for this, 2026-11-20 (the author's copy).
 - K. Perlin, "Improved Noise reference implementation" (2002), https://mrl.cs.nyu.edu/~perlin/noise/, for his SIGGRAPH 2002 paper. Read for this, 2026-11-20.
+
+## D-044 Headless with a host: the host's loop, offscreen
+
+**Status:** Accepted (2026-11-20)
+
+A headless run (`--headless`, or the offscreen presenter) drew `--frames` frames of the reference scene and ignored `[host]`: nothing could drive Fovea without a display. A host's own tests need that: a host flying a scripted run against an IG on a machine with no display (a build container, a CI runner), checking what the IG drew for its poses. The plan's control and stats plane lists headless and replay modes for regression and golden-image tests (architecture.md, "Invariants").
+
+- **With `[host]`, a headless run is the on-screen run with no windows.** The loop (the render thread's frame clock, the scene state, CIGI and its Start of Frame each frame, the HAT/HOT query thread, particle volumes, `--stats`, `--overlay` into the first channel's image) is one function (`run_loop`) for both, waiting for what ends the run through a callback: window events on screen, a sleep and a signal flag headless. So what a host's test runs against is what a site runs, less the swapchains. Without `[host]`, headless is as before.
+- **It stops after `--seconds`, or at SIGINT or SIGTERM**, and prints what the host link did, as on screen. With `--dump DIR`, each channel's last frame is then written as `DIR/<channel>.png`: what the IG drew for the host's last pose.
+- **Paced by its own clock:** with no display to pace it, the loop sleeps to the next 60 Hz deadline (as it already did when nothing was drawable). On a software Vulkan driver (lavapipe) a frame can take longer than a period, and the loop counts it missed, as on screen.
+- **Tried:** `App.HeadlessFollowsAHost`: Fovea headless and `cigi-test-host` started together (a CMake script), on ports of their own: the host's entity updates taken (at least 60 in 4 s), a Start of Frame sent for each frame, no validation messages, the last frame written. By hand: 480 frames on lavapipe in 8 s, 378 entity updates, one Start of Frame for each frame. The whole suite as before (the loop moved, unchanged). Mutation: headless with `[host]` routed to the reference scene again: the test fails.
