@@ -136,14 +136,17 @@ ParticleVertex vs_particles(uint id: SV_VulkanVertexID) {
 //   - b = c = 1/2, as their defaults: each octave half the light and half
 //     the phase function's eccentricity of the one before;
 //   - N = 3, not 8: the octaves are evaluated for every pixel of every
-//     overlapping puff, and the five left out add an eighth of the light;
+//     overlapping puff, and the five left out are 12 % of the eight's sum
+//     (0.24 of 1.99);
 //   - no a: the light's path through the cloud isn't traced (no
 //     self-shadowing yet), so its transmittance is taken as 1 for every
 //     octave, and a has nothing to scale.
-// So it isn't energy-conserving (Hillaire, page 41, requires a <= b for
-// that): the octaves sum to 1.75 times the light once scattered, and an
-// albedo over 1/1.75 scatters more than falls on the puff. The look is
-// tuned by [particles]' albedo, not derived (D-040).
+// So it isn't energy-conserving: that needs the scattering scaled no more
+// than the extinction, b <= a in Wrenninge's letters (Hillaire, page 41,
+// equation 20, writes it a <= b, his letters swapped). The octaves sum to
+// 1.75 times the light once scattered, and an albedo over 1/1.75 = 0.57
+// scatters more than falls on the puff: the default's red, 0.62, does. The
+// look is tuned by [particles]' albedo, not derived (D-040).
 float multiple_scattering_phase(float g, float c) {
     float sum = 0.0;
     float energy = 1.0;
@@ -165,9 +168,11 @@ float4 fs_particles(ParticleVertex i) : SV_Target {
     // r^2 - l^2 (their equation 5, after Hearn and Baker), l the centre's
     // distance from the ray, not b^2 - (|c|^2 - r^2), which loses a small
     // puff far off; the roots as q and c/q (their equation 10, after Press et
-    // al.), not b -/+ sqrt, which loses the nearer one when the eye is close
-    // to a large puff's surface. Here the centre is relative to the eye and
-    // the ray's direction is a unit vector, so their b' is b and a is 1.
+    // al.), not b -/+ sqrt: about twice as precise for the nearer one when
+    // the eye is close to a large puff's surface (c = |c|^2 - r^2 still
+    // cancels there, as theirs does), well under a millimetre either way.
+    // Here the centre is relative to the eye and the ray's direction is a
+    // unit vector, so their b' is b and a is 1.
     const float b = dot(dir, i.centre);
     const float3 l = i.centre - b * dir;
     const float disc = i.radius * i.radius - dot(l, l);
