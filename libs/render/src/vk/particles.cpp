@@ -35,9 +35,12 @@ struct ParticlePush {
     std::array<float, 3> anchor{};  // the origins' anchor relative to the eye
     float forward_scattering = 0.0F;
     std::array<float, 3> albedo{};
-    std::uint32_t order_base = 0;  // this view's first entry in the order buffer
+    std::uint32_t order_base = 0;   // this view's first entry in the order buffer
+    std::uint32_t depth_scale = 1;  // scene depth pixels per particle image pixel: 1 or 2
+    float unused = 0.0F;
+    std::array<float, 2> inv_target{};  // 1 / the view's render size, pixels (the composite)
 };
-static_assert(sizeof(ParticlePush) == 96, "must match ParticlePush in particles.slang");
+static_assert(sizeof(ParticlePush) == 112, "must match ParticlePush in particles.slang");
 
 [[noreturn]] void fail(const std::string& what) {
     throw std::runtime_error("particles: " + what);
@@ -254,9 +257,10 @@ void ParticlesGpu::destroy_image(Image& i) const {
 
 ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uint32_t slots,
                            std::span<const VkExtent2D> extents, VkFormat colour,
-                           const Modules& modules)
+                           const Modules& modules, const ParticleQuality& quality)
     : gpu_(gpu),
       capacity_(capacity),
+      quality_(quality),
       slots_(slots),
       counts_(slots, 0),
       sorted_views_(slots, 0),
@@ -266,16 +270,20 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
       centres_(capacity),
       keys_(capacity * 2),
       scratch_(capacity * 2) {
-    if (capacity == 0 || slots == 0 || extents.empty()) {
-        fail("no capacity, slots or outputs");
+    if (capacity == 0 || slots == 0 || extents.empty() || quality.slices == 0 ||
+        quality.light_buffer == 0) {
+        fail("no capacity, slots, outputs, slices or light buffer");
     }
     const auto outputs = static_cast<std::uint32_t>(extents.size());
     try {
-        for (const VkExtent2D e : extents) {
-            particle_images_.push_back(make_image(e, kParticleImageFormat));
-        }
         light_format_ = light_format_for(gpu_.physical);
-        light_ = make_image({kLightSize, kLightSize}, light_format_);
+        for (const VkExtent2D e : extents) {
+            const VkExtent2D size =
+                quality_.half_resolution ? VkExtent2D{(e.width + 1) / 2, (e.height + 1) / 2} : e;
+            image_extents_.push_back(size);
+            particle_images_.push_back(make_image(size, kParticleImageFormat));
+        }
+        light_ = make_image({quality_.light_buffer, quality_.light_buffer}, light_format_);
         VkSamplerCreateInfo sci{};
         sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
         sci.magFilter = VK_FILTER_LINEAR;
@@ -526,6 +534,11 @@ void ParticlesGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t
     push.forward_scattering = look.forward_scattering;
     push.albedo = look.albedo;
     push.order_base = static_cast<std::uint32_t>(output * capacity_);
+    push.depth_scale = quality_.half_resolution ? 2U : 1U;
+    push.inv_target = {1.0F / static_cast<float>(extent.width),
+                       1.0F / static_cast<float>(extent.height)};
+    const VkExtent2D image_extent = image_extents_.at(output);
+    const VkExtent2D light_extent{quality_.light_buffer, quality_.light_buffer};
     const auto bind = [&](VkPipeline p) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
         const std::array<VkDescriptorSet, 3> sets{slots_[slot].set, gpu_.frame_set,
@@ -545,12 +558,14 @@ void ParticlesGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t
         image_barrier(light_.image, kFragmentStage | kColourStage, kColourWrite, kColourStage,
                       kColourReadWrite, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL)};
     barriers(cmd, start);
-    begin(cmd, light_.view, VK_IMAGE_LAYOUT_GENERAL, {kLightSize, kLightSize},
+    begin(cmd, light_.view, VK_IMAGE_LAYOUT_GENERAL, light_extent,
           VK_ATTACHMENT_LOAD_OP_CLEAR);  // no light path yet: optical depth 0
     vkCmdEndRendering(cmd);
 
     const bool front_to_back = front_to_back_[std::size_t{slot} * view_sets_.size() + output] != 0;
-    const std::size_t per_slice = (n + kSlices - 1) / kSlices;
+    // Without self-shadowing: one slice, no light pass (the buffer stays 0).
+    const std::size_t slices = quality_.self_shadowing ? quality_.slices : 1;
+    const std::size_t per_slice = (n + slices - 1) / slices;
     for (std::size_t first = 0; first < n; first += per_slice) {
         const auto count = static_cast<std::uint32_t>(std::min(per_slice, n - first));
         // The eye's slice reads the light buffer the slices nearer the
@@ -562,7 +577,7 @@ void ParticlesGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t
                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)};
         barriers(cmd, to_eye);
-        begin(cmd, image.view, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, extent,
+        begin(cmd, image.view, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, image_extent,
               first == 0 ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD);
         bind(front_to_back ? under_ : over_);
         vkCmdDraw(cmd, count * 6, 1, static_cast<std::uint32_t>(first * 6), 0);
@@ -575,8 +590,7 @@ void ParticlesGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t
             image_barrier(light_.image, kFragmentStage | kColourStage, kColourWrite, kColourStage,
                           kColourReadWrite, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL)};
         barriers(cmd, to_light);
-        begin(cmd, light_.view, VK_IMAGE_LAYOUT_GENERAL, {kLightSize, kLightSize},
-              VK_ATTACHMENT_LOAD_OP_LOAD);
+        begin(cmd, light_.view, VK_IMAGE_LAYOUT_GENERAL, light_extent, VK_ATTACHMENT_LOAD_OP_LOAD);
         bind(light_pipeline_);
         vkCmdDraw(cmd, count * 6, 1, static_cast<std::uint32_t>(first * 6), 0);
         vkCmdEndRendering(cmd);

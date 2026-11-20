@@ -121,6 +121,15 @@ struct ParticlesConfig {
     double extinction_m2_per_kg = 320.0;
     std::array<double, 3> albedo{0.62, 0.52, 0.40};
     double forward_scattering = 0.68;
+    // Cost against quality (D-042), fixed at start: self-shadowing by
+    // half-angle slicing (D-041) and its slices and light buffer (texels a
+    // side); the particles drawn at full or half the views' resolution
+    // (half: about a quarter of the fill, edges against nearer scenery
+    // softer).
+    bool self_shadowing = true;
+    std::uint32_t slices = 32;
+    std::uint32_t light_buffer = 512;
+    bool half_resolution = false;
 };
 
 // [environment] (milestone 6, D-029): the date and time, UTC, and the

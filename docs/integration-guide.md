@@ -154,6 +154,11 @@ fade_s = 0.25                # fade in when new, and out when no longer refreshe
 extinction_m2_per_kg = 320.0 # optical depth per kg/m^2 along a ray: mineral dust's (Mie, from measured sizes)
 albedo = { r = 0.62, g = 0.52, b = 0.40 }  # the light scattered, linear sRGB: a chosen tan, tune by eye
 forward_scattering = 0.68    # Cornette-Shanks g: 0 even, toward 1 forward; the same dust's asymmetry
+# Cost against look (D-042; the overlay and --stats show the particle pass's GPU time):
+self_shadowing = true        # false: no light pass, one slice
+slices = 32                  # 1 to 128
+light_buffer = 512           # texels a side, 64 to 2048
+resolution = "full"          # or "half": a quarter of the fill, softer edges against nearer scenery
 ```
 
 Origins' heights are MSL, made ellipsoidal with `[host]`'s `geoid_height_m` (0 without a `[host]`).

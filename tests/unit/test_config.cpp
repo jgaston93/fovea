@@ -567,6 +567,23 @@ forward_scattering = 0.4
     EXPECT_DOUBLE_EQ(look.config->particles->extinction_m2_per_kg, 250.0);
     EXPECT_DOUBLE_EQ(look.config->particles->albedo[2], 0.5);
     EXPECT_DOUBLE_EQ(look.config->particles->forward_scattering, 0.4);
+    EXPECT_TRUE(d.config->particles->self_shadowing);
+    EXPECT_EQ(d.config->particles->slices, 32U);
+    EXPECT_EQ(d.config->particles->light_buffer, 512U);
+    EXPECT_FALSE(d.config->particles->half_resolution);
+    const auto cost = parse(kMinimal + R"(
+[particles]
+port = 9000
+self_shadowing = false
+slices = 16
+light_buffer = 256
+resolution = "half"
+)");
+    ASSERT_TRUE(cost.ok()) << cost.errors[0].to_string();
+    EXPECT_FALSE(cost.config->particles->self_shadowing);
+    EXPECT_EQ(cost.config->particles->slices, 16U);
+    EXPECT_EQ(cost.config->particles->light_buffer, 256U);
+    EXPECT_TRUE(cost.config->particles->half_resolution);
 }
 
 TEST(Config, ParticlesSectionIsChecked) {
@@ -583,6 +600,12 @@ TEST(Config, ParticlesSectionIsChecked) {
                      "particles.albedo");
     expect_one_error(parse(head + "port = 9000\nforward_scattering = 1.0\n"), 9,
                      "particles.forward_scattering");
+    expect_one_error(parse(head + "port = 9000\nself_shadowing = 1\n"), 9,
+                     "particles.self_shadowing");
+    expect_one_error(parse(head + "port = 9000\nslices = 0\n"), 9, "particles.slices");
+    expect_one_error(parse(head + "port = 9000\nlight_buffer = 4096\n"), 9,
+                     "particles.light_buffer");
+    expect_one_error(parse(head + "port = 9000\nresolution = \"quarter\"\n"), 9, "full, half");
 }
 
 }  // namespace

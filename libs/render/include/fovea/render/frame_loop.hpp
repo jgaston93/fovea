@@ -84,6 +84,7 @@ struct FrameRecord {
     std::uint64_t gpu_frame = 0;
     std::uint32_t gpu_outputs = 0;
     std::array<float, kMaxTimedOutputs> gpu_ms{};
+    std::array<float, kMaxTimedOutputs> particles_ms{};  // their particle passes' (D-042)
 };
 
 // Running totals over the run, for the summary printed at exit.
@@ -98,6 +99,8 @@ struct FrameSummary {
     std::uint64_t gpu_samples = 0;
     std::array<double, kMaxTimedOutputs> gpu_mean_ms{};
     std::array<double, kMaxTimedOutputs> gpu_max_ms{};
+    std::array<double, kMaxTimedOutputs> particles_mean_ms{};  // the particle passes' (D-042)
+    std::array<double, kMaxTimedOutputs> particles_max_ms{};
     // With a rig: views drawn with their eye at or below the grid (a host
     // below the origin's altitude), counted per view per frame.
     std::uint64_t views_below_ground = 0;

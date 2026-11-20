@@ -82,6 +82,9 @@ struct ParticlePush {
     float forward_scattering;
     float3 albedo;
     uint order_base;  // this view's first entry in `order`
+    uint depth_scale;  // scene depth pixels per particle image pixel: 1, or 2 at half resolution
+    float unused;
+    float2 inv_target;  // 1 / the view's render size, pixels (the composite)
 };
 [[vk::push_constant]] ConstantBuffer<ParticlePush> push;
 
@@ -222,8 +225,31 @@ float4 fs_particles(ParticleVertex i) : SV_Target {
     const float root_cq = (dot(i.centre, i.centre) - i.radius * i.radius) / q;
     const float enter = max(min(root_q, root_cq), 0.0);
     float leave = max(root_q, root_cq);
-    // Cut off where the scene is nearer: depth 0 is the sky.
-    const float depth = scene_depth.Load(int3(int2(i.position.xy), 0));
+    // Cut off where the scene is nearer: depth 0 is the sky. At half
+    // resolution, the nearest (reverse-Z: greatest) of the scene pixels
+    // this one covers, so dust doesn't show over what's in front: a half
+    // image of an odd size, (n + 1) / 2, covers a little under 2 a pixel,
+    // so the range is worked out from the sizes, up to 3 a side.
+    uint depth_w;
+    uint depth_h;
+    scene_depth.GetDimensions(depth_w, depth_h);
+    const int2 full = int2(int(depth_w), int(depth_h));
+    const int2 here = int2(i.position.xy);
+    int2 lo = here;
+    int2 hi = here;
+    if (push.depth_scale > 1) {
+        const int2 half_size = (full + 1) / 2;
+        lo = (here * full) / half_size;                       // floor(here * full / half)
+        hi = ((here + 1) * full + half_size - 1) / half_size - 1;  // ceil(...) - 1
+    }
+    lo = clamp(lo, int2(0, 0), full - 1);
+    hi = clamp(hi, lo, full - 1);
+    float depth = 0.0;
+    for (int y = lo.y; y <= hi.y; ++y) {
+        for (int x = lo.x; x <= hi.x; ++x) {
+            depth = max(depth, scene_depth.Load(int3(x, y, 0)));
+        }
+    }
     if (depth > 0.0) {
         const float view_z = near_distance() / depth;
         const float along = dot(push.ecef_to_clip[3].xyz, dir);  // view z per metre of ray
@@ -310,5 +336,7 @@ CompositeVertex vs_composite(uint id: SV_VulkanVertexID) {
 
 [shader("fragment")]
 float4 fs_composite(CompositeVertex i) : SV_Target {
-    return particle_image.Load(int3(int2(i.position.xy), 0));
+    // Bilinear: at full resolution each pixel its own (sampled at its
+    // centre); at half, filtered up (D-042).
+    return particle_image.SampleLevel(light_sampler, i.position.xy * push.inv_target, 0.0);
 }

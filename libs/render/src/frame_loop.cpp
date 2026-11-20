@@ -43,7 +43,7 @@ FrameLoop::FrameLoop(Renderer& renderer, SceneState& scene, std::span<const Scen
         stats_->write(LogLevel::info,
                       "frame,t_s,interval_ms,wait_ms,work_ms,missed,scene_sequence,sample_age_ms,"
                       "recv_age_ms,heading_deg,tiles_drawn,tiles_resident,tile_uploads,"
-                      "tile_requests,tile_misses,gpu_frame,gpu_ms...");
+                      "tile_requests,tile_misses,gpu_frame,gpu_ms...,particles_ms...");
     }
 }
 
@@ -107,6 +107,7 @@ const FrameRecord& FrameLoop::step() {
         overlay_.work_mean_ms = summary_.work_mean_ms;
         overlay_.gpu_outputs = last_.gpu_outputs;
         overlay_.gpu_ms = last_.gpu_ms;
+        overlay_.particles_ms = last_.particles_ms;
         overlay_.note = options_.overlay_note;
         overlay_.terrain = last_terrain_;
         overlay_.host_age_ms = last_.recv_age_ms > 0.0 && last_.recv_age_ms < kLiveHostMs
@@ -156,6 +157,7 @@ const FrameRecord& FrameLoop::step() {
     r.gpu_frame = ours ? t.gpu_frame - first_renderer_frame_ : 0;
     r.gpu_outputs = ours ? t.gpu_outputs : 0;
     r.gpu_ms = t.gpu_ms;
+    r.particles_ms = t.particles_ms;
     last_start_ = started;
     if (frames_ > 0) {
         intervals_[next_interval_] = static_cast<float>(r.interval_ms);
@@ -196,6 +198,9 @@ void FrameLoop::record(const FrameRecord& r) {
             const auto v = static_cast<double>(r.gpu_ms[i]);
             s.gpu_mean_ms[i] += (v - s.gpu_mean_ms[i]) / g;
             s.gpu_max_ms[i] = std::max(s.gpu_max_ms[i], v);
+            const auto p = static_cast<double>(r.particles_ms[i]);
+            s.particles_mean_ms[i] += (p - s.particles_mean_ms[i]) / g;
+            s.particles_max_ms[i] = std::max(s.particles_max_ms[i], p);
         }
     }
 }
@@ -206,12 +211,15 @@ void FrameLoop::log(const FrameRecord& r) {
     }
     // GPU times as one field list, formatted into a fixed buffer (no
     // allocation on the render path).
-    std::array<char, 128> gpu{};
+    std::array<char, 256> gpu{};
     std::size_t used = 0;
-    for (std::uint32_t i = 0; i < r.gpu_outputs && used < gpu.size(); ++i) {
-        const int n = std::snprintf(gpu.data() + used, gpu.size() - used, ",%.3f",
-                                    static_cast<double>(r.gpu_ms[i]));
-        used += n > 0 ? static_cast<std::size_t>(n) : 0;
+    // Each output's GPU time, then each one's particle pass's (D-042).
+    for (const auto* times : {&r.gpu_ms, &r.particles_ms}) {
+        for (std::uint32_t i = 0; i < r.gpu_outputs && used < gpu.size(); ++i) {
+            const int n = std::snprintf(gpu.data() + used, gpu.size() - used, ",%.3f",
+                                        static_cast<double>((*times)[i]));
+            used += n > 0 ? static_cast<std::size_t>(n) : 0;
+        }
     }
     stats_->write(
         LogLevel::info, "%llu,%.6f,%.3f,%.3f,%.3f,%d,%llu,%.3f,%.3f,%.4f,%u,%u,%u,%u,%u,%llu%s",

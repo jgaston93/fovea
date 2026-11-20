@@ -32,9 +32,10 @@ using namespace std::chrono_literals;
 constexpr std::uint32_t kW = 160;
 constexpr std::uint32_t kH = 90;
 
-std::unique_ptr<Renderer> make_renderer(std::size_t capacity) {
+std::unique_ptr<Renderer> make_renderer(std::size_t capacity, const ParticleQuality& quality = {}) {
     RendererOptions options;
     options.particle_capacity = capacity;
+    options.particle_quality = quality;
     options.msaa = 1;
     if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
         options.validation = Validation::required;
@@ -318,6 +319,82 @@ TEST(ParticlesRender, AnOutputWithNoViewDrawsNoParticles) {
         r->draw_scene_frame(std::span(&view, 1));
     }
     EXPECT_EQ(r->read_back_rgba(1), clear);
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
+// Self-shadowing off (D-042): the same puff, with and without the blocker
+// above it, the same.
+TEST(ParticlesRender, WithoutSelfShadowingNothingIsShadowed) {
+    ParticleQuality q;
+    q.self_shadowing = false;
+    auto r = make_renderer(10, q);
+    FOVEA_NEED_VULKAN(r);
+    r->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleFrame alone = frame_at_eye(view, 10);
+    add(alone, t, Vec3(0.0F, 40.0F, 3.0F), 3.0F, 1e-3F);
+    ParticleFrame shadowed = alone;
+    add(shadowed, t, Vec3(0.0F, 40.0F, 23.0F), 6.0F, 5e-3F);
+    const auto lit = draw(*r, view, &alone, t, nullptr);
+    const auto same = draw(*r, view, &shadowed, t, nullptr);
+    EXPECT_EQ(r->validation_messages(), 0U);
+    const Rgb a = mean(lit, kW / 2 - 4, kH / 2 - 6, kW / 2 + 4, kH / 2 + 2);
+    const Rgb b = mean(same, kW / 2 - 4, kH / 2 - 6, kW / 2 + 4, kH / 2 + 2);
+    EXPECT_NEAR(b.r + b.g + b.b, a.r + a.g + a.b, 1.0);
+}
+
+// Half resolution (D-042): the wall still drawn, dust-coloured, and dust
+// under the ground still hidden.
+TEST(ParticlesRender, AtHalfResolutionTheDustIsDrawnAndCut) {
+    ParticleQuality q;
+    q.half_resolution = true;
+    auto r = make_renderer(1000, q);
+    FOVEA_NEED_VULKAN(r);
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    const auto clear = draw(*r, view, nullptr, t, nullptr);
+    ParticleFrame f = frame_at_eye(view, 1000);
+    add_wall(f, t);
+    const auto dusty = draw(*r, view, &f, t, "particles-wall-half.png");
+    const Rgb c0 = mean(clear, 20, 38, 140, 44);
+    const Rgb c1 = mean(dusty, 20, 38, 140, 44);
+    EXPECT_GT(std::abs(c1.r - c0.r) + std::abs(c1.g - c0.g) + std::abs(c1.b - c0.b), 30.0);
+    EXPECT_GT(c1.r, c1.b);
+    ParticleFrame buried = frame_at_eye(view, 1000);
+    add(buried, t, Vec3(0.0F, 40.0F, -4.0F), 3.5F, 5e-3F);
+    EXPECT_LT(difference(clear, draw(*r, view, &buried, t, nullptr)), 0.5);
+    EXPECT_EQ(r->validation_messages(), 0U);
+}
+
+// The particle pass's GPU time is reported (D-042): within the output's,
+// and next to nothing without particles.
+TEST(ParticlesRender, TheParticlePassIsTimed) {
+    auto r = make_renderer(1000);
+    FOVEA_NEED_VULKAN(r);
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleFrame f = frame_at_eye(view, 1000);
+    add_wall(f, t);
+    for (int i = 0; i < 4; ++i) {  // GPU times arrive two frames later
+        r->set_particles(&f, t);
+        r->draw_scene_frame(std::span(&view, 1));
+    }
+    const FrameTiming with = r->last_timing();
+    if (with.gpu_outputs == 0) {
+        // Where a device must be tested (CI, FOVEA_REQUIRE_VULKAN), the
+        // timings must come: a timestamp left unwritten loses them all.
+        ASSERT_EQ(std::getenv("FOVEA_REQUIRE_VULKAN"), nullptr) << "no GPU timings";
+        GTEST_SKIP() << "no GPU timestamps on this device";
+    }
+    EXPECT_GT(with.particles_ms[0], 0.0F);
+    EXPECT_LT(with.particles_ms[0], with.gpu_ms[0]);
+    for (int i = 0; i < 4; ++i) {
+        r->set_particles(nullptr, t);
+        r->draw_scene_frame(std::span(&view, 1));
+    }
+    const FrameTiming without = r->last_timing();
+    EXPECT_LT(without.particles_ms[0], 0.25F * with.particles_ms[0]);
     EXPECT_EQ(r->validation_messages(), 0U);
 }
 

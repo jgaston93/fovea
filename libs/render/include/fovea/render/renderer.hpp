@@ -44,6 +44,7 @@ struct RendererOptions {
     // frame (0: none drawn), and how they look.
     std::size_t particle_capacity = 0;
     ParticleLook particle_look{};
+    ParticleQuality particle_quality{};
 };
 
 struct GpuInfo {
@@ -203,6 +204,8 @@ struct FrameTiming {
     std::uint64_t gpu_frame = 0;    // the frame (frames_drawn() numbering) these GPU times are for
     std::uint32_t gpu_outputs = 0;  // how many are valid; 0 without timestamps
     std::array<float, kMaxTimedOutputs> gpu_ms{};  // per output: scene, tone map (and overlay)
+    // Per output, the particle pass's share of gpu_ms (D-042); 0 without particles.
+    std::array<float, kMaxTimedOutputs> particles_ms{};
 };
 
 // What the debug overlay shows for one frame (step 7; D-006). Plain data:
@@ -217,8 +220,9 @@ struct OverlayContent {
     double interval_max_ms = 0.0;
     double work_mean_ms = 0.0;
     std::uint32_t gpu_outputs = 0;
-    std::array<float, kMaxTimedOutputs> gpu_ms{};  // the latest GPU times per output
-    std::string_view note;                         // an optional extra line
+    std::array<float, kMaxTimedOutputs> gpu_ms{};        // the latest GPU times per output
+    std::array<float, kMaxTimedOutputs> particles_ms{};  // their particle passes' (D-042)
+    std::string_view note;                               // an optional extra line
     float host_age_ms = -1.0F;  // the host's newest sample, at frame start; negative: no host
     TerrainStats terrain;       // the last frame's; all zero without terrain
 };

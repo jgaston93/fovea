@@ -320,8 +320,31 @@ std::optional<std::array<double, N>> number_fields(Parser& p, const toml::node& 
 void parse_particles(Parser& p, const toml::table& t, ParticlesConfig& out) {
     p.check_keys(t,
                  {"port", "listen_address", "capacity", "fade_s", "extinction_m2_per_kg", "albedo",
-                  "forward_scattering"},
+                  "forward_scattering", "self_shadowing", "slices", "light_buffer", "resolution"},
                  "particles");
+    if (const auto* n = t.get("self_shadowing")) {
+        if (const auto* b = n->as_boolean()) {
+            out.self_shadowing = b->get();
+        } else {
+            p.error(n->source(), "'particles.self_shadowing' must be true or false");
+        }
+    }
+    if (const auto* n = t.get("slices")) {
+        if (auto v = p.integer(*n, "particles.slices", 1, 128)) {
+            out.slices = static_cast<std::uint32_t>(*v);
+        }
+    }
+    if (const auto* n = t.get("light_buffer")) {
+        if (auto v = p.integer(*n, "particles.light_buffer", 64, 2048)) {
+            out.light_buffer = static_cast<std::uint32_t>(*v);
+        }
+    }
+    if (const auto* n = t.get("resolution")) {
+        if (auto v =
+                p.choice<bool>(*n, "particles.resolution", {{"full", false}, {"half", true}})) {
+            out.half_resolution = *v;
+        }
+    }
     if (const auto* n = p.required(t, "port", "particles")) {
         if (auto v = p.integer(*n, "particles.port", 1, 65535)) {
             out.port = static_cast<std::uint16_t>(*v);

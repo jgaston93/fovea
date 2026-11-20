@@ -24,11 +24,6 @@ namespace fovea {
 
 class ParticlesGpu {
 public:
-    // The slices each view's particles are drawn in (Green 2013: 32 to 128
-    // a good trade-off), and the light buffer's size (texels a side).
-    static constexpr std::uint32_t kSlices = 32;
-    static constexpr std::uint32_t kLightSize = 512;
-
     // Up to `capacity` particles, `slots` frames in flight, one view per
     // extent. Composites into `colour` targets. The modules are
     // shaders/particles.slang's entry points. Throws std::runtime_error.
@@ -41,7 +36,8 @@ public:
         VkShaderModule fs_composite = VK_NULL_HANDLE;
     };
     ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uint32_t slots,
-                 std::span<const VkExtent2D> extents, VkFormat colour, const Modules& modules);
+                 std::span<const VkExtent2D> extents, VkFormat colour, const Modules& modules,
+                 const ParticleQuality& quality);
     ~ParticlesGpu();
     ParticlesGpu(const ParticlesGpu&) = delete;
     ParticlesGpu& operator=(const ParticlesGpu&) = delete;
@@ -90,13 +86,15 @@ private:
 
     GpuContext gpu_;
     std::size_t capacity_ = 0;
+    ParticleQuality quality_;
     std::vector<Slot> slots_;
     std::vector<std::size_t> counts_;
     std::vector<std::size_t> sorted_views_;  // per slot: the outputs pack sorted for
     std::vector<DVec3> anchors_;
-    std::vector<std::uint8_t> front_to_back_;      // per slot and output
-    std::vector<VkDescriptorSet> view_sets_;       // per output: depth, light, image
-    std::vector<Image> particle_images_;           // per output, its render size
+    std::vector<std::uint8_t> front_to_back_;  // per slot and output
+    std::vector<VkDescriptorSet> view_sets_;   // per output: depth, light, image
+    std::vector<Image> particle_images_;       // per output, its render size (or half)
+    std::vector<VkExtent2D> image_extents_;
     Image light_;                                  // shared, used by one view at a time
     VkFormat light_format_ = VK_FORMAT_UNDEFINED;  // R32F where it blends and filters, else R16F
     VkSampler light_sampler_ = VK_NULL_HANDLE;
