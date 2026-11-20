@@ -290,14 +290,6 @@ ParticlesGpu::Image ParticlesGpu::make_volume(std::uint32_t size, VkFormat forma
     aci.usage = VMA_MEMORY_USAGE_AUTO;
     check(vmaCreateImage(gpu_.allocator, &ici, &aci, &i.image, &i.memory, nullptr),
           "vmaCreateImage (particles' volume)");
-    VkImageViewCreateInfo vci{};
-    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    vci.image = i.image;
-    vci.viewType = VK_IMAGE_VIEW_TYPE_3D;
-    vci.format = format;
-    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    check(vkCreateImageView(gpu_.device, &vci, nullptr, &i.view),
-          "vkCreateImageView (particles' volume)");
 
     // Once, at start: a staging buffer, a command buffer of its own, waited
     // for (the renderer is being made; nothing else is on the queue).
@@ -313,6 +305,14 @@ ParticlesGpu::Image ParticlesGpu::make_volume(std::uint32_t size, VkFormat forma
         }
     };
     try {
+        VkImageViewCreateInfo vci{};
+        vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vci.image = i.image;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_3D;
+        vci.format = format;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        check(vkCreateImageView(gpu_.device, &vci, nullptr, &i.view),
+              "vkCreateImageView (particles' volume)");
         VkBufferCreateInfo bci{};
         bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bci.size = bytes.size();
@@ -694,8 +694,8 @@ std::size_t ParticlesGpu::pack(std::uint32_t slot, const ParticleFrame& frame, L
     sorted_views_[slot] = std::min(outputs, views.size());
     anchors_[slot] = anchor;
     // The detail's clock: seconds, wrapped every 1000 so a float keeps
-    // their fractions (the noise drifts slowly; the wrap is a jump once in
-    // 17 minutes, in a slow drift).
+    // their fractions. The wrap is seamless: the drift is 0.03 tiles a
+    // second, 30 whole tiles of the wrapping volume in 1000 s.
     const double seconds = std::chrono::duration<double>(at.time_since_epoch()).count();
     times_[slot] = static_cast<float>(std::fmod(seconds, 1000.0));
     return n;

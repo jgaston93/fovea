@@ -92,7 +92,7 @@ struct ParticlePush {
     float2 inv_target;  // 1 / the view's render size, pixels (the composite)
     float time;         // seconds the detail has drifted (D-043)
     float detail;       // 0 to 1: how much of the density the noise erodes
-    float detail_size;  // the noise's features, a fraction of the radius
+    float detail_size;  // the noise's features, metres
     float swirl;        // the curl's reach, in features
 };
 [[vk::push_constant]] ConstantBuffer<ParticlePush> push;
@@ -243,16 +243,30 @@ static const float kOctaveEnergy = 1.75;  // b^0 + b^1 + b^2: the octaves' sum f
 // spans 4 features of detail_size metres.
 static const float kDetailMean = 0.4586;  // the detail volume's mean (particle_noise.hpp; tested)
 static const float kBaseMean = 0.7645;    // the base's mean over the sphere
-float detail_density(float3 enu, float r2) {
-    if (r2 >= 1.0) {
-        return 0.0;
-    }
+// The noise's factor at a point (metres in the origin's frame): 1 on
+// average over the field.
+float detail_factor(float3 enu) {
     float3 at = enu / (4.0 * push.detail_size);
     const float3 curl_at = at * 0.5 + float3(0.0, 0.0, 0.03 * push.time);
     at += curl_noise.SampleLevel(noise_sampler, curl_at, 0.0).xyz * (0.25 * push.swirl);
     const float n = detail_noise.SampleLevel(noise_sampler, at, 0.0);
-    const float base = saturate((1.0 - r2) * 3.0) / kBaseMean;
-    return base * (1.0 - push.detail * (1.0 - n)) / (1.0 - push.detail * (1.0 - kDetailMean));
+    return (1.0 - push.detail * (1.0 - n)) / (1.0 - push.detail * (1.0 - kDetailMean));
+}
+// The base, min(1, 3 (1 - r^2)), integrated along a line `b2` (squared, in
+// radii) from the centre, from its closest point to `s` radii along it
+// (odd in s). Exact: 1 while r^2 < 2/3, then 3 (1 - b2 - s^2), to the
+// surface; the samples would miss the soft ends of every chord (on the
+// one through the centre, 4 midpoints all fall where the base is 1: 10 %
+// too much).
+float base_along(float s, float b2) {
+    const float a = sqrt(max(2.0 / 3.0 - b2, 0.0));  // where r^2 reaches 2/3
+    const float e = sqrt(max(1.0 - b2, 0.0));        // the surface
+    const float x = min(abs(s), e);
+    float g = min(x, a);
+    if (x > a) {
+        g += 3.0 * ((1.0 - b2) * (x - a) - (x * x * x - a * a * a) / 3.0);
+    }
+    return s < 0.0 ? -g : g;
 }
 static const int kDetailSamples = 4;  // along each pixel's chord through a puff
 
@@ -321,16 +335,27 @@ float4 fs_particles(ParticleVertex i) : SV_Target {
     if (push.detail > 0.0) {
         // The samples' offsets from the centre turned into the origin's
         // east, north and up (ECEF axes to ENU).
+        // The chord's base, exactly, over its length (the line's closest
+        // point to the centre is at b along the ray), then the noise's
+        // factor at kDetailSamples points along it, weighted by the base
+        // there.
         const Origin o = origins[i.origin];
-        float sum = 0.0;
+        const float inv_r = 1.0 / i.radius;
+        const float b2 = dot(l, l) * inv_r * inv_r;  // l: the centre's offset from the ray
+        const float base = (base_along((leave - b) * inv_r, b2) - base_along((enter - b) * inv_r, b2)) /
+                           (length_inside * inv_r * kBaseMean);
+        float weighted = 0.0;
+        float weights = 0.0;
         const float step = length_inside / float(kDetailSamples);
         for (int k = 0; k < kDetailSamples; ++k) {
             const float t = enter + (float(k) + 0.5) * step;
             const float3 off = dir * t - i.centre;
+            const float w = saturate((1.0 - dot(off, off) * inv_r * inv_r) * 3.0);
             const float3 enu = i.enu + float3(dot(off, o.east), dot(off, o.north), dot(off, o.up));
-            sum += detail_density(enu, dot(off, off) / (i.radius * i.radius));
+            weighted += w * detail_factor(enu);
+            weights += w;
         }
-        density = sum / float(kDetailSamples);
+        density = base * (weights > 0.0 ? weighted / weights : 1.0);
     }
     const float opacity = 1.0 - exp(-i.extinction * density * length_inside);
     if (opacity < 1e-4) {

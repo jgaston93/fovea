@@ -364,15 +364,15 @@ TEST(ParticlesRender, DetailBreaksUpAPuff) {
     };
     const double smooth = roughness(cover(s.plain, s.empty));
     const double rough = roughness(cover(s.detailed, s.empty));
-    // Measured on lavapipe: 0.47 smooth, 1.11 detailed.
+    // Measured on lavapipe: 0.47 smooth, 1.10 detailed.
     EXPECT_GT(rough, 1.8 * smooth) << "roughness " << smooth << " smooth, " << rough << " detailed";
 }
 
 // The detail moves the dust about but keeps its mass (D-043): a puff thin
 // enough that its cover goes nearly as its optical depth (0.26 through the
 // middle), its cover summed over its whole disc, about the same with
-// detail as without. Without the base's and the detail's normalisation
-// it'd be about a quarter less.
+// detail as without (measured on lavapipe: 1.5 % less). Without the base's
+// normalisation it's 24 % less, without the detail's 42 %.
 TEST(ParticlesRender, DetailKeepsTheMass) {
     ParticleLook look;
     look.detail = 0.8F;

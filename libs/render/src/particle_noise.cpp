@@ -76,7 +76,7 @@ Vec3 cell_point(int x, int y, int z) {
 
 }  // namespace
 
-float periodic_perlin(const Vec3& p, int period) noexcept {
+float periodic_perlin(const Vec3& p, int period, int variant) noexcept {
     const std::array<int, 512>& perm = permutation();
     const auto at = [&](int i) { return perm.at(static_cast<std::size_t>(i)); };
     const int xi = static_cast<int>(std::floor(p.x));
@@ -86,14 +86,16 @@ float periodic_perlin(const Vec3& p, int period) noexcept {
     const float y = p.y - static_cast<float>(yi);
     const float z = p.z - static_cast<float>(zi);
     // Perlin's corner hashes, with each lattice coordinate and its +1 wrapped
-    // at the period (his: & 255, and p[] doubled for the +1).
+    // at the period (his: & 255, and p[] doubled for the +1); the variant
+    // offsets the first lookup (still within the doubled table: a < 256).
     const int X0 = wrap(xi, period);
     const int X1 = wrap(xi + 1, period);
     const int Y0 = wrap(yi, period);
     const int Y1 = wrap(yi + 1, period);
     const int Z0 = wrap(zi, period);
     const int Z1 = wrap(zi + 1, period);
-    const auto hash = [&](int a, int b, int c) { return at(at(at(a) + b) + c); };
+    const int v0 = variant & 255;
+    const auto hash = [&](int a, int b, int c) { return at(at(at(a + v0) + b) + c); };
     const float u = fade(x);
     const float v = fade(y);
     const float w = fade(z);
@@ -127,7 +129,7 @@ float periodic_cellular(const Vec3& p, int period) noexcept {
             }
         }
     }
-    return std::clamp(1.0F - nearest, 0.0F, 1.0F);  // F1 is at most about sqrt(3)/2 in a cell
+    return std::clamp(1.0F - nearest, 0.0F, 1.0F);  // F1 can pass 1 (about 0.07 % of points): 0
 }
 
 std::vector<float> detail_volume(int size, int cells, int octaves) {
@@ -170,18 +172,20 @@ std::vector<float> detail_volume(int size, int cells, int octaves) {
 }
 
 std::vector<Vec3> curl_volume(int size, int cells, int octaves) {
-    // Bridson et al. 2.2: three noises for the potential's three components,
-    // "the same noise function evaluated at large offsets" (whole periods,
-    // so the volume still tiles).
+    // Bridson et al. 2.2: three apparently uncorrelated noises for the
+    // potential's three components. They suggest "the same noise function
+    // evaluated at large offsets"; this noise wraps, so an offset of whole
+    // periods gives the same function back, and the curl of (f, f, f) only
+    // swirls across (1, 1, 1). Three variants of it instead.
     const auto potential = [&](const Vec3& q) {
         Vec3 psi(0.0F);
         for (int o = 0; o < octaves; ++o) {
             const int c = cells << o;
             const Vec3 at = q * static_cast<float>(c);
             const float a = std::ldexp(1.0F, -o);
-            psi.x += a * periodic_perlin(at, c);
-            psi.y += a * periodic_perlin(at + Vec3(static_cast<float>(c) * 31.0F, 0.0F, 0.0F), c);
-            psi.z += a * periodic_perlin(at + Vec3(0.0F, static_cast<float>(c) * 57.0F, 0.0F), c);
+            psi.x += a * periodic_perlin(at, c, 0);
+            psi.y += a * periodic_perlin(at, c, 101);
+            psi.z += a * periodic_perlin(at, c, 211);
         }
         return psi;
     };

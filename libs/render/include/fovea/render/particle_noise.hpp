@@ -32,8 +32,9 @@
 namespace fovea {
 
 // Perlin's improved noise at `p`, its lattice wrapping every `period` cells
-// (`period` at most 256). About -1 to 1.
-float periodic_perlin(const Vec3& p, int period) noexcept;
+// (`period` at most 256). About -1 to 1. Each `variant` (0 to 255) is
+// another noise: its first hash lookup offset, as another permutation.
+float periodic_perlin(const Vec3& p, int period, int variant = 0) noexcept;
 
 // Inverted cellular noise at `p`: 1 at a cell's point, falling with the
 // distance to the nearest (one point per cell, `period` cells a side,
@@ -46,9 +47,10 @@ float periodic_cellular(const Vec3& p, int period) noexcept;
 std::vector<float> detail_volume(int size, int cells, int octaves);
 
 // A size^3 volume, x fastest, of curl noise: the curl of three Perlin
-// noises (offset by Bridson's "large offsets"), `cells` lattice cells a
-// side, octaves summed with amplitude halving, tiling. Scaled so its
-// largest length is 1.
+// noises (three variants: Bridson's "large offsets" don't separate a noise
+// that wraps, which would give the three components one function), `cells`
+// lattice cells a side, octaves summed with amplitude halving, tiling.
+// Scaled so its largest length is 1.
 std::vector<Vec3> curl_volume(int size, int cells, int octaves);
 
 }  // namespace fovea

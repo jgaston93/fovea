@@ -43,7 +43,24 @@ TEST(ParticleNoise, CellularWrapsAndIsOneAtItsPoints) {
     }
 }
 
-TEST(ParticleNoise, TheCurlVolumeIsDivergenceFreeAndTiles) {
+TEST(ParticleNoise, VariantsAreDifferentNoises) {
+    double same = 0.0;
+    double total = 0.0;
+    for (int i = 0; i < 500; ++i) {
+        const Vec3 p(0.37F * static_cast<float>(i % 17), 0.53F * static_cast<float>(i % 23),
+                     0.71F * static_cast<float>(i % 29));
+        const float a = periodic_perlin(p, 8, 0);
+        const float b = periodic_perlin(p, 8, 101);
+        same += static_cast<double>(std::abs(a - b));
+        total += static_cast<double>(std::abs(a) + std::abs(b));
+        EXPECT_NEAR(b, periodic_perlin(p + Vec3(8.0F, 0.0F, 8.0F), 8, 101), 1e-5F);  // still wraps
+    }
+    EXPECT_GT(same / total, 0.5);  // unrelated: |a - b| about |a| + |b|
+}
+
+// Divergence-free (Bridson et al. 2007): its divergence by central
+// differences on the volume, small against the derivatives' own size.
+TEST(ParticleNoise, TheCurlVolumeIsDivergenceFree) {
     constexpr int n = 24;
     const std::vector<Vec3> v = curl_volume(n, 2, 2);
     ASSERT_EQ(v.size(), std::size_t{n} * n * n);
@@ -51,8 +68,6 @@ TEST(ParticleNoise, TheCurlVolumeIsDivergenceFreeAndTiles) {
         const auto w = [](int i) { return (i % n + n) % n; };
         return v[static_cast<std::size_t>((w(z) * n + w(y)) * n + w(x))];
     };
-    // Central differences across the volume, wrapping: the divergence
-    // against the gradient's own size (each derivative's), mean over it.
     double div = 0.0;
     double grad = 0.0;
     for (int z = 0; z < n; ++z) {
@@ -72,6 +87,48 @@ TEST(ParticleNoise, TheCurlVolumeIsDivergenceFreeAndTiles) {
         largest = std::max(largest, glm::length(c));
     }
     EXPECT_NEAR(largest, 1.0F, 1e-5F);
+}
+
+// It swirls in three dimensions: its three components are unrelated, so
+// it has no plane it keeps to. (One noise for all three components
+// swirls only across (1, 1, 1): 0.005 of its length lay along it.)
+TEST(ParticleNoise, TheCurlVolumeSwirlsInThreeDimensions) {
+    const std::vector<Vec3> v = curl_volume(32, 4, 3);
+    for (const Vec3& axis :
+         {Vec3(1.0F, 1.0F, 1.0F), Vec3(1.0F, -1.0F, 0.0F), Vec3(0.0F, 0.0F, 1.0F)}) {
+        const Vec3 u = glm::normalize(axis);
+        double along = 0.0;
+        double length = 0.0;
+        for (const Vec3& c : v) {
+            along += static_cast<double>(std::abs(glm::dot(c, u)));
+            length += static_cast<double>(glm::length(c));
+        }
+        EXPECT_GT(along / length, 0.3)
+            << axis.x << " " << axis.y << " " << axis.z;  // isotropic: 0.5
+    }
+}
+
+// It tiles: across the wrap, from the last voxel to the first, it changes
+// no more than between neighbours inside.
+TEST(ParticleNoise, TheCurlVolumeTiles) {
+    constexpr int n = 32;
+    const std::vector<Vec3> v = curl_volume(n, 4, 3);
+    const auto at = [&](int x, int y, int z) {
+        return v[static_cast<std::size_t>((z * n + y) * n + x)];
+    };
+    float inside = 0.0F;
+    float across = 0.0F;
+    for (int z = 0; z < n; ++z) {
+        for (int y = 0; y < n; ++y) {
+            for (int x = 0; x + 1 < n; ++x) {
+                inside = std::max(inside, glm::length(at(x + 1, y, z) - at(x, y, z)));
+            }
+            across = std::max(across, glm::length(at(0, y, z) - at(n - 1, y, z)));
+            across = std::max(across, glm::length(at(y, z, 0) - at(y, z, n - 1)));
+            across = std::max(across, glm::length(at(y, 0, z) - at(y, n - 1, z)));
+        }
+    }
+    EXPECT_LE(across, 1.25F * inside);
 }
 
 TEST(ParticleNoise, TheDetailVolumeIsInRange) {
