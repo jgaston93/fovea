@@ -1,7 +1,9 @@
 # Headless with a host (D-044): Fovea headless, driven over CIGI by the test
 # host, at once (a pipeline: both start together; the host's output is
 # Fovea's ignored input). Fovea must have taken the host's entity updates,
-# answered each frame with a Start of Frame, and written its last frame.
+# sent Start of Frame messages, and written its last frame. Its ports are
+# its own (no other test uses them), but two build trees testing at once
+# would share them: one would fail to bind.
 #   cmake -DFOVEA=... -DHOST=... -DCONFIG=... -DSCRIPT=... -DOUT=... -P headless_host.cmake
 file(REMOVE_RECURSE ${OUT})
 execute_process(
@@ -19,7 +21,7 @@ endif()
 if(CMAKE_MATCH_1 LESS 60)
     message(FATAL_ERROR "only ${CMAKE_MATCH_1} entity updates in 4 s")
 endif()
-if(NOT out MATCHES "0 validation messages")
+if(NOT out MATCHES "(^|\n)0 validation messages")
     message(FATAL_ERROR "validation messages")
 endif()
 if(NOT EXISTS ${OUT}/eye.png)

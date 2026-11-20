@@ -63,7 +63,7 @@ The settings format is documented in `apps/fovea-compiler/settings.hpp`.
 ./build/release/apps/fovea/fovea --headless --seconds 30 --dump out config/cigi-test-host.toml  # driven by a host, offscreen (D-044)
 ```
 
-A headless run without `[host]` stands the views at `[reference_scene]`'s origin and writes the last of its frames, so give it enough frames (`--frames`) for the finer tiles to page in. With `[host]`, the host drives it (D-044): the same loop as on screen (CIGI, Start of Frame, HAT/HOT, particles, `--stats`) with no windows, for `--seconds` or until SIGINT or SIGTERM, then each channel's last frame is written with `--dump`: what the IG drew for the host's last pose, for a host's own tests.
+A headless run without `[host]` stands the views at `[reference_scene]`'s origin and writes the last of its frames, so give it enough frames (`--frames`) for the finer tiles to page in. With `[host]` (or the offscreen presenter with `[host]`, without `--headless`), the host drives it (D-044): the same loop as on screen (CIGI, Start of Frame, HAT/HOT, particles, `--stats`) with no windows, for `--seconds` or until SIGINT or SIGTERM, then each channel's last frame is written with `--dump`: what the IG drew for the host's last pose, for a host's own tests.
 
 A config file describes the display channels, the environment, the database and the host link. `config/channels.example.toml` documents its keys.
 

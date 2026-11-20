@@ -71,7 +71,8 @@ struct Options {
     std::string stats;         // CSV file for per-frame timing, or empty
     bool headless = false;     // render offscreen, whatever the config's presenter
     std::uint32_t frames = 1;  // headless: frames to draw
-    std::string dump;          // headless: directory for each channel's PNG
+    bool frames_given = false;
+    std::string dump;  // headless: directory for each channel's PNG
     bool overlay = false;
     bool clear = false;
     bool identify = false;
@@ -159,6 +160,7 @@ std::optional<Options> parse_args(int argc, char** argv) {
                 return std::nullopt;
             }
             o.frames = n;
+            o.frames_given = true;
         } else if (args[i] == "--stats" && i + 1 < args.size()) {
             o.stats = std::string(args[++i]);
         } else if (args[i] == "--identify" && !o.clear) {
@@ -184,11 +186,14 @@ std::optional<Options> parse_args(int argc, char** argv) {
 }
 
 int usage() {
-    (void)std::fprintf(stderr,
-                       "usage: fovea [--seconds N] [--stats FILE] [--overlay] [--clear | "
-                       "--identify] <config.toml>\n"
-                       "       fovea --headless [--frames N] [--dump DIR] [--clear] <config.toml>\n"
-                       "       fovea --list-monitors\n");
+    (void)std::fprintf(
+        stderr,
+        "usage: fovea [--seconds N] [--stats FILE] [--overlay] [--clear | "
+        "--identify] <config.toml>\n"
+        "       fovea --headless [--frames N] [--dump DIR] [--clear] <config.toml>\n"
+        "       fovea --headless [--seconds N] [--dump DIR] [--stats FILE] [--overlay] "
+        "<config with [host]>\n"
+        "       fovea --list-monitors\n");
     return 2;
 }
 
@@ -726,8 +731,12 @@ int run_headless_host(const Options& options, const fovea::DisplayConfig& config
         std::this_thread::sleep_for(std::chrono::milliseconds(std::max(timeout_ms, 1)));
         return g_stop_requested.load();
     });
-    if (options.dump.empty()) {
-        return code;
+    if (options.dump.empty() || code != 0) {
+        return code;  // a run that failed (said above) has nothing to show
+    }
+    if (renderer->frames_drawn() == 0) {
+        (void)std::fprintf(stderr, "fovea: no frame was drawn, so none is written\n");
+        return 1;
     }
     for (std::uint32_t i = 0; i < renderer->output_count(); ++i) {
         const auto& o = outputs[i];
@@ -902,8 +911,10 @@ int run(const Options& options) {
         // With a host, the host drives it (D-044): its loop, offscreen, for
         // --seconds or until a signal, the last frames written with --dump.
         if (config.host && !options.clear) {
-            if (options.identify) {
-                (void)std::fprintf(stderr, "%s: --identify is for on-screen runs\n",
+            if (options.identify || options.frames_given) {
+                (void)std::fprintf(stderr,
+                                   "%s: headless with a [host], the host drives it: no --identify "
+                                   "or --frames (--seconds, or until SIGINT or SIGTERM)\n",
                                    options.config.c_str());
                 return 1;
             }
@@ -913,10 +924,13 @@ int run(const Options& options) {
             options.identify) {
             (void)std::fprintf(stderr,
                                "%s: --overlay, --stats, --seconds and --identify are for "
-                               "on-screen runs, or headless with a [host]; headless renders "
-                               "--frames frames\n",
+                               "on-screen runs, or headless with a [host] (not --clear); "
+                               "headless renders --frames frames\n",
                                options.config.c_str());
             return 1;
+        }
+        if (config.host) {
+            std::printf("note: [host] isn't used with --clear\n");
         }
         return run_headless(options, config);
     }

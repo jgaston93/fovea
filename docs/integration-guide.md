@@ -126,7 +126,7 @@ A host asks for the terrain's height under a point with HAT/HOT Request (4.1.24,
 
 ### Headless, for a host's tests
 
-With `--headless` and a `[host]`, Fovea runs as it does on screen (CIGI, a Start of Frame each frame, HAT/HOT, particle volumes) with no display or windows, rendering offscreen (on any Vulkan 1.3 driver, a software one too). It stops after `--seconds`, or at SIGINT or SIGTERM, and with `--dump DIR` writes each channel's last frame as `DIR/<channel>.png`: what it drew for the host's last pose. A host can check its own runs against an IG with no display: its poses, time of day and visibility as drawn.
+With `--headless` and a `[host]` (or a config whose presenter is `offscreen`), Fovea runs as it does on screen (CIGI, a Start of Frame each frame, HAT/HOT, particle volumes) with no display or windows, rendering offscreen (on any Vulkan 1.3 driver, a software one too). It stops after `--seconds`, or at SIGINT or SIGTERM, and with `--dump DIR` writes each channel's last frame as `DIR/<channel>.png`: what it drew for the host's last pose. A host can check its own runs against an IG with no display: its poses, time of day and visibility as drawn.
 
 ```sh
 ./build/release/apps/fovea/fovea --headless --seconds 30 --dump out config/cigi-test-host.toml

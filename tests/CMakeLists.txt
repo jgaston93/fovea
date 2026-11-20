@@ -136,6 +136,17 @@ add_test(NAME App.HeadlessFollowsAHost
         -DOUT=headless-host-out -P ${CMAKE_CURRENT_SOURCE_DIR}/headless_host.cmake)
 set_tests_properties(App.HeadlessFollowsAHost PROPERTIES
     ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver" TIMEOUT 90)
+# The host drives it: --frames refused (before rendering: no Vulkan needed);
+# with --clear, the host isn't used, and says so.
+add_test(NAME App.HeadlessWithAHostRefusesFrames
+    COMMAND fovea --headless --frames 5 ${CMAKE_CURRENT_SOURCE_DIR}/data/headless-host.toml)
+set_tests_properties(App.HeadlessWithAHostRefusesFrames PROPERTIES
+    TIMEOUT 20 PASS_REGULAR_EXPRESSION "the host drives it: no --identify or --frames")
+add_test(NAME App.HeadlessClearSaysTheHostIsntUsed
+    COMMAND fovea --headless --clear ${CMAKE_CURRENT_SOURCE_DIR}/data/headless-host.toml)
+set_tests_properties(App.HeadlessClearSaysTheHostIsntUsed PROPERTIES
+    ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver" TIMEOUT 60
+    PASS_REGULAR_EXPRESSION "note: \\[host\\] isn't used with --clear")
 add_test(NAME App.HeadlessRefusesIdentify
     COMMAND fovea --headless --identify ${CMAKE_CURRENT_SOURCE_DIR}/data/one_channel.toml)
 set_tests_properties(App.HeadlessRefusesIdentify PROPERTIES
@@ -152,7 +163,8 @@ set_tests_properties(App.DumpNeedsHeadless PROPERTIES
     TIMEOUT 20 PASS_REGULAR_EXPRESSION "--frames and --dump need --headless")
 if(NOT DEFINED ENV{FOVEA_REQUIRE_VULKAN})
     set_tests_properties(App.OffscreenRendersWithoutADisplay App.OffscreenRendersTheScene
-        App.HeadlessDumpsEachChannel App.HeadlessFollowsAHost PROPERTIES
+        App.HeadlessDumpsEachChannel App.HeadlessFollowsAHost App.HeadlessClearSaysTheHostIsntUsed
+        PROPERTIES
         SKIP_REGULAR_EXPRESSION "no Vulkan loader found|no GPU with Vulkan 1.3")
 endif()
 add_test(NAME App.StatsNeedsTheScene
