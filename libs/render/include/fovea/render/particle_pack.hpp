@@ -46,6 +46,15 @@ struct ParticleLook {
     // gives a mean cosine of 0.74, computed numerically: the asymmetry
     // parameter Ryder et al. (above) give for Saharan dust at 550 nm.
     float forward_scattering = 0.68F;
+    // Detail in the particles (D-043): their density varied by one field of
+    // cellular noise in their origin's frame, shared by every particle, so
+    // overlapping ones make one cloud of billows; its lookup swirled by curl
+    // noise drifting in time; the mass kept on average. Chosen, to tune by
+    // eye: how much it varies (0: none, uniform spheres as before), the
+    // noise's feature size in metres, and the swirl's reach in features.
+    float detail = 0.6F;
+    float detail_size = 2.0F;  // [m]
+    float swirl = 0.5F;
     // A particle's fade in and out (as the adapter's).
     std::chrono::duration<float> fade{0.25F};
 };

@@ -32,10 +32,12 @@ using namespace std::chrono_literals;
 constexpr std::uint32_t kW = 160;
 constexpr std::uint32_t kH = 90;
 
-std::unique_ptr<Renderer> make_renderer(std::size_t capacity, const ParticleQuality& quality = {}) {
+std::unique_ptr<Renderer> make_renderer(std::size_t capacity, const ParticleQuality& quality = {},
+                                        const ParticleLook& look = {}) {
     RendererOptions options;
     options.particle_capacity = capacity;
     options.particle_quality = quality;
+    options.particle_look = look;
     options.msaa = 1;
     if (std::getenv("FOVEA_REQUIRE_VALIDATION") != nullptr) {
         options.validation = Validation::required;
@@ -287,6 +289,141 @@ TEST(ParticlesRender, APuffInAnothersShadowIsDarker) {
     // Measured on lavapipe: 402 lit, 313 shadowed (summed over RGB), the shadowed bluer:
     // what's left of the light there is the sky's, which isn't shadowed.
     EXPECT_LT(b.r + b.g + b.b, 0.85 * (a.r + a.g + a.b));
+}
+
+// The dust's cover at each pixel: its difference from the empty scene,
+// red and blue.
+std::vector<int> cover(const std::vector<std::uint8_t>& px,
+                       const std::vector<std::uint8_t>& empty) {
+    std::vector<int> c(std::size_t{kW} * kH);
+    for (std::size_t i = 0; i < c.size(); ++i) {
+        c[i] = std::abs(static_cast<int>(px[i * 4]) - static_cast<int>(empty[i * 4])) +
+               std::abs(static_cast<int>(px[i * 4 + 2]) - static_cast<int>(empty[i * 4 + 2]));
+    }
+    return c;
+}
+
+// A puff filling the middle of the view, drawn with and without detail
+// (D-043), and the empty scene.
+struct DetailShots {
+    std::vector<std::uint8_t> plain, detailed, empty;
+};
+DetailShots detail_shots(const ParticleLook& detailed_look, float density, bool& have_vulkan) {
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleFrame f = frame_at_eye(view, 10);
+    add(f, t, Vec3(0.0F, 30.0F, 2.0F), 8.0F, density);
+    DetailShots s;
+    ParticleLook smooth = detailed_look;
+    smooth.detail = 0.0F;
+    {
+        auto a = make_renderer(10, {}, smooth);  // one renderer at a time
+        have_vulkan = a != nullptr;
+        if (!have_vulkan) {
+            return s;
+        }
+        a->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        s.plain = draw(*a, view, &f, t, "particles-smooth.png");
+        s.empty = draw(*a, view, nullptr, t, nullptr);
+        EXPECT_EQ(a->validation_messages(), 0U);
+    }
+    auto b = make_renderer(10, {}, detailed_look);
+    b->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+    s.detailed = draw(*b, view, &f, t, "particles-detail.png");
+    EXPECT_EQ(b->validation_messages(), 0U);
+    return s;
+}
+
+// The detail varies the dust's density: inside the puff, its cover changes
+// from pixel to pixel far more than a smooth sphere's does.
+TEST(ParticlesRender, DetailBreaksUpAPuff) {
+    ParticleLook look;
+    look.detail = 0.8F;
+    look.detail_size = 1.0F;
+    bool vulkan = false;
+    const DetailShots s = detail_shots(look, 2e-4F, vulkan);  // optical depth 1 through the middle
+    if (!vulkan) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    // Over the puff's upper middle (a box within its disc, against the sky:
+    // the horizon's edge would swamp it), each pixel's cover
+    // against its neighbours' mean: a sphere's changes smoothly.
+    const auto roughness = [](const std::vector<int>& c) {
+        double sum = 0.0;
+        for (std::uint32_t y = kH / 2 - 20; y < kH / 2 - 4; ++y) {  // against the sky
+            for (std::uint32_t x = kW / 2 - 12; x < kW / 2 + 12; ++x) {
+                const auto at = [&](std::uint32_t u, std::uint32_t v) {
+                    return c[std::size_t{v} * kW + u];
+                };
+                const double around =
+                    (at(x - 1, y) + at(x + 1, y) + at(x, y - 1) + at(x, y + 1)) / 4.0;
+                sum += std::abs(at(x, y) - around);
+            }
+        }
+        return sum / (16.0 * 24.0);
+    };
+    const double smooth = roughness(cover(s.plain, s.empty));
+    const double rough = roughness(cover(s.detailed, s.empty));
+    // Measured on lavapipe: 0.47 smooth, 1.11 detailed.
+    EXPECT_GT(rough, 1.8 * smooth) << "roughness " << smooth << " smooth, " << rough << " detailed";
+}
+
+// The detail moves the dust about but keeps its mass (D-043): a puff thin
+// enough that its cover goes nearly as its optical depth (0.26 through the
+// middle), its cover summed over its whole disc, about the same with
+// detail as without. Without the base's and the detail's normalisation
+// it'd be about a quarter less.
+TEST(ParticlesRender, DetailKeepsTheMass) {
+    ParticleLook look;
+    look.detail = 0.8F;
+    look.detail_size = 1.0F;
+    bool vulkan = false;
+    const DetailShots s = detail_shots(look, 5e-5F, vulkan);
+    if (!vulkan) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const auto total = [](const std::vector<int>& c) {
+        double sum = 0.0;
+        for (const int x : c) {
+            sum += x;
+        }
+        return sum;
+    };
+    const double smooth = total(cover(s.plain, s.empty));
+    const double detailed = total(cover(s.detailed, s.empty));
+    EXPECT_GT(smooth, 5000.0);
+    EXPECT_NEAR(detailed, smooth, 0.06 * smooth)
+        << "total cover " << smooth << " smooth, " << detailed << " detailed";
+}
+
+// The swirl drifts in time (D-043): the same puff a few seconds on looks
+// different with swirl, the same without.
+TEST(ParticlesRender, TheSwirlDriftsInTime) {
+    ParticleLook still;
+    still.swirl = 0.0F;
+    still.detail_size = 1.0F;
+    ParticleLook swirling = still;
+    swirling.swirl = 1.5F;
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleFrame f = frame_at_eye(view, 10);
+    add(f, t, Vec3(0.0F, 30.0F, 2.0F), 8.0F, 2e-4F);
+    std::vector<std::uint8_t> still_then;
+    std::vector<std::uint8_t> still_later;
+    {
+        auto a = make_renderer(10, {}, still);  // one renderer at a time
+        FOVEA_NEED_VULKAN(a);
+        still_then = draw(*a, view, &f, t, nullptr);
+        still_later = draw(*a, view, &f, t + 4s, nullptr);
+        EXPECT_EQ(a->validation_messages(), 0U);
+    }
+    auto b = make_renderer(10, {}, swirling);
+    ASSERT_NE(b, nullptr);
+    const auto swirl_then = draw(*b, view, &f, t, "particles-swirl-0.png");
+    const auto swirl_later = draw(*b, view, &f, t + 4s, "particles-swirl-4.png");
+    EXPECT_EQ(b->validation_messages(), 0U);
+    EXPECT_EQ(difference(still_then, still_later), 0.0);
+    EXPECT_GT(difference(swirl_then, swirl_later), 0.02) << difference(swirl_then, swirl_later);
 }
 
 // An output the frame wasn't given a view for draws no particles: its

@@ -82,6 +82,9 @@ private:
     };
     void release();
     Image make_image(VkExtent2D extent, VkFormat format) const;
+    // A size^3 sampled volume filled with `bytes` (format's texels, x
+    // fastest), uploaded once and left SHADER_READ_ONLY_OPTIMAL.
+    Image make_volume(std::uint32_t size, VkFormat format, std::span<const std::byte> bytes) const;
     void destroy_image(Image& i) const;
 
     GpuContext gpu_;
@@ -91,6 +94,7 @@ private:
     std::vector<std::size_t> counts_;
     std::vector<std::size_t> sorted_views_;  // per slot: the outputs pack sorted for
     std::vector<DVec3> anchors_;
+    std::vector<float> times_;                 // per slot: seconds the detail has drifted (D-043)
     std::vector<std::uint8_t> front_to_back_;  // per slot and output
     std::vector<VkDescriptorSet> view_sets_;   // per output: depth, light, image
     std::vector<Image> particle_images_;       // per output, its render size (or half)
@@ -98,6 +102,9 @@ private:
     Image light_;                                  // shared, used by one view at a time
     VkFormat light_format_ = VK_FORMAT_UNDEFINED;  // R32F where it blends and filters, else R16F
     VkSampler light_sampler_ = VK_NULL_HANDLE;
+    Image detail_;                              // cellular noise, R8 (D-043)
+    Image curl_;                                // curl noise, RGBA16F
+    VkSampler noise_sampler_ = VK_NULL_HANDLE;  // linear, wrapping
     // Scratch for the sort, sized at construction.
     std::vector<Vec3> centres_;
     std::vector<std::uint32_t> keys_;

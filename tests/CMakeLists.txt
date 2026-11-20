@@ -9,6 +9,7 @@ add_executable(fovea_unit_tests
     unit/test_cigi.cpp
     unit/test_cigi_adapter.cpp
     unit/test_cigi_test_host.cpp
+    unit/test_particle_noise.cpp
     unit/test_particle_pack.cpp
     unit/test_puff_stream.cpp
     unit/test_config.cpp
