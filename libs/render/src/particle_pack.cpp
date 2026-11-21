@@ -88,7 +88,7 @@ GpuVolumeSpace volume_space(std::span<const Vec3> centres, std::span<const GpuPa
     const Vec3 mid = (lo + hi) * 0.5F;
     const Vec3 extent = hi - lo;
     const auto need = static_cast<double>(std::max(std::max(extent.x, extent.y), extent.z));
-    const double count = static_cast<double>(v.size);
+    const auto count = static_cast<double>(v.size);
     double voxel = std::exp2(std::ceil(std::log2(std::max(need, 1.0) / (count - 2.0))));
     voxel = std::min(
         voxel,
@@ -102,7 +102,7 @@ GpuVolumeSpace volume_space(std::span<const Vec3> centres, std::span<const GpuPa
     v.voxel = static_cast<float>(voxel);
     v.inv_voxel = static_cast<float>(1.0 / voxel);
     v.spread = std::max(spread, 1.0F);
-    const double sp = static_cast<double>(v.spread);
+    const auto sp = static_cast<double>(v.spread);
     const double cube = sp * sp * sp;
     const double mean = counted > 0 ? extinction_sum / static_cast<double>(counted) / cube : 0.0;
     v.inv_reference = mean > 0.0 ? static_cast<float>(1.0 / mean) : 1.0F;
@@ -177,8 +177,8 @@ float volume_erosion_gain(std::span<const std::uint32_t, 256> histogram, float d
         p[b] /= count;
         mean += p[b] * level[b];
     }
-    const double d = static_cast<double>(detail);
-    const double e = static_cast<double>(erosion);
+    const auto d = static_cast<double>(detail);
+    const auto e = static_cast<double>(erosion);
     const double normaliser = std::max(1.0 - d * (1.0 - mean), 1e-6);
     constexpr double kBaseMean = 0.7645;  // particles.slang's
     // A lone particle, as particles.slang's fs_volume has it: its density
