@@ -55,6 +55,10 @@ struct ParticleLook {
     float detail = 0.6F;
     float detail_size = 2.0F;  // [m]
     float swirl = 0.5F;
+    // How far the same noise eats into each particle's outer shell (D-051):
+    // the field subtracted there, so its outline follows the noise rather
+    // than a sphere's. 0: not at all. Needs detail above 0.
+    float erosion = 0.0F;
     // A particle's fade in and out (as the adapter's).
     std::chrono::duration<float> fade{0.25F};
 };
@@ -120,14 +124,23 @@ struct GpuLightSpace {
     std::array<float, 3> u{};       // ECEF unit vectors across the light buffer
     float unused0 = 0.0F;
     std::array<float, 3> v{};
-    float unused1 = 0.0F;
+    float erosion = 0.0F;  // the look's (D-051): fixed at start, carried here for want of push room
     std::array<float, 3> travel{};  // the light's direction of travel (away from the sun)
-    float unused2 = 0.0F;
+    float erosion_gain = 1.0F;  // the eroded density scaled back to the mass (D-051, erosion_gain)
 };
 static_assert(sizeof(GpuLightSpace) == 64, "must match LightSpace in particles.slang");
 
 // The light space over particles with these centres, for light travelling
 // along `travel` (a unit vector). No allocation.
+// What the erosion (D-051) takes from a particle's mass, as the factor that
+// gives it back: the particle's density integrated over its volume as
+// particles.slang has it (the base, softened; the detail's factor) without
+// erosion, over the same with it. `histogram` counts the detail volume's
+// values as the GPU stores them (R8: level k is k / 255). 1 at erosion 0;
+// more as it rises. No allocation.
+float erosion_gain(std::span<const std::uint32_t, 256> histogram, float detail,
+                   float erosion) noexcept;
+
 GpuLightSpace light_space(std::span<const Vec3> centres, std::span<const GpuParticle> particles,
                           const Vec3& travel) noexcept;
 

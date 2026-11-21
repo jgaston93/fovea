@@ -198,4 +198,33 @@ TEST(ParticleSlicing, TheCentralRayOfALopsidedChannel) {
 }
 
 }  // namespace
+
+// The erosion's gain (D-051): 1 without erosion, and rising with it, as the
+// erosion takes more of the mass. A flat detail volume (every level mid
+// grey) and the real one's shape both.
+TEST(ParticleErosion, TheGainGivesTheMassBack) {
+    std::array<std::uint32_t, 256> flat{};
+    flat[128] = 1000;
+    std::array<std::uint32_t, 256> spread{};
+    for (std::size_t k = 0; k < spread.size(); ++k) {
+        spread[k] = 10;
+    }
+    for (const auto& h : {flat, spread}) {
+        EXPECT_EQ(erosion_gain(h, 0.6F, 0.0F), 1.0F);
+        const float light = erosion_gain(h, 0.6F, 0.3F);
+        const float strong = erosion_gain(h, 0.6F, 0.8F);
+        EXPECT_GT(light, 1.0F);
+        EXPECT_GT(strong, light);
+        EXPECT_LT(strong, 20.0F);
+    }
+    // An empty histogram: nothing to weigh, no gain.
+    EXPECT_EQ(erosion_gain(std::array<std::uint32_t, 256>{}, 0.6F, 0.6F), 1.0F);
+    // With the field everywhere 1 (n = 1), nothing is eroded but the outer
+    // quarter of s's ramp (4 s, saturated): a gain of a few percent.
+    std::array<std::uint32_t, 256> white{};
+    white[255] = 1;
+    EXPECT_GT(erosion_gain(white, 0.6F, 0.8F), 1.0F);
+    EXPECT_LT(erosion_gain(white, 0.6F, 0.8F), 1.1F);
+}
+
 }  // namespace fovea

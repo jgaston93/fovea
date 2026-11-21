@@ -128,6 +128,9 @@ struct ParticlesConfig {
     double detail = 0.6;
     double detail_size = 2.0;
     double swirl = 0.5;
+    // How far the noise eats into each particle's edge (D-051; 0: not at all,
+    // its outline a sphere's), 0 to 1.
+    double erosion = 0.0;
     // Cost against quality (D-042), fixed at start: self-shadowing by
     // half-angle slicing (D-041) and its slices and light buffer (texels a
     // side); the particles drawn at full or half the views' resolution

@@ -60,6 +60,48 @@ void particle_centres(std::span<const GpuParticle> particles, std::span<const Gp
     }
 }
 
+float erosion_gain(std::span<const std::uint32_t, 256> histogram, float detail,
+                   float erosion) noexcept {
+    if (erosion <= 0.0F) {
+        return 1.0F;
+    }
+    // The detail volume's mean, as the shader's kDetailMean is (its factor's
+    // normaliser cancels in the ratio, so only its shape matters here).
+    double count = 0.0;
+    for (const std::uint32_t c : histogram) {
+        count += c;
+    }
+    if (count <= 0.0) {
+        return 1.0F;
+    }
+    // Over the volume: r^2 at the midpoints of 512 shells of equal volume,
+    // each as likely; n by the histogram. Both sums as the shader weighs a
+    // point: the base w, and eroded(w, r^2, n), times the detail's factor.
+    constexpr int kShells = 512;
+    double with = 0.0;
+    double without = 0.0;
+    for (int k = 0; k < kShells; ++k) {
+        const double u = (k + 0.5) / kShells;  // the volume inside: r^3
+        const double r2 = std::pow(u, 2.0 / 3.0);
+        const double w = std::clamp(3.0 * (1.0 - r2), 0.0, 1.0);
+        const double s = std::max(1.0 - r2, 0.0);
+        for (std::size_t level = 0; level < histogram.size(); ++level) {
+            if (histogram[level] == 0) {
+                continue;
+            }
+            const double n = static_cast<double>(level) / 255.0;
+            const double p = histogram[level] / count;
+            const double f =
+                1.0 - static_cast<double>(detail) * (1.0 - n);  // the factor, less its normaliser
+            const double t = static_cast<double>(erosion) * (1.0 - n);
+            const double e = w * std::clamp((s - t) / std::max(1.0 - t, 1e-3) * 4.0, 0.0, 1.0);
+            with += p * e * f;
+            without += p * w * f;
+        }
+    }
+    return with > 0.0 ? static_cast<float>(without / with) : 1.0F;
+}
+
 GpuLightSpace light_space(std::span<const Vec3> centres, std::span<const GpuParticle> particles,
                           const Vec3& travel) noexcept {
     GpuLightSpace l;

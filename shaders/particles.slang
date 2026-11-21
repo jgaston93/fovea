@@ -57,9 +57,9 @@ struct LightSpace {
     float3 u;  // across the light buffer
     float unused0;
     float3 v;
-    float unused1;
+    float erosion;  // the look's (D-051)
     float3 travel;  // the light's direction of travel
-    float unused2;
+    float erosion_gain;  // the eroded density back to the mass (D-051)
 };
 [[vk::binding(0, 0)]] StructuredBuffer<Particle> particles;
 [[vk::binding(1, 0)]] StructuredBuffer<Origin> origins;
@@ -245,12 +245,34 @@ static const float kDetailMean = 0.4586;  // the detail volume's mean (particle_
 static const float kBaseMean = 0.7645;    // the base's mean over the sphere
 // The noise's factor at a point (metres in the origin's frame): 1 on
 // average over the field.
-float detail_factor(float3 enu) {
+// The field at a point (metres in the origin's frame), 0 to 1, swirled.
+float detail_at(float3 enu) {
     float3 at = enu / (4.0 * push.detail_size);
     const float3 curl_at = at * 0.5 + float3(0.0, 0.0, 0.03 * push.time);
     at += curl_noise.SampleLevel(noise_sampler, curl_at, 0.0).xyz * (0.25 * push.swirl);
-    const float n = detail_noise.SampleLevel(noise_sampler, at, 0.0);
+    return detail_noise.SampleLevel(noise_sampler, at, 0.0);
+}
+// The noise's factor for the field's value there: 1 on average over the field.
+float detail_factor(float n) {
     return (1.0 - push.detail * (1.0 - n)) / (1.0 - push.detail * (1.0 - kDetailMean));
+}
+// The particle eaten by the field (D-051), after Schneider and Vos's
+// clouds, whose detail is subtracted "at the edges of the cloud" (SIGGRAPH
+// 2015, slide 39; read for D-043). Against s = 1 - r^2 (1 at the centre, 0
+// at the surface), less t = erosion x (1 - n), stretched back to 1 at the
+// centre: the particle ends where s = t, anywhere from its surface (the
+// field high) in to sqrt(erosion) of its radius from it (the field low), so
+// its outline follows the field's billows, not a sphere. Eroding only the
+// base's outer shell (r^2 past 2/3) was tried first: a small, dense puff is
+// mostly core, and stayed a ball. The base w is kept inside, so with no
+// erosion it's as before: w at erosion 0.
+float eroded(float w, float r2, float n, float erosion) {
+    if (erosion <= 0.0) {
+        return w;
+    }
+    const float t = erosion * (1.0 - n);
+    const float s = max(1.0 - r2, 0.0);
+    return w * saturate((s - t) / max(1.0 - t, 1e-3) * 4.0);
 }
 // The base, min(1, 3 (1 - r^2)), integrated along a line `b2` (squared, in
 // radii) from the centre, from its closest point to `s` radii along it
@@ -269,6 +291,9 @@ float base_along(float s, float b2) {
     return s < 0.0 ? -g : g;
 }
 static const int kDetailSamples = 4;  // along each pixel's chord through a puff
+// With erosion (D-051): its edges are sharper than the detail's variation, and
+// 4 samples took 14 % of a thin puff's cover (8: 5 %).
+static const int kErodedSamples = 8;
 
 [shader("fragment")]
 float4 fs_particles(ParticleVertex i) : SV_Target {
@@ -346,16 +371,21 @@ float4 fs_particles(ParticleVertex i) : SV_Target {
                            (length_inside * inv_r * kBaseMean);
         float weighted = 0.0;
         float weights = 0.0;
-        const float step = length_inside / float(kDetailSamples);
-        for (int k = 0; k < kDetailSamples; ++k) {
+        const int samples = light_space[0].erosion > 0.0 ? kErodedSamples : kDetailSamples;
+        const float step = length_inside / float(samples);
+        for (int k = 0; k < samples; ++k) {
             const float t = enter + (float(k) + 0.5) * step;
             const float3 off = dir * t - i.centre;
             const float w = saturate((1.0 - dot(off, off) * inv_r * inv_r) * 3.0);
             const float3 enu = i.enu + float3(dot(off, o.east), dot(off, o.north), dot(off, o.up));
-            weighted += w * detail_factor(enu);
+            const float n = detail_at(enu);
+            // Each sample weighted by the base there, eroded (D-051), over the
+            // base's own weights: with no erosion, as before.
+            weighted += eroded(w, dot(off, off) * inv_r * inv_r, n, light_space[0].erosion) * detail_factor(n);
             weights += w;
         }
-        density = base * (weights > 0.0 ? weighted / weights : 1.0);
+        // The erosion's mass given back (D-051): 1 without erosion.
+        density = base * (weights > 0.0 ? weighted / weights : 1.0) * light_space[0].erosion_gain;
     }
     const float opacity = 1.0 - exp(-i.extinction * density * length_inside);
     if (opacity < 1e-4) {

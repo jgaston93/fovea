@@ -396,6 +396,111 @@ TEST(ParticlesRender, DetailKeepsTheMass) {
         << "total cover " << smooth << " smooth, " << detailed << " detailed";
 }
 
+// The erosion (D-051) eats into the puff, its mass given back: a puff thin
+// enough that its cover goes nearly as its optical depth, its cover summed
+// over the disc about the same eroded as not.
+TEST(ParticlesRender, ErosionKeepsTheMass) {
+    ParticleLook look;
+    look.detail = 0.6F;
+    look.detail_size = 1.0F;
+    look.erosion = 0.6F;
+    bool vulkan = false;
+    const DetailShots s = detail_shots(look, 1.5e-5F, vulkan);
+    if (!vulkan) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const auto total = [](const std::vector<int>& c) {
+        double sum = 0.0;
+        for (const int x : c) {
+            sum += x;
+        }
+        return sum;
+    };
+    const double smooth = total(cover(s.plain, s.empty));
+    const double eroded = total(cover(s.detailed, s.empty));
+    std::printf("total cover: smooth %.0f, eroded %.0f\n", smooth, eroded);
+    EXPECT_GT(smooth, 1500.0);
+    // Measured on lavapipe: 4.6 % less (with 4 samples a chord, 14 %).
+    EXPECT_NEAR(eroded, smooth, 0.08 * smooth)
+        << "total cover " << smooth << " smooth, " << eroded << " eroded";
+}
+
+// The erosion breaks the puff's outline (D-051): a dense puff, its cover
+// along a ring at 85 % of its disc's radius varies far more eroded than
+// with the detail alone (which leaves the outline a circle).
+TEST(ParticlesRender, ErosionBreaksTheOutline) {
+    ParticleLook detail_only;
+    detail_only.detail = 0.6F;
+    detail_only.detail_size = 1.0F;
+    ParticleLook eroding = detail_only;
+    eroding.erosion = 0.6F;
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleFrame f = frame_at_eye(view, 10);
+    add(f, t, Vec3(0.0F, 30.0F, 2.0F), 8.0F, 2e-3F);
+    std::vector<std::uint8_t> plain;
+    std::vector<std::uint8_t> eroded;
+    std::vector<std::uint8_t> empty;
+    {
+        auto a = make_renderer(10, {}, detail_only);
+        if (a == nullptr) {
+            GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+        }
+        a->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        plain = draw(*a, view, &f, t, "particles-outline-detail.png");
+        empty = draw(*a, view, nullptr, t, nullptr);
+    }
+    {
+        auto b = make_renderer(10, {}, eroding);
+        b->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        eroded = draw(*b, view, &f, t, "particles-outline-eroded.png");
+        EXPECT_EQ(b->validation_messages(), 0U);
+    }
+    // The disc: the pixels the uneroded puff covers at all, their centre and
+    // radius from their count.
+    const std::vector<int> cp = cover(plain, empty);
+    const std::vector<int> ce = cover(eroded, empty);
+    double cx = 0.0;
+    double cy = 0.0;
+    double n = 0.0;
+    for (std::uint32_t y = 0; y < kH; ++y) {
+        for (std::uint32_t x = 0; x < kW; ++x) {
+            if (cp[std::size_t{y} * kW + x] > 8) {
+                cx += x;
+                cy += y;
+                n += 1.0;
+            }
+        }
+    }
+    ASSERT_GT(n, 400.0);
+    cx /= n;
+    cy /= n;
+    const double radius = std::sqrt(n / 3.14159265);
+    const auto spread = [&](const std::vector<int>& c) {
+        double sum = 0.0;
+        double sum2 = 0.0;
+        int k = 0;
+        for (int a = 0; a < 180; ++a) {
+            const double th = a * 3.14159265 / 90.0;
+            const auto x = static_cast<int>(cx + 0.85 * radius * std::cos(th));
+            const auto y = static_cast<int>(cy + 0.85 * radius * std::sin(th));
+            if (x < 0 || y < 0 || x >= static_cast<int>(kW) || y >= static_cast<int>(kH)) {
+                continue;
+            }
+            const double v = c[static_cast<std::size_t>(y) * kW + static_cast<std::size_t>(x)];
+            sum += v;
+            sum2 += v * v;
+            ++k;
+        }
+        const double mean = sum / k;
+        return std::sqrt(std::max(sum2 / k - mean * mean, 0.0)) / std::max(mean, 1.0);
+    };
+    const double round = spread(cp);
+    const double broken = spread(ce);
+    std::printf("the outline's spread along the ring: detail %.3f, eroded %.3f\n", round, broken);
+    EXPECT_GT(broken, 1.5 * round);
+}
+
 // The swirl drifts in time (D-043): the same puff a few seconds on looks
 // different with swirl, the same without.
 TEST(ParticlesRender, TheSwirlDriftsInTime) {

@@ -436,6 +436,9 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
                     std::lround(std::clamp(detail[k], 0.0F, 1.0F) * 255.0F));
             }
             detail_ = make_volume(kVolumeSize, VK_FORMAT_R8_UNORM, std::as_bytes(std::span(d8)));
+            for (const std::uint8_t v : d8) {
+                ++detail_histogram_.at(v);
+            }
             const std::vector<Vec3> curl = curl_volume(kVolumeSize, kVolumeCells, kVolumeOctaves);
             std::vector<std::uint16_t> c16(curl.size() * 4);
             for (std::size_t k = 0; k < curl.size(); ++k) {
@@ -683,7 +686,14 @@ std::size_t ParticlesGpu::pack(std::uint32_t slot, const ParticleFrame& frame, L
     particle_centres(packed, origins, centres);
     const Vec3 travel =
         -Vec3(static_cast<float>(sun.x), static_cast<float>(sun.y), static_cast<float>(sun.z));
-    const GpuLightSpace ls = light_space(centres, packed, travel);
+    GpuLightSpace ls = light_space(centres, packed, travel);
+    ls.erosion = look.erosion;  // D-051
+    if (look.detail != gain_detail_ || look.erosion != gain_erosion_) {
+        erosion_gain_ = erosion_gain(detail_histogram_, look.detail, look.erosion);
+        gain_detail_ = look.detail;
+        gain_erosion_ = look.erosion;
+    }
+    ls.erosion_gain = erosion_gain_;
     std::memcpy(base + kLightSpaceAt, &ls, sizeof(ls));
     const std::size_t outputs = view_sets_.size();
     auto* order = static_cast<std::uint32_t*>(s.order_mapped);
