@@ -373,6 +373,7 @@ fovea::RendererOptions renderer_options(const fovea::DisplayConfig& config) {
         r.particle_quality.slices = p.slices;
         r.particle_quality.light_buffer = p.light_buffer;
         r.particle_quality.half_resolution = p.half_resolution;
+        r.particle_quality.volume = p.volume;
     }
     return r;
 }

@@ -582,3 +582,55 @@ TEST(ParticlesRender, DrawingThemAllocatesNothing) {
 
 }  // namespace
 }  // namespace fovea
+
+namespace fovea {
+namespace {
+
+// Drawn as a volume (D-052): a puff's cover about the same as the puffs'
+// (the same optical depth, now through a grid), no validation message, and
+// the scene beside it untouched.
+TEST(ParticlesVolume, APuffDrawsAsTheSamePuff) {
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleFrame f = frame_at_eye(view, 10);
+    add(f, t, Vec3(0.0F, 30.0F, 2.0F), 8.0F, 5e-5F);
+    ParticleLook look;
+    look.detail = 0.0F;  // the grid alone
+    std::vector<std::uint8_t> puffs;
+    std::vector<std::uint8_t> volume;
+    std::vector<std::uint8_t> empty;
+    {
+        auto a = make_renderer(10, {}, look);
+        if (a == nullptr) {
+            GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+        }
+        a->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        puffs = draw(*a, view, &f, t, "volume-as-puffs.png");
+        empty = draw(*a, view, nullptr, t, nullptr);
+    }
+    {
+        ParticleQuality q;
+        q.volume = true;
+        q.volume_size = 64;
+        q.volume_light_size = 32;
+        auto b = make_renderer(10, q, look);
+        b->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        volume = draw(*b, view, &f, t, "volume-as-volume.png");
+        EXPECT_EQ(b->validation_messages(), 0U);
+    }
+    const auto total = [](const std::vector<int>& c) {
+        double sum = 0.0;
+        for (const int x : c) {
+            sum += x;
+        }
+        return sum;
+    };
+    const double p = total(cover(puffs, empty));
+    const double v = total(cover(volume, empty));
+    std::printf("total cover: puffs %.0f, volume %.0f\n", p, v);
+    EXPECT_GT(p, 5000.0);
+    EXPECT_NEAR(v, p, 0.2 * p);
+}
+
+}  // namespace
+}  // namespace fovea

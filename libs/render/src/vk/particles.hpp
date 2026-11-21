@@ -34,6 +34,12 @@ public:
         VkShaderModule fs_light = VK_NULL_HANDLE;
         VkShaderModule vs_composite = VK_NULL_HANDLE;
         VkShaderModule fs_composite = VK_NULL_HANDLE;
+        // The volume (D-052).
+        VkShaderModule cs_volume_inject = VK_NULL_HANDLE;
+        VkShaderModule cs_volume_convert = VK_NULL_HANDLE;
+        VkShaderModule cs_volume_sun = VK_NULL_HANDLE;
+        VkShaderModule vs_volume = VK_NULL_HANDLE;
+        VkShaderModule fs_volume = VK_NULL_HANDLE;
     };
     ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uint32_t slots,
                  std::span<const VkExtent2D> extents, VkFormat colour, const Modules& modules,
@@ -125,6 +131,21 @@ private:
     VkPipeline under_ = VK_NULL_HANDLE;  // front to back from the eye
     VkPipeline light_pipeline_ = VK_NULL_HANDLE;
     VkPipeline composite_ = VK_NULL_HANDLE;
+    // The volume (D-052): the fixed-point accumulation, the extinction, the
+    // optical depth toward the sun (1 voxel each when not drawn as a volume,
+    // so the descriptors are always valid); their set, the passes.
+    Image volume_accumulate_;
+    Image volume_density_;
+    Image volume_sun_;
+    VkDescriptorSetLayout volume_layout_ = VK_NULL_HANDLE;
+    VkDescriptorSet volume_set_ = VK_NULL_HANDLE;
+    VkPipeline volume_inject_ = VK_NULL_HANDLE;
+    VkPipeline volume_convert_ = VK_NULL_HANDLE;
+    VkPipeline volume_sun_pass_ = VK_NULL_HANDLE;
+    VkPipeline volume_march_ = VK_NULL_HANDLE;
+    Image make_volume_target(std::uint32_t size, VkFormat format) const;
+    void record_volume(VkCommandBuffer cmd, std::uint32_t slot,
+                       std::uint32_t lighting_offset) const;
 };
 
 }  // namespace fovea

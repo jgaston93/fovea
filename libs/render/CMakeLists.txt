@@ -92,5 +92,16 @@ fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" vs
                  kVsParticleComposite)
 fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" fs_composite fragment
                  kFsParticleComposite)
+# Drawn as a volume (D-052): injected, converted, the sun's depth, marched.
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" cs_volume_inject compute
+                 kCsVolumeInject)
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" cs_volume_convert compute
+                 kCsVolumeConvert)
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" cs_volume_sun compute
+                 kCsVolumeSun)
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" vs_volume vertex
+                 kVsVolume)
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" fs_volume fragment
+                 kFsVolume)
 # Just the generated shader headers: what clang-tidy needs from a build.
 add_custom_target(fovea_shaders DEPENDS ${FOVEA_SHADER_HEADERS})

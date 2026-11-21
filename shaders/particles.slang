@@ -67,6 +67,17 @@ struct LightSpace {
 // Each view's drawing order (its sort along the half vector), from
 // push.order_base.
 [[vk::binding(3, 0)]] StructuredBuffer<uint> order;
+// The volume's box and sizes (D-052), when [particles] renderer = "volume":
+// mirrors GpuVolumeSpace in particle_pack.hpp.
+struct VolumeSpace {
+    float3 corner;    // the box's lowest corner from the anchor, along `axes` (ECEF)
+    float voxel;      // a voxel's side, metres
+    uint size;        // voxels a side of the density volume
+    uint light_size;  // voxels a side of the sun's volume
+    float inv_voxel;
+    uint particles;   // how many to inject
+};
+[[vk::binding(4, 0)]] StructuredBuffer<VolumeSpace> volume_space;
 // The view's resolved depth (reverse-Z, infinite far plane), read by pixel.
 [[vk::binding(0, 2)]] Texture2D<float> scene_depth;
 // The light buffer: optical depth toward the light, by light-space position.
@@ -79,6 +90,14 @@ struct LightSpace {
 [[vk::binding(4, 2)]] Texture3D<float> detail_noise;
 [[vk::binding(5, 2)]] Texture3D<float4> curl_noise;
 [[vk::binding(6, 2)]] SamplerState noise_sampler;
+// The volume (D-052): the density (extinction per metre) and the optical
+// depth toward the sun, both over the box, sampled filtered.
+[[vk::binding(8, 2)]] Texture3D<float> volume_density;
+[[vk::binding(9, 2)]] Texture3D<float> volume_sun_depth;
+// Written by the volume's compute passes (set 3).
+[[vk::binding(0, 3)]] RWTexture3D<uint> volume_accumulate;
+[[vk::binding(1, 3)]] RWTexture3D<float> volume_density_out;
+[[vk::binding(2, 3)]] RWTexture3D<float> volume_sun_out;
 
 // Mirrors ParticlePush in particles.cpp.
 struct ParticlePush {
@@ -438,3 +457,240 @@ float4 fs_composite(CompositeVertex i) : SV_Target {
     // centre); at half, filtered up (D-042).
     return particle_image.SampleLevel(light_sampler, i.position.xy * push.inv_target, 0.0);
 }
+
+// ---- The volume (D-052) ----
+//
+// One box over the particles, in the anchor's frame with ECEF axes, shared
+// by every view: each particle's extinction added into it (fixed point,
+// atomics: Hillaire 2015's particle voxelization, its "high quality"
+// sphere fill), converted to floats, then the optical depth toward the sun
+// marched over it once a frame (his volumetric shadow maps), and each view
+// marched through it per pixel.
+
+// Fixed point for the atomic adds: an extinction of 1 per metre is 2048
+// (Hillaire 2015, slide 54's scale).
+static const float kVolumeScale = 2048.0;
+
+// A point (from the anchor) in the box: 0 to 1 along each axis.
+float3 volume_uvw(float3 from_anchor) {
+    const VolumeSpace v = volume_space[0];
+    return (from_anchor - v.corner) * (v.inv_voxel / float(v.size));
+}
+
+// A particle's extinction into the voxels it overlaps: its base (D-043's
+// softened sphere, its mean kept) at each voxel's centre. A particle under
+// two voxels across goes into the eight around its centre by their
+// trilinear weights, its whole optical depth kept: a sphere's samples
+// would miss it.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cs_volume_inject(uint3 group: SV_GroupID, uint3 thread: SV_GroupThreadID) {
+    const VolumeSpace v = volume_space[0];
+    const uint index = group.x + group.y * 65535u;
+    if (index >= v.particles) {
+        return;
+    }
+    const Particle p = particles[index];
+    if (p.extinction <= 0.0) {
+        return;
+    }
+    const float3 c = (centre_from_anchor(p) - v.corner) * v.inv_voxel;  // in voxels
+    const float r = p.radius * v.inv_voxel;
+    const int n = int(v.size);
+    // The particle's whole optical volume (extinction times its volume),
+    // as its base keeps it: per voxel, divided by the voxel's volume.
+    if (r < 1.0) {
+        if (thread.x != 0) {
+            return;
+        }
+        const float volume = 4.18879 * p.radius * p.radius * p.radius;  // 4/3 pi r^3
+        const float per_voxel = p.extinction * volume * (v.inv_voxel * v.inv_voxel * v.inv_voxel);
+        const float3 g = c - 0.5;
+        const int3 lo = int3(floor(g));
+        const float3 f = g - float3(lo);
+        for (int k = 0; k < 8; ++k) {
+            const int3 o = int3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+            const int3 at = lo + o;
+            if (any(at < 0) || any(at >= n)) {
+                continue;
+            }
+            const float3 w3 = select(o == 1, f, 1.0 - f);
+            const float w = w3.x * w3.y * w3.z * per_voxel;
+            InterlockedAdd(volume_accumulate[uint3(at)], uint(w * kVolumeScale + 0.5));
+        }
+        return;
+    }
+    const int3 lo = max(int3(floor(c - r)), int3(0, 0, 0));
+    const int3 hi = min(int3(ceil(c + r)), int3(n, n, n));
+    const int3 span = max(hi - lo, int3(0, 0, 0));
+    const uint count = uint(span.x * span.y * span.z);
+    for (uint k = thread.x; k < count; k += 64u) {
+        const int3 at = lo + int3(int(k % uint(span.x)), int((k / uint(span.x)) % uint(span.y)),
+                                  int(k / uint(span.x * span.y)));
+        const float3 d = (float3(at) + 0.5 - c) / r;
+        const float r2 = dot(d, d);
+        if (r2 >= 1.0) {
+            continue;
+        }
+        const float base = saturate(3.0 * (1.0 - r2)) / kBaseMean;
+        InterlockedAdd(volume_accumulate[uint3(at)], uint(base * p.extinction * kVolumeScale + 0.5));
+    }
+}
+
+// The fixed point to extinction per metre.
+[shader("compute")]
+[numthreads(4, 4, 4)]
+void cs_volume_convert(uint3 id: SV_DispatchThreadID) {
+    const uint n = volume_space[0].size;
+    if (any(id >= n)) {
+        return;
+    }
+    volume_density_out[id] = float(volume_accumulate[id]) / kVolumeScale;
+}
+
+// The optical depth from each voxel of the sun's volume toward the sun, to
+// the box's edge, marched a voxel of the density at a time (nearest: the
+// density volume is being read as an image here).
+[shader("compute")]
+[numthreads(4, 4, 4)]
+void cs_volume_sun(uint3 id: SV_DispatchThreadID) {
+    const VolumeSpace v = volume_space[0];
+    if (any(id >= v.light_size)) {
+        return;
+    }
+    const float3 toward_sun = -light_space[0].travel;
+    const float side = float(v.size) * v.voxel;
+    float3 at = v.corner + (float3(id) + 0.5) * (side / float(v.light_size));
+    float depth = 0.0;
+    const int n = int(v.size);
+    for (int k = 0; k < 4 * n; ++k) {
+        at += toward_sun * v.voxel;
+        const int3 cell = int3(floor((at - v.corner) * v.inv_voxel));
+        if (any(cell < 0) || any(cell >= n)) {
+            break;
+        }
+        depth += volume_density_out[uint3(cell)] * v.voxel;
+    }
+    volume_sun_out[id] = depth;
+}
+
+struct VolumeVertex {
+    float4 position : SV_Position;
+    [[vk::location(0)]] float2 ndc;
+};
+
+[shader("vertex")]
+VolumeVertex vs_volume(uint id: SV_VulkanVertexID) {
+    VolumeVertex o;
+    const float2 uv = float2((id << 1) & 2, id & 2);
+    o.ndc = uv * 2.0 - 1.0;
+    o.position = float4(o.ndc, 0.0, 1.0);
+    return o;
+}
+
+// Where a ray enters and leaves the box (the eye at the origin, the box's
+// corner relative to the eye): t in metres along the unit direction.
+float2 box_span(float3 corner, float side, float3 dir) {
+    const float3 inv = 1.0 / dir;
+    const float3 a = (corner) * inv;
+    const float3 b = (corner + side) * inv;
+    const float3 lo = min(a, b);
+    const float3 hi = max(a, b);
+    return float2(max(max(lo.x, lo.y), max(lo.z, 0.0)), min(min(hi.x, hi.y), hi.z));
+}
+
+// A pixel's march through the volume: the light it scatters toward the eye
+// over the dust before the scene, premultiplied, and its cover; as the
+// puffs' particle image holds it, so the composite is the same.
+[shader("fragment")]
+float4 fs_volume(VolumeVertex i) : SV_Target {
+    // The ray: the eye-relative frame has no translation, so a direction d
+    // projects to x = (row0 . d) / (row3 . d), y likewise; d is
+    // perpendicular to row0 - x row3 and to row1 - y row3.
+    const float3 r0 = push.ecef_to_clip[0].xyz;
+    const float3 r1 = push.ecef_to_clip[1].xyz;
+    const float3 r3 = push.ecef_to_clip[3].xyz;
+    float3 dir = normalize(cross(r0 - i.ndc.x * r3, r1 - i.ndc.y * r3));
+    if (dot(dir, r3) < 0.0) {
+        dir = -dir;
+    }
+    const VolumeSpace v = volume_space[0];
+    const float side = float(v.size) * v.voxel;
+    const float3 corner = push.anchor + v.corner;  // from the eye
+    float2 span = box_span(corner, side, dir);
+    // Cut where the scene is nearer (as fs_particles: the nearest of the
+    // scene's depths under this pixel at half resolution).
+    uint depth_w;
+    uint depth_h;
+    scene_depth.GetDimensions(depth_w, depth_h);
+    const int2 full = int2(int(depth_w), int(depth_h));
+    const int2 here = int2(i.position.xy);
+    int2 lo = here;
+    int2 hi = here;
+    if (push.depth_scale > 1) {
+        const int2 half_size = (full + 1) / 2;
+        lo = (here * full) / half_size;
+        hi = ((here + 1) * full + half_size - 1) / half_size - 1;
+    }
+    lo = clamp(lo, int2(0, 0), full - 1);
+    hi = clamp(hi, lo, full - 1);
+    float depth = 0.0;
+    for (int y = lo.y; y <= hi.y; ++y) {
+        for (int x = lo.x; x <= hi.x; ++x) {
+            depth = max(depth, scene_depth.Load(int3(x, y, 0)));
+        }
+    }
+    if (depth > 0.0) {
+        const float along = dot(r3, dir);  // view z per metre of ray
+        span.y = min(span.y, near_distance() / depth / max(along, 1e-6));
+    }
+    if (span.y <= span.x) {
+        discard;
+    }
+    // Steps of about a voxel, the first offset by a fixed per-pixel jitter.
+    const int steps = clamp(int(ceil((span.y - span.x) * v.inv_voxel)), 1, 256);
+    const float step = (span.y - span.x) / float(steps);
+    uint h = uint(here.x) * 0x8da6b343u ^ uint(here.y) * 0xd8163841u;
+    h ^= h >> 16;
+    h *= 0x7feb352du;
+    h ^= h >> 15;
+    const float jitter = float(h >> 8) * (1.0 / 16777216.0);
+    const ViewSky sky = view_sky[lighting.view];
+    const float g = push.forward_scattering;
+    const Origin o = origins[0];
+    float through = 1.0;  // transmittance from the eye
+    float3 light_sum = float3(0.0);
+    for (int k = 0; k < steps; ++k) {
+        const float t = span.x + (float(k) + jitter) * step;
+        const float3 p = dir * t - push.anchor;  // from the anchor
+        const float3 uvw = volume_uvw(p);
+        float sigma = volume_density.SampleLevel(light_sampler, uvw, 0.0);
+        if (sigma <= 0.0) {
+            continue;
+        }
+        if (push.detail > 0.0) {
+            const float3 off = p - o.offset;
+            sigma *= detail_factor(float3(dot(off, o.east), dot(off, o.north), dot(off, o.up)));
+        }
+        const float sun_depth = volume_sun_depth.SampleLevel(light_sampler, uvw, 0.0);
+        const float3 light =
+            sky.sun_irradiance * multiple_scattering_phase(g, dot(dir, lighting.sun), sun_depth) +
+            sky.moon_irradiance * multiple_scattering_phase(g, dot(dir, lighting.moon), 0.0) +
+            sky.sky_irradiance * (0.5 * kInvPi * kOctaveEnergy);
+        // Hillaire 2016, equation 17: the step's scattering integrated
+        // against its own extinction (the light scattered per metre is
+        // sigma x albedo x light; over sigma, albedo x light).
+        const float step_t = exp(-sigma * step);
+        light_sum += through * (1.0 - step_t) * push.albedo * light;
+        through *= step_t;
+        if (through < 1e-3) {
+            break;
+        }
+    }
+    const float cover = 1.0 - through;
+    if (cover < 1e-4) {
+        discard;
+    }
+    return float4(min(light_sum * sky.exposure, float3(60000.0)), cover);
+}
+

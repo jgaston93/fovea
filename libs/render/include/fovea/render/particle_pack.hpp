@@ -66,6 +66,12 @@ struct ParticleQuality {
     std::uint32_t slices = 32;         // the slices each view's particles are drawn in
     std::uint32_t light_buffer = 512;  // its texels a side
     bool half_resolution = false;      // drawn at half each view's size, composited up
+    // Drawn as a volume instead (D-052): one box over the particles, its
+    // voxels a side, its sun volume's, and its largest side (metres).
+    bool volume = false;
+    std::uint32_t volume_size = 128;
+    std::uint32_t volume_light_size = 64;
+    float volume_max_m = 256.0F;
 };
 
 // Mirrors Particle in shaders/particles.slang (std430).
@@ -128,6 +134,23 @@ static_assert(sizeof(GpuLightSpace) == 64, "must match LightSpace in particles.s
 
 // The light space over particles with these centres, for light travelling
 // along `travel` (a unit vector). No allocation.
+// The volume's box (D-052): mirrors VolumeSpace in particles.slang.
+struct GpuVolumeSpace {
+    std::array<float, 3> corner{};  // [m] its lowest corner from the anchor, ECEF axes
+    float voxel = 1.0F;             // [m] a voxel's side
+    std::uint32_t size = 1;         // voxels a side
+    std::uint32_t light_size = 1;   // the sun volume's voxels a side
+    float inv_voxel = 1.0F;
+    std::uint32_t particles = 0;  // how many to inject
+};
+static_assert(sizeof(GpuVolumeSpace) == 32, "must match VolumeSpace in particles.slang");
+
+// The box over particles with these centres (from the anchor) and radii: a
+// cube, `size` voxels a side, as large as their bounds (at least a metre)
+// but at most `max_side` metres, centred on them. No allocation.
+GpuVolumeSpace volume_space(std::span<const Vec3> centres, std::span<const GpuParticle> particles,
+                            std::uint32_t size, std::uint32_t light_size, float max_side) noexcept;
+
 GpuLightSpace light_space(std::span<const Vec3> centres, std::span<const GpuParticle> particles,
                           const Vec3& travel) noexcept;
 

@@ -137,6 +137,8 @@ struct ParticlesConfig {
     std::uint32_t slices = 32;
     std::uint32_t light_buffer = 512;
     bool half_resolution = false;
+    // Drawn as a volume (D-052: "volume") rather than puffs ("puffs").
+    bool volume = false;
 };
 
 // [environment] (milestone 6, D-029): the date and time, UTC, and the

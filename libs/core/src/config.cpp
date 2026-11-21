@@ -321,7 +321,7 @@ void parse_particles(Parser& p, const toml::table& t, ParticlesConfig& out) {
     p.check_keys(t,
                  {"port", "listen_address", "capacity", "fade_s", "extinction_m2_per_kg", "albedo",
                   "forward_scattering", "detail", "detail_size", "swirl", "self_shadowing",
-                  "slices", "light_buffer", "resolution"},
+                  "slices", "light_buffer", "resolution", "renderer"},
                  "particles");
     if (const auto* n = t.get("self_shadowing")) {
         if (const auto* b = n->as_boolean()) {
@@ -344,6 +344,12 @@ void parse_particles(Parser& p, const toml::table& t, ParticlesConfig& out) {
         if (auto v =
                 p.choice<bool>(*n, "particles.resolution", {{"full", false}, {"half", true}})) {
             out.half_resolution = *v;
+        }
+    }
+    if (const auto* n = t.get("renderer")) {
+        if (auto v =
+                p.choice<bool>(*n, "particles.renderer", {{"puffs", false}, {"volume", true}})) {
+            out.volume = *v;
         }
     }
     if (const auto* n = p.required(t, "port", "particles")) {

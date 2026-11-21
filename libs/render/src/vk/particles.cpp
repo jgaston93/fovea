@@ -20,6 +20,8 @@ namespace {
 constexpr VkDeviceSize kOriginsBytes = sizeof(GpuOrigin) * kMaxParticleOrigins;
 constexpr VkDeviceSize kLightSpaceAt = kOriginsBytes;
 constexpr VkDeviceSize kParticlesAt = kOriginsBytes + 256;
+constexpr VkDeviceSize kVolumeSpaceAt = kLightSpaceAt + 64;  // D-052
+static_assert(kVolumeSpaceAt + sizeof(GpuVolumeSpace) <= kParticlesAt);
 static_assert(kOriginsBytes % 256 == 0 && kParticlesAt % 256 == 0,
               "offsets must suit any storage alignment");
 static_assert(sizeof(GpuLightSpace) <= 256);
@@ -35,6 +37,19 @@ VkFormat light_format_for(VkPhysicalDevice physical) {
                                       VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
     return (p.optimalTilingFeatures & need) == need ? VK_FORMAT_R32_SFLOAT : VK_FORMAT_R16_SFLOAT;
 }
+
+// The volume's float images (D-052): written by compute, sampled filtered:
+// 32-bit where the GPU does both, else 16-bit (most do both at 32).
+VkFormat volume_format_for(VkPhysicalDevice physical) {
+    VkFormatProperties p{};
+    vkGetPhysicalDeviceFormatProperties(physical, VK_FORMAT_R32_SFLOAT, &p);
+    const VkFormatFeatureFlags need =
+        VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    return (p.optimalTilingFeatures & need) == need ? VK_FORMAT_R32_SFLOAT : VK_FORMAT_R16_SFLOAT;
+}
+
+constexpr VkShaderStageFlags kAllStages =
+    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
 // Mirrors ParticlePush in shaders/particles.slang.
 struct ParticlePush {
@@ -76,6 +91,20 @@ enum class Blend : std::uint8_t {
     add,        // optical depths summed: the light buffer
     composite,  // the particle image over the scene, the scene's alpha kept
 };
+
+VkPipeline make_compute(VkDevice device, VkPipelineLayout layout, VkShaderModule module) {
+    VkComputePipelineCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    ci.stage.module = module;
+    ci.stage.pName = "main";
+    ci.layout = layout;
+    VkPipeline p = VK_NULL_HANDLE;
+    check(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &ci, nullptr, &p),
+          "vkCreateComputePipelines (particles' volume)");
+    return p;
+}
 
 VkPipeline make_pipeline(VkDevice device, VkPipelineLayout layout, VkShaderModule vertex,
                          VkShaderModule fragment, VkFormat format, Blend mode) {
@@ -271,6 +300,34 @@ void ParticlesGpu::destroy_image(Image& i) const {
         vmaDestroyImage(gpu_.allocator, i.image, i.memory);
     }
     i = Image{};
+}
+
+ParticlesGpu::Image ParticlesGpu::make_volume_target(std::uint32_t size, VkFormat format) const {
+    Image i;
+    VkImageCreateInfo ici{};
+    ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.imageType = VK_IMAGE_TYPE_3D;
+    ici.format = format;
+    ici.extent = {size, size, size};
+    ici.mipLevels = 1;
+    ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage =
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VmaAllocationCreateInfo aci{};
+    aci.usage = VMA_MEMORY_USAGE_AUTO;
+    check(vmaCreateImage(gpu_.allocator, &ici, &aci, &i.image, &i.memory, nullptr),
+          "vmaCreateImage (particles' volume target)");
+    VkImageViewCreateInfo vci{};
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image = i.image;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_3D;
+    vci.format = format;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    check(vkCreateImageView(gpu_.device, &vci, nullptr, &i.view),
+          "vkCreateImageView (particles' volume target)");
+    return i;
 }
 
 ParticlesGpu::Image ParticlesGpu::make_volume(std::uint32_t size, VkFormat format,
@@ -473,11 +530,9 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
             host_buffer(order_bytes, s.order, s.order_memory, s.order_mapped);
         }
 
-        std::array<VkDescriptorSetLayoutBinding, 4> buffer_bindings{};
+        std::array<VkDescriptorSetLayoutBinding, 5> buffer_bindings{};
         for (std::uint32_t b = 0; b < buffer_bindings.size(); ++b) {
-            buffer_bindings.at(b) = {b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-                                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                                     nullptr};
+            buffer_bindings.at(b) = {b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, kAllStages, nullptr};
         }
         VkDescriptorSetLayoutCreateInfo lci{};
         lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -485,7 +540,7 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
         lci.pBindings = buffer_bindings.data();
         check(vkCreateDescriptorSetLayout(gpu_.device, &lci, nullptr, &buffers_layout_),
               "vkCreateDescriptorSetLayout (particles)");
-        const std::array<VkDescriptorSetLayoutBinding, 7> view_bindings{
+        const std::array<VkDescriptorSetLayoutBinding, 9> view_bindings{
             VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
                                          VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
             VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
@@ -499,19 +554,43 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
             VkDescriptorSetLayoutBinding{5, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
                                          VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
             VkDescriptorSetLayoutBinding{6, VK_DESCRIPTOR_TYPE_SAMPLER, 1,
+                                         VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{8, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
+                                         VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{9, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
                                          VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
         lci.bindingCount = static_cast<std::uint32_t>(view_bindings.size());
         lci.pBindings = view_bindings.data();
         check(vkCreateDescriptorSetLayout(gpu_.device, &lci, nullptr, &view_layout_),
               "vkCreateDescriptorSetLayout (particles' view)");
 
-        const std::array<VkDescriptorPoolSize, 3> sizes{
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 * slots},
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 5 * outputs},
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 2 * outputs}};
+        // The volume's three images (D-052), 1 voxel when it isn't drawn.
+        const VkFormat volume_format = volume_format_for(gpu_.physical);
+        const std::uint32_t vsize = quality_.volume ? quality_.volume_size : 1;
+        const std::uint32_t lsize = quality_.volume ? quality_.volume_light_size : 1;
+        volume_accumulate_ = make_volume_target(vsize, VK_FORMAT_R32_UINT);
+        volume_density_ = make_volume_target(vsize, volume_format);
+        volume_sun_ = make_volume_target(lsize, volume_format);
+        const std::array<VkDescriptorSetLayoutBinding, 3> volume_bindings{
+            VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
+                                         VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
+                                         VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
+                                         VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+        lci.bindingCount = static_cast<std::uint32_t>(volume_bindings.size());
+        lci.pBindings = volume_bindings.data();
+        check(vkCreateDescriptorSetLayout(gpu_.device, &lci, nullptr, &volume_layout_),
+              "vkCreateDescriptorSetLayout (particles' volume)");
+
+        const std::array<VkDescriptorPoolSize, 4> sizes{
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5 * slots},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 7 * outputs},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 2 * outputs},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3}};
         VkDescriptorPoolCreateInfo pci{};
         pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pci.maxSets = slots + outputs;
+        pci.maxSets = slots + outputs + 1;
         pci.poolSizeCount = static_cast<std::uint32_t>(sizes.size());
         pci.pPoolSizes = sizes.data();
         check(vkCreateDescriptorPool(gpu_.device, &pci, nullptr, &pool_),
@@ -524,12 +603,13 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
             ai.pSetLayouts = &buffers_layout_;
             check(vkAllocateDescriptorSets(gpu_.device, &ai, &s.set),
                   "vkAllocateDescriptorSets (particles)");
-            const std::array<VkDescriptorBufferInfo, 4> infos{
+            const std::array<VkDescriptorBufferInfo, 5> infos{
                 VkDescriptorBufferInfo{s.buffer, kParticlesAt, particles_bytes},
                 VkDescriptorBufferInfo{s.buffer, 0, kOriginsBytes},
                 VkDescriptorBufferInfo{s.buffer, kLightSpaceAt, sizeof(GpuLightSpace)},
-                VkDescriptorBufferInfo{s.order, 0, order_bytes}};
-            std::array<VkWriteDescriptorSet, 4> writes{};
+                VkDescriptorBufferInfo{s.order, 0, order_bytes},
+                VkDescriptorBufferInfo{s.buffer, kVolumeSpaceAt, sizeof(GpuVolumeSpace)}};
+            std::array<VkWriteDescriptorSet, 5> writes{};
             for (std::uint32_t b = 0; b < writes.size(); ++b) {
                 writes.at(b).sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 writes.at(b).dstSet = s.set;
@@ -564,7 +644,11 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
                                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
             const VkDescriptorImageInfo noise_sampler_info{noise_sampler_, VK_NULL_HANDLE,
                                                            VK_IMAGE_LAYOUT_UNDEFINED};
-            std::array<VkWriteDescriptorSet, 6> writes{};
+            const VkDescriptorImageInfo volume_info{VK_NULL_HANDLE, volume_density_.view,
+                                                    VK_IMAGE_LAYOUT_GENERAL};
+            const VkDescriptorImageInfo volume_sun_info{VK_NULL_HANDLE, volume_sun_.view,
+                                                        VK_IMAGE_LAYOUT_GENERAL};
+            std::array<VkWriteDescriptorSet, 8> writes{};
             for (VkWriteDescriptorSet& w : writes) {
                 w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 w.dstSet = view_sets_.at(o);
@@ -588,16 +672,48 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
             writes[2].dstBinding = 3;
             writes[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
             writes[2].pImageInfo = &image_info;
+            writes[6].dstBinding = 8;
+            writes[6].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            writes[6].pImageInfo = &volume_info;
+            writes[7].dstBinding = 9;
+            writes[7].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            writes[7].pImageInfo = &volume_sun_info;
+            vkUpdateDescriptorSets(gpu_.device, static_cast<std::uint32_t>(writes.size()),
+                                   writes.data(), 0, nullptr);
+        }
+
+        {
+            VkDescriptorSetAllocateInfo ai{};
+            ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            ai.descriptorPool = pool_;
+            ai.descriptorSetCount = 1;
+            ai.pSetLayouts = &volume_layout_;
+            check(vkAllocateDescriptorSets(gpu_.device, &ai, &volume_set_),
+                  "vkAllocateDescriptorSets (particles' volume)");
+            const std::array<VkDescriptorImageInfo, 3> infos{
+                VkDescriptorImageInfo{VK_NULL_HANDLE, volume_accumulate_.view,
+                                      VK_IMAGE_LAYOUT_GENERAL},
+                VkDescriptorImageInfo{VK_NULL_HANDLE, volume_density_.view,
+                                      VK_IMAGE_LAYOUT_GENERAL},
+                VkDescriptorImageInfo{VK_NULL_HANDLE, volume_sun_.view, VK_IMAGE_LAYOUT_GENERAL}};
+            std::array<VkWriteDescriptorSet, 3> writes{};
+            for (std::uint32_t b = 0; b < writes.size(); ++b) {
+                writes.at(b).sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes.at(b).dstSet = volume_set_;
+                writes.at(b).dstBinding = b;
+                writes.at(b).descriptorCount = 1;
+                writes.at(b).descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                writes.at(b).pImageInfo = &infos.at(b);
+            }
             vkUpdateDescriptorSets(gpu_.device, static_cast<std::uint32_t>(writes.size()),
                                    writes.data(), 0, nullptr);
         }
 
         // Set 0 the buffers, set 1 the frame set (the view's lighting), set 2
-        // the view's images.
-        const std::array<VkDescriptorSetLayout, 3> layouts{buffers_layout_, gpu_.frame_layout,
-                                                           view_layout_};
-        const VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                                       sizeof(ParticlePush)};
+        // the view's images, set 3 the volume's (D-052).
+        const std::array<VkDescriptorSetLayout, 4> layouts{buffers_layout_, gpu_.frame_layout,
+                                                           view_layout_, volume_layout_};
+        const VkPushConstantRange push{kAllStages, 0, sizeof(ParticlePush)};
         VkPipelineLayoutCreateInfo plci{};
         plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         plci.setLayoutCount = static_cast<std::uint32_t>(layouts.size());
@@ -614,6 +730,14 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
                                         light_format_, Blend::add);
         composite_ = make_pipeline(gpu_.device, layout_, modules.vs_composite, modules.fs_composite,
                                    colour, Blend::composite);
+        if (quality_.volume) {
+            volume_inject_ = make_compute(gpu_.device, layout_, modules.cs_volume_inject);
+            volume_convert_ = make_compute(gpu_.device, layout_, modules.cs_volume_convert);
+            volume_sun_pass_ = make_compute(gpu_.device, layout_, modules.cs_volume_sun);
+            // Onto a cleared particle image: over is a copy.
+            volume_march_ = make_pipeline(gpu_.device, layout_, modules.vs_volume,
+                                          modules.fs_volume, kParticleImageFormat, Blend::over);
+        }
     } catch (...) {
         release();
         throw;
@@ -628,7 +752,8 @@ void ParticlesGpu::release() {
     if (gpu_.device == VK_NULL_HANDLE) {
         return;
     }
-    for (VkPipeline p : {over_, under_, light_pipeline_, composite_}) {
+    for (VkPipeline p : {over_, under_, light_pipeline_, composite_, volume_inject_,
+                         volume_convert_, volume_sun_pass_, volume_march_}) {
         vkDestroyPipeline(gpu_.device, p, nullptr);
     }
     vkDestroyPipelineLayout(gpu_.device, layout_, nullptr);
@@ -639,6 +764,10 @@ void ParticlesGpu::release() {
     vkDestroySampler(gpu_.device, noise_sampler_, nullptr);
     destroy_image(detail_);
     destroy_image(curl_);
+    destroy_image(volume_accumulate_);
+    destroy_image(volume_density_);
+    destroy_image(volume_sun_);
+    vkDestroyDescriptorSetLayout(gpu_.device, volume_layout_, nullptr);
     for (Image& i : particle_images_) {
         destroy_image(i);
     }
@@ -685,6 +814,14 @@ std::size_t ParticlesGpu::pack(std::uint32_t slot, const ParticleFrame& frame, L
         -Vec3(static_cast<float>(sun.x), static_cast<float>(sun.y), static_cast<float>(sun.z));
     const GpuLightSpace ls = light_space(centres, packed, travel);
     std::memcpy(base + kLightSpaceAt, &ls, sizeof(ls));
+    // The volume's box (D-052), when it's drawn.
+    GpuVolumeSpace vs;
+    if (quality_.volume) {
+        vs = volume_space(centres, packed, quality_.volume_size, quality_.volume_light_size,
+                          quality_.volume_max_m);
+        vs.particles = static_cast<std::uint32_t>(n);
+    }
+    std::memcpy(base + kVolumeSpaceAt, &vs, sizeof(vs));
     const std::size_t outputs = view_sets_.size();
     auto* order = static_cast<std::uint32_t*>(s.order_mapped);
     for (std::size_t o = 0; o < outputs && o < views.size(); ++o) {
@@ -730,14 +867,41 @@ void ParticlesGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t
     const VkExtent2D light_extent{quality_.light_buffer, quality_.light_buffer};
     const auto bind = [&](VkPipeline p) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
-        const std::array<VkDescriptorSet, 3> sets{slots_[slot].set, gpu_.frame_set,
-                                                  view_sets_.at(output)};
+        const std::array<VkDescriptorSet, 4> sets{slots_[slot].set, gpu_.frame_set,
+                                                  view_sets_.at(output), volume_set_};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0,
                                 static_cast<std::uint32_t>(sets.size()), sets.data(), 1,
                                 &lighting_offset);
-        vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(push), &push);
+        vkCmdPushConstants(cmd, layout_, kAllStages, 0, sizeof(push), &push);
     };
+
+    // Drawn as a volume (D-052): the volume made once a frame (at the first
+    // view), then each view marched through it into its particle image,
+    // composited as the puffs are.
+    if (quality_.volume) {
+        if (output == 0) {
+            record_volume(cmd, slot, lighting_offset);
+        }
+        const std::array<VkImageMemoryBarrier2, 1> to_image{
+            image_barrier(image.image, kFragmentStage, 0, kColourStage, kColourReadWrite,
+                          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)};
+        barriers(cmd, to_image);
+        begin(cmd, image.view, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, image_extent,
+              VK_ATTACHMENT_LOAD_OP_CLEAR);
+        bind(volume_march_);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+        vkCmdEndRendering(cmd);
+        const std::array<VkImageMemoryBarrier2, 1> done{image_barrier(
+            image.image, kColourStage, kColourWrite, kFragmentStage, kSampled,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)};
+        barriers(cmd, done);
+        begin(cmd, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, extent,
+              VK_ATTACHMENT_LOAD_OP_LOAD);
+        bind(composite_);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+        vkCmdEndRendering(cmd);
+        return;
+    }
 
     // Both images start over: the particle image after the previous frame's
     // composite read it, the light buffer after the previous view used it.
@@ -795,6 +959,69 @@ void ParticlesGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t
     bind(composite_);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRendering(cmd);
+}
+
+// The volume, once a frame (D-052): cleared, the particles added in fixed
+// point, converted to extinction, the optical depth toward the sun marched;
+// then sampled by every view's march. Every image in GENERAL.
+void ParticlesGpu::record_volume(VkCommandBuffer cmd, std::uint32_t slot,
+                                 std::uint32_t lighting_offset) const {
+    constexpr VkPipelineStageFlags2 kCompute = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    constexpr VkPipelineStageFlags2 kTransfer = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    constexpr VkAccessFlags2 kStorageRw =
+        VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    const std::size_t n = counts_[slot];
+    const std::uint32_t size = quality_.volume_size;
+    const std::uint32_t light = quality_.volume_light_size;
+    // Last frame's views read them (fragment): this one rewrites them.
+    const std::array<VkImageMemoryBarrier2, 3> start{
+        image_barrier(volume_accumulate_.image, kCompute, kStorageRw, kTransfer,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                      VK_IMAGE_LAYOUT_GENERAL),
+        image_barrier(volume_density_.image, kFragmentStage | kCompute, kSampled | kStorageRw,
+                      kCompute, kStorageRw, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL),
+        image_barrier(volume_sun_.image, kFragmentStage | kCompute, kSampled | kStorageRw, kCompute,
+                      kStorageRw, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL)};
+    barriers(cmd, start);
+    const VkClearColorValue zero{};
+    const VkImageSubresourceRange all{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdClearColorImage(cmd, volume_accumulate_.image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
+    const std::array<VkImageMemoryBarrier2, 1> cleared{
+        image_barrier(volume_accumulate_.image, kTransfer, VK_ACCESS_2_TRANSFER_WRITE_BIT, kCompute,
+                      kStorageRw, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL)};
+    barriers(cmd, cleared);
+    const std::array<VkDescriptorSet, 4> sets{slots_[slot].set, gpu_.frame_set, view_sets_.at(0),
+                                              volume_set_};
+    const auto bind = [&](VkPipeline p) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout_, 0,
+                                static_cast<std::uint32_t>(sets.size()), sets.data(), 1,
+                                &lighting_offset);
+    };
+    if (n > 0) {
+        bind(volume_inject_);
+        const auto x = static_cast<std::uint32_t>(std::min<std::size_t>(n, 65535));
+        const auto y = static_cast<std::uint32_t>((n + 65534) / 65535);
+        vkCmdDispatch(cmd, x, y, 1);
+    }
+    const std::array<VkImageMemoryBarrier2, 1> added{
+        image_barrier(volume_accumulate_.image, kCompute, kStorageRw, kCompute, kStorageRw,
+                      VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL)};
+    barriers(cmd, added);
+    bind(volume_convert_);
+    vkCmdDispatch(cmd, (size + 3) / 4, (size + 3) / 4, (size + 3) / 4);
+    const std::array<VkImageMemoryBarrier2, 1> converted{
+        image_barrier(volume_density_.image, kCompute, kStorageRw, kCompute, kStorageRw,
+                      VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL)};
+    barriers(cmd, converted);
+    bind(volume_sun_pass_);
+    vkCmdDispatch(cmd, (light + 3) / 4, (light + 3) / 4, (light + 3) / 4);
+    const std::array<VkImageMemoryBarrier2, 2> ready{
+        image_barrier(volume_density_.image, kCompute, kStorageRw, kFragmentStage, kSampled,
+                      VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL),
+        image_barrier(volume_sun_.image, kCompute, kStorageRw, kFragmentStage, kSampled,
+                      VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL)};
+    barriers(cmd, ready);
 }
 
 }  // namespace fovea
