@@ -913,7 +913,9 @@ TEST(TerrainRender, APostsShadowFallsWhereTheSunPutsIt) {
             lo = std::min(lo, b);
             hi = std::max(hi, b);
         }
-        EXPECT_LE(hi - lo, 3.0) << "sunlit ground uneven: acne";
+        // The output's dither (D-050) moves each channel up to a step either
+        // way: up to 6 of the sum's spread. Acne is a shadow's darkness, tens.
+        EXPECT_LE(hi - lo, 3.0 + 6.0) << "sunlit ground uneven: acne";
     }
 }
 
