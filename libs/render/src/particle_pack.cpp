@@ -87,7 +87,7 @@ GpuVolumeSpace volume_space(std::span<const Vec3> centres, std::span<const GpuPa
     // (in doubles: the anchor is millions of metres out).
     const Vec3 mid = (lo + hi) * 0.5F;
     const Vec3 extent = hi - lo;
-    const double need = std::max(std::max(extent.x, extent.y), extent.z);
+    const auto need = static_cast<double>(std::max(std::max(extent.x, extent.y), extent.z));
     const double count = static_cast<double>(v.size);
     double voxel = std::exp2(std::ceil(std::log2(std::max(need, 1.0) / (count - 2.0))));
     voxel = std::min(
