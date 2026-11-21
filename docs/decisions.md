@@ -429,3 +429,13 @@ Sources (each read for this, 2026-11-20, except where said):
 - Koschmieder's 1924 paper was not read: what it proposed is as [WMO18] gives it.
 
 The defaults (`[environment] visibility_m`, 50 km) are left as they are: a host or config sets the day it wants. D-040's rough check of the dust's extinction uses [LS16]'s 2% (3.9); by the guide's 5% its figures are 23% lower, its conclusion unchanged.
+
+## D-049 Particles are packed in the CPU's memory, then copied to the GPU's
+
+**Status:** Accepted (2026-11-21)
+
+On KHSV's IG, 20 000 puffs (Mews's `puff-sender.py`) brought Fovea to about 1 frame a second, and its HAT/HOT answers (sent with each frame's Start of Frame) came too late for the host. Measured on an NVIDIA GeForce RTX 5070 Ti, three 1920x1080 channels as KHSV's, the eye inside the test ring: a frame took 206 ms, its GPU work about 30 ms; the rest was the particles' pack on the render thread, 560 ms in a sample. The pack wrote each particle straight into the frame slot's buffer, allocated for sequential host writes (`VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT`: write-combined, or the GPU's own memory where the host can map it), then read every one back from there for the particles' centres and the light space (D-041). Reads from such memory are uncached; on lavapipe it is ordinary memory, which is why no test saw it.
+
+- **Packed into vectors of the CPU's** (`ParticlesGpu::packed_`, `packed_origins_`, sized at construction: no allocation on the render path), read there, then copied to the slot's buffer in two sequential `memcpy`s.
+- **Measured on the RTX 5070 Ti, the same run:** the pack 560 ms to 0.9 ms at 20 000 puffs; the frame 206 ms to 31.9 ms (GPU-bound now: the particles 8.6 ms an output). 1000 puffs: 60 Hz, 0.6 ms an output.
+- **What holds 60 Hz there** (three outputs, the GPU's whole frame, of 16.7 ms): 5000 puffs at full resolution 12.4 ms; 20 000 at `resolution = "half"` 13.8 ms (the particles 7.8 ms of it); `self_shadowing = false` barely helps (fill-bound: 20 000 at full, 29.8 ms); half resolution with 8 slices and no detail, 10.7 ms. The levers D-042 left unmeasured, now measured once; a frame-time guard (dropping particles or detail when a frame runs long, so no host's stream can stall the IG or its HAT/HOT) is still to come.

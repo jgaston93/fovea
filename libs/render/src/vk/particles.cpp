@@ -392,6 +392,8 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
       times_(slots, 0.0F),
       front_to_back_(std::size_t{slots} * extents.size(), 1),
       view_sets_(extents.size(), VK_NULL_HANDLE),
+      packed_(capacity),
+      packed_origins_(kMaxParticleOrigins),
       centres_(capacity),
       keys_(capacity * 2),
       scratch_(capacity * 2) {
@@ -670,11 +672,13 @@ std::size_t ParticlesGpu::pack(std::uint32_t slot, const ParticleFrame& frame, L
                                std::span<const SceneView> views, const DVec3& sun) noexcept {
     Slot& s = slots_[slot];
     auto* base = static_cast<std::uint8_t*>(s.mapped);
-    const std::span<GpuOrigin> origins(reinterpret_cast<GpuOrigin*>(base), kMaxParticleOrigins);
-    const std::span<GpuParticle> particles(reinterpret_cast<GpuParticle*>(base + kParticlesAt),
-                                           capacity_);
+    // Packed in the CPU's memory, read there, then copied (D-049).
+    const std::span<GpuOrigin> origins(packed_origins_);
+    const std::span<GpuParticle> particles(packed_);
     const std::size_t n = pack_particles(frame, at, look, anchor, particles, origins);
     const std::span<const GpuParticle> packed = particles.first(n);
+    std::memcpy(base, origins.data(), origins.size_bytes());
+    std::memcpy(base + kParticlesAt, packed.data(), packed.size_bytes());
     const std::span<Vec3> centres = std::span(centres_).first(n);
     particle_centres(packed, origins, centres);
     const Vec3 travel =
