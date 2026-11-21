@@ -227,7 +227,6 @@ TEST(ParticleErosion, TheGainGivesTheMassBack) {
     EXPECT_LT(erosion_gain(white, 0.6F, 0.8F), 1.1F);
 }
 
-
 // The volume's box (D-052): a cube over the particles' bounds, centred on
 // them, its voxel the side over the count; capped; at least a metre.
 TEST(ParticleVolume, TheBoxCoversTheParticles) {
