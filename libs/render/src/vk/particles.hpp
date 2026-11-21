@@ -105,6 +105,14 @@ private:
     Image detail_;                              // cellular noise, R8 (D-043)
     Image curl_;                                // curl noise, RGBA16F
     VkSampler noise_sampler_ = VK_NULL_HANDLE;  // linear, wrapping
+    // The frame's particles and origins packed here first, then copied to
+    // the slot's buffer in sequential memcpys (D-049): that buffer is for
+    // sequential writes (it may be write-combined, or the GPU's own memory),
+    // and the centres and light space read every particle back, which there
+    // took most of a second for 20 000 on an NVIDIA GPU. Sized at
+    // construction.
+    std::vector<GpuParticle> packed_;
+    std::vector<GpuOrigin> packed_origins_;
     // Scratch for the sort, sized at construction.
     std::vector<Vec3> centres_;
     std::vector<std::uint32_t> keys_;
