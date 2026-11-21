@@ -269,6 +269,18 @@ void cs_irradiance(uint3 id: SV_DispatchThreadID) {
 void cs_exposure(uint3 id: SV_DispatchThreadID) {
     const ViewSky s = view_sky_out[0];
     const float light = luminance(s.sun_irradiance + s.moon_irradiance + s.sky_irradiance);
+    // Light that isn't a number (a NaN eye: D-047) leaves the exposure as it
+    // was: max(NaN, 1e-12) is 1e-12 on GPUs, the night floor's far end, and
+    // one such frame drove the exposure up and the screen white for seconds.
+    if (!(light >= 0.0) || isinf(light)) {
+        if (exposure_state[1] != 0.0) {
+            const float kept = exp2(exposure_state[0]);
+            for (uint v = 0; v < push.views; ++v) {
+                view_sky_out[v].exposure = kept;
+            }
+            return;
+        }
+    }
     const float knee = push.knee_illuminance;
     const float adapted = light >= knee ? light : knee * pow(max(light, 1e-12) / knee, 0.75);
     const float target = push.key / adapted;

@@ -397,3 +397,13 @@ The exposure eases toward its target with a time constant of a second (D-031), a
 - **Not detected:** weather set by the host at once (an overcast arriving) eases as before; a reposition of under a kilometre at the same time of day changes the light little.
 - **Freezing:** the user also saw it after a freeze. A freeze stops Aerie's ephemeris (Fovea's sun stops) and moves neither the sun nor the eye, so it isn't a jump, and it wasn't reproduced: what was seen likely came with a time set or a placement (an exercise applied does both). If a freeze alone washes it out again, it is another cause.
 - **Tried:** `Sky.AJumpTakesItsExposureAtOnce`: after day frames, the clock set to night gives night's exposure bit for bit, as a renderer drawing only night from its first frame (about 18 stops from day's); the eye 10 km up gives that place's bit for bit; 900 m up eases under a tenth of the way to its target. Mutations, each caught: the sun's jump not seen; the eye's not seen; every 100 m a jump. Against Aerie: set to dusk, the frame's mean went from 136 to 108 in a frame; back to day, from 108 to 136.
+
+## D-047 A frozen entity's pose stays a number, and light that isn't one leaves the exposure
+
+**Status:** Accepted (2026-11-20)
+
+On site, a few times, pressing freeze turned the screen white for ten seconds or more; most freezes didn't. Reproduced with a host freezing and running forty times: three of the forty went white. The frames show why. A frozen host sends the same pose every frame. `pose_at` took the rotation between its two samples, cur × inverse(prev): with two equal samples its axis part is exactly zero, but its w can round to just below 1 (it depends on the attitude: yaw 0, pitch −15.9, roll −30 does it). The angle, from w alone (acos), came out small but not zero, so the axis, normalised from zero, was NaN, and the eye with it, every frame of the freeze. The light read at a NaN eye is NaN; `max(NaN, 1e-12)` is 1e-12 on a GPU, the far end of the night floor, so the exposure eased up toward it, and when the host ran again the picture was white, coming back as it eased down.
+
+- **The angle from both parts:** 2 atan2(|axis part|, w), and the axis only where its length is above zero. Equal samples give an angle of zero and the pose as sent, at every attitude.
+- **Light that isn't a number leaves the exposure as it was** (`cs_exposure`): whatever else makes a NaN eye or light one day, it can't drive the picture white.
+- **Tried:** `PoseAt.AFrozenEntityStaysFiniteAtEveryAttitude` (4500 attitudes, two equal samples): fails before the change (yaw 0, pitch −15.9, roll −30), passes after. `Sky.LightThatIsntANumberLeavesTheExposure`: three NaN frames keep the exposure, the next good one goes on from it.

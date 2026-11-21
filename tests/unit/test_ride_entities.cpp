@@ -272,6 +272,41 @@ TEST(PoseAt, ExtrapolatesAtTheSamplesVelocity) {
                 1e-3);
 }
 
+// A host that freezes sends the same pose again and again (D-047): the
+// rotation between two equal samples, cur x inverse(prev), has its axis
+// exactly zero but its w can round below 1, and an angle taken from w alone
+// asked for a zero axis's direction: NaN, the eye nowhere for as long as
+// the freeze, and the exposure (D-031) driven white by it. At every
+// attitude, the pose stays finite and where the samples are.
+TEST(PoseAt, AFrozenEntityStaysFiniteAtEveryAttitude) {
+    const auto s = test_scene();
+    const LocalTime t1 = LocalTime{} + std::chrono::seconds(100);
+    const auto dt =
+        std::chrono::duration_cast<LocalTime::duration>(std::chrono::duration<double>(1.0 / 60.0));
+    int checked = 0;
+    for (double yaw = 0.0; yaw < 360.0; yaw += 7.3) {
+        for (double pitch = -20.0; pitch <= 20.0; pitch += 4.1) {
+            for (double roll = -30.0; roll <= 30.0; roll += 6.7) {
+                EntityState e = entity_at(s, 100.0, 50.0, 300.0, {yaw, pitch, roll});
+                e.prev = e.cur;
+                e.prev.sample_t = t1 - dt;
+                e.cur.sample_t = t1;
+                e.smooth = true;
+                const Pose p = pose_at(e, t1 + dt / 2);
+                const bool finite =
+                    std::isfinite(p.ecef.x) && std::isfinite(p.ecef.y) && std::isfinite(p.ecef.z) &&
+                    std::isfinite(p.orientation.w) && std::isfinite(p.orientation.x) &&
+                    std::isfinite(p.orientation.y) && std::isfinite(p.orientation.z);
+                ASSERT_TRUE(finite) << "yaw " << yaw << ", pitch " << pitch << ", roll " << roll;
+                EXPECT_NEAR(glm::length(p.ecef - e.cur.ecef), 0.0, 1e-9);
+                EXPECT_NEAR(std::abs(glm::dot(p.orientation, e.cur.orientation)), 1.0, 1e-12);
+                ++checked;
+            }
+        }
+    }
+    EXPECT_EQ(checked, 50 * 10 * 9);  // 4500 attitudes
+}
+
 TEST(PoseAt, HoldsWhenNotAllowedOrTooFarAhead) {
     const auto s = test_scene();
     const LocalTime t1 = LocalTime{} + std::chrono::seconds(100);

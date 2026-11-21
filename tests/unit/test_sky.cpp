@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -326,6 +327,29 @@ TEST(Sky, AJumpTakesItsExposureAtOnce) {
     // 0.5 % from day's here: a jump would be all of it).
     EXPECT_GT(std::abs(eased - day), 0.0F);
     EXPECT_LT(std::abs(eased - day), 0.1F * std::abs(target - day));
+}
+
+// A frame whose light isn't a number (an eye with NaN in it: D-047) leaves
+// the exposure as it was, and the next good frame goes on from there.
+TEST(Sky, LightThatIsntANumberLeavesTheExposure) {
+    auto r = make_offscreen({{64, 32}});
+    FOVEA_NEED_VULKAN(r);
+    r->set_sky(at_utc(6, 21, 17.0));
+    const SceneView good = view_towards(0.0, 10.0, 64, 32);
+    for (int f = 0; f < 3; ++f) {
+        r->draw_scene_frame(std::vector<SceneView>{good});
+    }
+    const float before = r->read_back_sky(0).exposure;
+    SceneView bad = good;
+    bad.eye_ecef = DVec3(std::numeric_limits<double>::quiet_NaN());
+    for (int f = 0; f < 3; ++f) {
+        r->draw_scene_frame(std::vector<SceneView>{bad});
+        EXPECT_EQ(r->read_back_sky(0).exposure, before) << "frame " << f;
+    }
+    r->draw_scene_frame(std::vector<SceneView>{good});
+    const float after = r->read_back_sky(0).exposure;
+    EXPECT_TRUE(std::isfinite(after));
+    EXPECT_NEAR(after / before, 1.0F, 1e-3F);
 }
 
 // The light follows the sun (milestone 6 step 1, now through the air): a
