@@ -134,7 +134,7 @@ The environment adds three packets: Celestial Sphere Control, Atmosphere Control
 
 - **The haze.** Terrain and models fade into the sky with distance through the aerial-perspective volume. Visibility sets the haze (D-030).
 - **Done when:**
-  - A GPU test of a dark box against the sky at distances around the set visibility finds its contrast near 2% at V (within a factor of 1.5, the tone curve bending it).
+  - A GPU test of a dark box against the sky at distances around the set visibility finds its contrast near 2% at V (within a factor of 1.5, the tone curve bending it). (Since D-048: the transmittance 5% at V, within 10%.)
   - Doubling visibility moves that distance with it.
   - At 100 km visibility, a terrain golden still shows the far hills.
   - Where terrain levels of detail meet in the distance, the seam softens (looked at on the desk).

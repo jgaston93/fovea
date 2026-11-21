@@ -35,10 +35,11 @@ struct Atmosphere {
 };
 
 // The extinction coefficient times the meteorological optical range, the
-// WMO's measure of visibility (D-048): MOR = ln(1/0.05) / extinction, the
-// distance at which a black object's contrast against the horizon falls to
-// 0.05 (WMO Guide to Instruments, Part I, chapter 9, equation 9.6). Not
-// Koschmieder's 0.02 (3.912), which the guide gives as the older value.
+// WMO's measure of visibility (D-048): MOR = ln(1/0.05) / extinction (WMO
+// Guide to Instruments, Volume I, chapter 9, equation 9.6), where a black
+// object's contrast against the horizon falls to 0.05 (equations 9.9 and
+// 9.10). Not the 0.02 (3.912) Koschmieder proposed in 1924; the guide takes
+// 0.05 for aeronautical needs.
 inline constexpr double kExtinctionTimesVisibility = 2.995732273553991;  // ln 20
 
 // The atmosphere with the aerosols (Mie) set for a visibility (D-030,
