@@ -688,6 +688,14 @@ float4 fs_volume(VolumeVertex i) : SV_Target {
     const ViewSky sky = view_sky[lighting.view];
     const float g = push.forward_scattering;
     const Origin o = origins[0];
+    // A pixel's width in metres per metre along the ray: the projection's
+    // vertical scale (row 1 less its forward part, as vs_particles takes the
+    // view's axes) over the view's height in pixels. The noise fades to its
+    // mean where its features are under 4 pixels across, so a far cloud's
+    // edge isn't hair (D-052: seen as fur at 20 000 puffs).
+    const float3 forward = normalize(r3);
+    const float scale_y = length(r1 - dot(r1, forward) * forward) / length(r3);
+    const float pixel_per_m = 2.0 * push.inv_target.y / max(scale_y, 1e-6);
     float through = 1.0;  // transmittance from the eye
     float3 light_sum = float3(0.0);
     for (int k = 0; k < steps; ++k) {
@@ -700,7 +708,10 @@ float4 fs_volume(VolumeVertex i) : SV_Target {
         }
         if (push.detail > 0.0) {
             const float3 off = p - o.offset;
-            const float n = detail_at(float3(dot(off, o.east), dot(off, o.north), dot(off, o.up)));
+            const float footprint = t * pixel_per_m;  // metres a pixel covers here
+            const float fade = saturate(push.detail_size / (4.0 * max(footprint, 1e-4)));
+            const float3 enu = float3(dot(off, o.east), dot(off, o.north), dot(off, o.up));
+            const float n = lerp(kDetailMean, detail_at(enu), fade);
             sigma *= detail_factor(n);
             // The erosion (D-051) at the cloud's edge, not each puff's: the
             // cloud's own thickness here, as 1 - e^(-sigma x 2 m) (its core
@@ -709,8 +720,12 @@ float4 fs_volume(VolumeVertex i) : SV_Target {
             // the core is kept.
             const float erosion = light_space[0].erosion;
             if (erosion > 0.0) {
+                // The edge carved by the field at three times its size:
+                // billows, not the fine detail's strands (which made a thick
+                // cloud's edge look like fur).
+                const float coarse = detail_at(enu * (1.0 / 3.0));
                 const float s = 1.0 - exp(-sigma * 2.0);
-                const float t = erosion * (1.0 - n);
+                const float t = erosion * (1.0 - coarse);
                 sigma *= saturate((s - t) / max(1.0 - t, 1e-3) * 4.0) * light_space[0].erosion_gain;
             }
         }
