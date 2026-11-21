@@ -700,7 +700,19 @@ float4 fs_volume(VolumeVertex i) : SV_Target {
         }
         if (push.detail > 0.0) {
             const float3 off = p - o.offset;
-            sigma *= detail_factor(float3(dot(off, o.east), dot(off, o.north), dot(off, o.up)));
+            const float n = detail_at(float3(dot(off, o.east), dot(off, o.north), dot(off, o.up)));
+            sigma *= detail_factor(n);
+            // The erosion (D-051) at the cloud's edge, not each puff's: the
+            // cloud's own thickness here, as 1 - e^(-sigma x 2 m) (its core
+            // near 1, its fringe near 0), less erosion x (1 - n), as a
+            // puff's s is eroded. Thin dust where the field is low goes;
+            // the core is kept.
+            const float erosion = light_space[0].erosion;
+            if (erosion > 0.0) {
+                const float s = 1.0 - exp(-sigma * 2.0);
+                const float t = erosion * (1.0 - n);
+                sigma *= saturate((s - t) / max(1.0 - t, 1e-3) * 4.0) * light_space[0].erosion_gain;
+            }
         }
         const float sun_depth = volume_sun_depth.SampleLevel(light_sampler, uvw, 0.0);
         const float3 light =

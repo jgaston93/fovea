@@ -83,6 +83,8 @@ GpuVolumeSpace volume_space(std::span<const Vec3> centres, std::span<const GpuPa
     v.voxel = side / static_cast<float>(v.size);
     v.inv_voxel = 1.0F / v.voxel;
     return v;
+}
+
 float erosion_gain(std::span<const std::uint32_t, 256> histogram, float detail,
                    float erosion) noexcept {
     if (erosion <= 0.0F) {
