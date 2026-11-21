@@ -619,6 +619,7 @@ TEST(Config, ParticlesSectionIsChecked) {
     expect_one_error(parse(head + "port = 9000\nlight_buffer = 4096\n"), 9,
                      "particles.light_buffer");
     expect_one_error(parse(head + "port = 9000\nresolution = \"quarter\"\n"), 9, "full, half");
+    expect_one_error(parse(head + "port = 9000\nrenderer = \"voxels\"\n"), 9, "puffs, volume");
 }
 
 }  // namespace

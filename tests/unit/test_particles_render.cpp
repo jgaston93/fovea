@@ -737,5 +737,87 @@ TEST(ParticlesVolume, APuffDrawsAsTheSamePuff) {
     EXPECT_NEAR(v, p, 0.2 * p);
 }
 
+// The volume's erosion (D-051, D-052) breaks the cloud's outline: a dense
+// puff, its cover along a ring at 85 % of its disc varies far more eroded
+// than with the detail alone.
+TEST(ParticlesVolume, ErosionBreaksTheCloudsEdge) {
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleFrame f = frame_at_eye(view, 10);
+    add(f, t, Vec3(0.0F, 30.0F, 2.0F), 8.0F, 2e-3F);
+    ParticleQuality q;
+    q.volume = true;
+    q.volume_size = 96;
+    q.volume_light_size = 32;
+    ParticleLook detail_only;
+    detail_only.detail = 0.6F;
+    detail_only.detail_size = 0.5F;
+    ParticleLook eroding = detail_only;
+    eroding.erosion = 0.8F;
+    std::vector<std::uint8_t> plain;
+    std::vector<std::uint8_t> eroded;
+    std::vector<std::uint8_t> empty;
+    {
+        auto a = make_renderer(10, q, detail_only);
+        if (a == nullptr) {
+            GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+        }
+        a->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        plain = draw(*a, view, &f, t, "volume-edge-detail.png");
+        empty = draw(*a, view, nullptr, t, nullptr);
+    }
+    {
+        auto b = make_renderer(10, q, eroding);
+        b->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        eroded = draw(*b, view, &f, t, "volume-edge-eroded.png");
+        EXPECT_EQ(b->validation_messages(), 0U);
+    }
+    const std::vector<int> cp = cover(plain, empty);
+    const std::vector<int> ce = cover(eroded, empty);
+    double cx = 0.0;
+    double cy = 0.0;
+    double n = 0.0;
+    for (std::uint32_t y = 0; y < kH; ++y) {
+        for (std::uint32_t x = 0; x < kW; ++x) {
+            if (cp[std::size_t{y} * kW + x] > 8) {
+                cx += x;
+                cy += y;
+                n += 1.0;
+            }
+        }
+    }
+    ASSERT_GT(n, 400.0);
+    cx /= n;
+    cy /= n;
+    const double radius = std::sqrt(n / 3.14159265);
+    const auto spread = [&](const std::vector<int>& c) {
+        double sum = 0.0;
+        double sum2 = 0.0;
+        int k = 0;
+        for (int a = 0; a < 180; ++a) {
+            const double th = a * 3.14159265 / 90.0;
+            const auto x = static_cast<int>(cx + 0.85 * radius * std::cos(th));
+            const auto y = static_cast<int>(cy + 0.85 * radius * std::sin(th));
+            if (x < 0 || y < 0 || x >= static_cast<int>(kW) || y >= static_cast<int>(kH)) {
+                continue;
+            }
+            const double v = c[static_cast<std::size_t>(y) * kW + static_cast<std::size_t>(x)];
+            sum += v;
+            sum2 += v * v;
+            ++k;
+        }
+        const double mean = sum / k;
+        return std::sqrt(std::max(sum2 / k - mean * mean, 0.0)) / std::max(mean, 1.0);
+    };
+    const double round = spread(cp);
+    const double broken = spread(ce);
+    std::printf("the volume's outline along the ring: detail %.3f, eroded %.3f\n", round, broken);
+    // Measured on lavapipe: 0.709 detail alone, 0.865 eroded; with the
+    // erosion taken out of the march, 0.709. Coarse carving (the field at
+    // three times its size, D-052) gives a puff this size few billows round
+    // its rim, so the margin is modest.
+    EXPECT_GT(broken, 1.12 * round);
+}
+
 }  // namespace
 }  // namespace fovea

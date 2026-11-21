@@ -106,6 +106,8 @@ frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
 # detail = 0.6                 # D-043, chosen: density varied by one noise field, billows (0: none, no cost)
 # detail_size = 2.0            # the noise's features, metres
 # swirl = 0.5                  # curl noise swirling the detail, in features; it drifts in time
+# erosion = 0.0                # D-051: the noise eats into each puff (the volume: the cloud's edge), 0 to 1
+# renderer = "puffs"           # D-052: or "volume", one box over them all, marched (cheaper, no puff outlines)
 # self_shadowing = true        # cost against look (D-042): false, no light pass
 # slices = 32                  # 1 to 128
 # light_buffer = 512           # texels a side, 64 to 2048

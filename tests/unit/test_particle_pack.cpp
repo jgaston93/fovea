@@ -227,4 +227,33 @@ TEST(ParticleErosion, TheGainGivesTheMassBack) {
     EXPECT_LT(erosion_gain(white, 0.6F, 0.8F), 1.1F);
 }
 
+
+// The volume's box (D-052): a cube over the particles' bounds, centred on
+// them, its voxel the side over the count; capped; at least a metre.
+TEST(ParticleVolume, TheBoxCoversTheParticles) {
+    std::vector<Vec3> centres{Vec3(-10.0F, 0.0F, 0.0F), Vec3(10.0F, 4.0F, -2.0F)};
+    std::vector<GpuParticle> ps(2);
+    ps[0].radius = 2.0F;
+    ps[1].radius = 1.0F;
+    const GpuVolumeSpace v = volume_space(centres, ps, 128, 64, 256.0F);
+    EXPECT_EQ(v.size, 128U);
+    EXPECT_EQ(v.light_size, 64U);
+    const float side = v.voxel * 128.0F;
+    EXPECT_NEAR(side, 23.0F * 1.02F, 1e-3F);  // x from -12 to 11
+    for (std::size_t i = 0; i < 2; ++i) {
+        for (std::size_t a = 0; a < 3; ++a) {
+            const auto c = static_cast<glm::length_t>(a);
+            EXPECT_LE(v.corner[a], centres[i][c] - ps[i].radius);
+            EXPECT_GE(v.corner[a] + side, centres[i][c] + ps[i].radius);
+        }
+    }
+    EXPECT_NEAR(v.inv_voxel * v.voxel, 1.0F, 1e-6F);
+    // Capped, and at least a metre.
+    EXPECT_NEAR(volume_space(centres, ps, 128, 64, 10.0F).voxel * 128.0F, 10.0F, 1e-4F);
+    std::vector<Vec3> one{Vec3(0.0F)};
+    std::vector<GpuParticle> tiny(1);
+    tiny[0].radius = 0.01F;
+    EXPECT_NEAR(volume_space(one, tiny, 64, 32, 256.0F).voxel * 64.0F, 1.0F, 1e-5F);
+}
+
 }  // namespace fovea
