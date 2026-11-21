@@ -232,6 +232,31 @@ float3 encode_srgb(float3 c) {
     return select(c <= 0.0031308, 12.92 * c, 1.055 * pow(c, float3(1.0 / 2.4)) - 0.055);
 }
 
+// A number in [0, 1) from a pixel and a salt: integer hashing of its
+// coordinates, the same every frame (no shimmer).
+float pixel_random(uint2 p, uint salt) {
+    uint h = p.x * 0x8da6b343u ^ p.y * 0xd8163841u ^ salt * 0xcb1ab31fu;
+    h ^= h >> 16;
+    h *= 0x7feb352du;
+    h ^= h >> 15;
+    h *= 0x846ca68bu;
+    h ^= h >> 16;
+    return float(h >> 8) * (1.0 / 16777216.0);
+}
+
+// Dither for an 8-bit target (D-050): up to one step either way, the
+// difference of two uniform numbers (a triangular distribution), per pixel
+// and channel, before the target rounds. A slow gradient (dusk's sky, a
+// cloud of dust lit from the side) showed as bands a step apart, each about
+// a dozen pixels wide.
+float3 dither_8bit(float3 c, float2 pixel) {
+    const uint2 p = uint2(pixel);
+    const float3 n = float3(pixel_random(p, 0u) - pixel_random(p, 1u),
+                            pixel_random(p, 2u) - pixel_random(p, 3u),
+                            pixel_random(p, 4u) - pixel_random(p, 5u));
+    return c + n * (1.0 / 255.0);
+}
+
 [shader("fragment")]
 float4 fs_tonemap(Fullscreen i) : SV_Target {
     const float2 uv = i.ndc * 0.5 + 0.5;
@@ -239,5 +264,14 @@ float4 fs_tonemap(Fullscreen i) : SV_Target {
     // resolve clamps it), and infinity over infinity is a NaN.
     const float3 hdr = clamp(hdr_scene.Sample(uv).rgb, 0.0, 65504.0);
     const float3 mapped = tone_map(hdr * tonemap.exposure);
-    return float4(tonemap.encode_srgb != 0 ? encode_srgb(mapped) : mapped, 1.0);
+    // An 8-bit UNORM target (every swapchain and offscreen output Fovea
+    // makes) is encoded and dithered here; an sRGB one encodes itself, past
+    // where a dither can go evenly, and isn't dithered.
+    if (tonemap.encode_srgb == 0) {
+        return float4(mapped, 1.0);
+    }
+    // Black stays black (night's sky, a dark screen), and white white.
+    const float3 encoded = encode_srgb(mapped);
+    const float3 dithered = select(encoded > 0.0 && encoded < 1.0, dither_8bit(encoded, i.position.xy), encoded);
+    return float4(saturate(dithered), 1.0);
 }
