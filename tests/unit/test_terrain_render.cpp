@@ -1189,10 +1189,11 @@ TEST(TerrainRender, AirportLightsShowAtNightWhereAndAsTheyShould) {
     EXPECT_GE(close.lit, 9);
     EXPECT_LE(clear[4].lit, 2);
 
-    // Through fog from 100 to 160 m up, 800 m visibility: the farther a
-    // light, the dimmer; the farthest, 3.5 km off, lost.
+    // Through fog from 100 to 160 m up, 600 m visibility (the fog 800 m
+    // gave by Koschmieder's 3.912, before D-048): the farther a light, the
+    // dimmer; the farthest, 3.5 km off, lost.
     const std::array<WeatherLayer, 1> fog = {
-        WeatherLayer{WeatherKind::fog, 100.0, 60.0, 1.0, 800.0}};
+        WeatherLayer{WeatherKind::fog, 100.0, 60.0, 1.0, 600.0}};
     const auto foggy = draw_lights(dir, south, kSize, fog, s.lights.size(), 1);
     std::array<double, 5> through{};
     for (std::size_t i = 1; i <= 4; ++i) {
