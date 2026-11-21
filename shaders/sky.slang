@@ -273,7 +273,9 @@ void cs_exposure(uint3 id: SV_DispatchThreadID) {
     const float adapted = light >= knee ? light : knee * pow(max(light, 1e-12) / knee, 0.75);
     const float target = push.key / adapted;
     float stops = log2(target);
-    if (exposure_state[1] != 0.0) {
+    // A jump takes the target itself, as the first frame does (D-045):
+    // a + (b - a) 1 can miss b by a few units in the last place.
+    if (exposure_state[1] != 0.0 && push.adapt < 1.0) {
         // Not lerp(): a + (b - a) t leaves a settled exposure exactly as it was.
         stops = exposure_state[0] + (stops - exposure_state[0]) * push.adapt;
     }

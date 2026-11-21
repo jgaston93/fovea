@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <numbers>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -510,6 +511,10 @@ struct Renderer::Impl {
     std::vector<bool> shadows_lit;  // a light casts this frame: else the maps are only cleared
     std::vector<SkyViewInput> sky_inputs;
     bool drew_scene = false;
+    // The last frame's sun and first view's eye (ECEF), to tell a jump (the
+    // clock set, a reposition) from the world moving on (D-045).
+    DVec3 last_sun{0.0};
+    DVec3 last_eye{0.0};
     double frame_period_s = 1.0 / 60.0;  // RendererOptions::frame_rate_hz
 
     // What the terrain, models and sky need of the device (one place, so
@@ -1484,6 +1489,11 @@ Frame& Renderer::Impl::begin_frame() {
     return f;
 }
 
+// A jump the exposure takes at once (D-045): the sun moved more than half
+// a degree in a frame, or the eye more than a kilometre.
+const double kSunJumpCos = std::cos(0.5 * std::numbers::pi / 180.0);
+constexpr double kEyeJumpM = 1000.0;
+
 // The scene for output i into its HDR target, ready for the tone-map pass:
 // the reference scene (sky and grid), then any terrain over it.
 void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
@@ -1558,10 +1568,20 @@ void Renderer::Impl::record_sky(VkCommandBuffer cmd, std::size_t slot,
     // Exposure moves toward its target with a time constant of a second
     // (D-031), a frame period a frame: by the frame clock, not the wall's,
     // so a replay drawn faster than real time sees what the live run did.
-    // The first frame takes it at once.
+    // The first frame takes it at once, and so does a frame after a jump
+    // (D-045): the sun more than half a degree from the last frame's (it
+    // moves a quarter of a degree a minute: the clock was set), or the first
+    // view's eye more than a kilometre (60 km/s: a reposition). Eased there,
+    // a jump from dusk to day showed a washed-out white for seconds, and
+    // from day to dusk a lag, for a change nothing in the world made.
+    const DVec3 eye = views.empty() ? DVec3(0.0) : views.front().eye_ecef;
+    const bool jumped =
+        glm::dot(sky.sun, last_sun) < kSunJumpCos || glm::length(eye - last_eye) > kEyeJumpM;
     const float adapt =
-        drew_scene ? static_cast<float>(1.0 - std::exp(-frame_period_s / 1.0)) : 1.0F;
+        drew_scene && !jumped ? static_cast<float>(1.0 - std::exp(-frame_period_s / 1.0)) : 1.0F;
     drew_scene = true;
+    last_sun = sky.sun;
+    last_eye = eye;
     sky_tables->record(cmd, sky_inputs, adapt);
 }
 

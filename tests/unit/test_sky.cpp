@@ -271,6 +271,63 @@ TEST(Sky, EveryViewTakesTheSameExposure) {
     EXPECT_EQ(r->validation_messages(), 0U);
 }
 
+// A jump takes its exposure at once (D-045): after day frames, the clock set
+// to night, or the eye moved 10 km up, gives the exposure a renderer drawing
+// only that from the start has; the eye moved 900 m (no jump) eases toward
+// it, as the world moving on does.
+TEST(Sky, AJumpTakesItsExposureAtOnce) {
+    const auto first = [&](const SkyBodies& sky, const SceneView& v) -> float {
+        auto r = make_offscreen({{64, 32}});
+        if (r == nullptr) {
+            return -1.0F;
+        }
+        r->set_sky(sky);
+        r->draw_scene_frame(std::vector<SceneView>{v});
+        EXPECT_EQ(r->validation_messages(), 0U);
+        return r->read_back_sky(0).exposure;
+    };
+    const auto after_day = [&](const SkyBodies& sky, const SceneView& v) -> float {
+        auto r = make_offscreen({{64, 32}});
+        if (r == nullptr) {
+            return -1.0F;
+        }
+        r->set_sky(at_utc(6, 21, 17.0));
+        const SceneView day = view_towards(0.0, 10.0, 64, 32);
+        for (int f = 0; f < 3; ++f) {
+            r->draw_scene_frame(std::vector<SceneView>{day});
+        }
+        r->set_sky(sky);
+        r->draw_scene_frame(std::vector<SceneView>{v});
+        EXPECT_EQ(r->validation_messages(), 0U);
+        return r->read_back_sky(0).exposure;
+    };
+    const SceneView here = view_towards(0.0, 10.0, 64, 32);
+    const float night = first(at_utc(6, 21, 3.0), here);
+    if (night < 0.0F) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    // The clock set to night: night's exposure at once, bit for bit (it is
+    // about 18 stops from day's: eased, the frame would be 0.3 of a stop
+    // toward it).
+    EXPECT_EQ(after_day(at_utc(6, 21, 3.0), here), night);
+    // And at 01:30, where easing all the way, a + (b - a) 1, missed the
+    // target by a few units in the last place (the review's finding).
+    EXPECT_EQ(after_day(at_utc(6, 21, 1.5), here), first(at_utc(6, 21, 1.5), here));
+    const float day = first(at_utc(6, 21, 17.0), here);
+    EXPECT_GT(night / day, 16.0F);
+    // The eye 10 km up: that place's exposure at once.
+    const SceneView high = view_towards(0.0, 10.0, 64, 32, 30.0, 10000.0);
+    EXPECT_EQ(after_day(at_utc(6, 21, 17.0), high), first(at_utc(6, 21, 17.0), high));
+    // 900 m up: not a jump, eased from day's at the ground toward its own.
+    const SceneView up = view_towards(0.0, 10.0, 64, 32, 30.0, 902.0);
+    const float target = first(at_utc(6, 21, 17.0), up);
+    const float eased = after_day(at_utc(6, 21, 17.0), up);
+    // A frame's easing: 1 - e^(-1/60), under 2 % of the way (the target is
+    // 0.5 % from day's here: a jump would be all of it).
+    EXPECT_GT(std::abs(eased - day), 0.0F);
+    EXPECT_LT(std::abs(eased - day), 0.1F * std::abs(target - day));
+}
+
 // The light follows the sun (milestone 6 step 1, now through the air): a
 // level surface gets more at noon than at 8 am, and none from the sun at
 // night; each first frame takes its exposure at once, so it is exactly the
