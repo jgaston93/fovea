@@ -352,6 +352,30 @@ TEST(Sky, LightThatIsntANumberLeavesTheExposure) {
     EXPECT_NEAR(after / before, 1.0F, 1e-3F);
 }
 
+// And as the very first frame: a neutral exposure, and the first good frame
+// takes its own at once, as if it were the first (D-047, the review's
+// finding: it had eased down from about 40 stops over).
+TEST(Sky, LightThatIsntANumberFirstLeavesNoExposure) {
+    const SceneView good = view_towards(0.0, 10.0, 64, 32);
+    float first = 0.0F;
+    {
+        auto fresh = make_offscreen({{64, 32}});  // one renderer at a time
+        FOVEA_NEED_VULKAN(fresh);
+        fresh->set_sky(at_utc(6, 21, 17.0));
+        fresh->draw_scene_frame(std::vector<SceneView>{good});
+        first = fresh->read_back_sky(0).exposure;
+    }
+    auto r = make_offscreen({{64, 32}});
+    FOVEA_NEED_VULKAN(r);
+    r->set_sky(at_utc(6, 21, 17.0));
+    SceneView bad = good;
+    bad.eye_ecef = DVec3(std::numeric_limits<double>::quiet_NaN());
+    r->draw_scene_frame(std::vector<SceneView>{bad});
+    EXPECT_EQ(r->read_back_sky(0).exposure, 1.0F);
+    r->draw_scene_frame(std::vector<SceneView>{good});
+    EXPECT_EQ(r->read_back_sky(0).exposure, first);
+}
+
 // The light follows the sun (milestone 6 step 1, now through the air): a
 // level surface gets more at noon than at 8 am, and none from the sun at
 // night; each first frame takes its exposure at once, so it is exactly the
