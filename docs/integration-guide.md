@@ -73,7 +73,7 @@ Until a host sets them, the date, time, visibility and weather layers come from 
   - A time within the minute the IG's clock is already in leaves the clock running, so a host may send its time every frame.
   - Dates from 1950 to 2050 are accepted. A date outside them, an hour over 23 or a minute over 59 rejects the whole packet, its Ephemeris Model Enable included.
   - The sun, moon and star enables and the star intensity are ignored: the sky always draws them.
-- **Atmosphere Control** sets the global visibility; a visibility of 0 or less rejects it. Humidity, temperature, wind and pressure change nothing drawn yet.
+- **Atmosphere Control** sets the global visibility; a visibility of 0 or less rejects it. A visibility is the WMO's meteorological optical range (D-048): where a black object's contrast against the horizon falls to 5%. An ordinary clear day is about 150 km; 50 km is visibly hazy, more so toward a low sun. The weather layers' visibilities mean the same. Humidity, temperature, wind and pressure change nothing drawn yet.
 - **Weather Control** sets or removes a whole global layer:
   - **Layers handled:** Layer IDs 0 to 5 (fog, three cloud layers, rain, snow). Each takes its base (above MSL), thickness, visibility and coverage. A negative thickness or visibility rejects the packet.
   - **What's drawn:** fog as a band of reduced visibility; rain and snow as visibility within them. Cloud layers aren't drawn yet (#73).

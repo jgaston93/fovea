@@ -94,7 +94,7 @@ bool under_precipitation(std::span<const WeatherLayer> weather, double height_m)
 
 // A view's weather into its lighting block (step 6, D-034): the eye's
 // height and up, and the fog, rain and snow, lowest first, each as its base,
-// top, extinction (Koschmieder's 3.912 over its visibility) and kind (0
+// top, extinction (ln 20 over its visibility, D-048) and kind (0
 // fog, 1 rain, 2 snow: each under its own overcast). Cloud layers aren't
 // drawn yet (#73): left out. No allocation.
 void fill_weather(ViewLighting& l, std::span<const WeatherLayer> weather, double eye_height_m,
@@ -118,8 +118,10 @@ void fill_weather(ViewLighting& l, std::span<const WeatherLayer> weather, double
     l.layer_count = static_cast<std::uint32_t>(n);
     for (std::size_t k = 0; k < n; ++k) {
         const WeatherLayer& w = *bands[k];
-        l.layer[k] = {static_cast<float>(w.base_m), static_cast<float>(w.base_m + w.thickness_m),
-                      static_cast<float>(3.912 / std::max(w.visibility_m, 1.0)), band_kind(w.kind)};
+        l.layer[k] = {
+            static_cast<float>(w.base_m), static_cast<float>(w.base_m + w.thickness_m),
+            static_cast<float>(kExtinctionTimesVisibility / std::max(w.visibility_m, 1.0)),
+            band_kind(w.kind)};
     }
 }
 

@@ -34,14 +34,23 @@ struct Atmosphere {
     double sun_angular_radius_deg = 0.267;
 };
 
-// The atmosphere with the aerosols (Mie) set for a visibility (D-030):
-// Koschmieder's relation, extinction 3.912 / V for the meteorological
-// visibility V (where a black object's contrast falls to 2%), taken in green
-// light at sea level, the Rayleigh part included. The aerosols keep
-// Hillaire's ratio of scattering to extinction (0.9). Clearer air than
-// Rayleigh alone allows (about 290 km) leaves no aerosols.
+// The extinction coefficient times the meteorological optical range, the
+// WMO's measure of visibility (D-048): MOR = ln(1/0.05) / extinction (WMO
+// Guide to Instruments, Volume I, chapter 9, equation 9.6), where a black
+// object's contrast against the horizon falls to 0.05 (equations 9.9 and
+// 9.10). Not the 0.02 (3.912) Koschmieder proposed in 1924; the guide takes
+// 0.05 for aeronautical needs.
+inline constexpr double kExtinctionTimesVisibility = 2.995732273553991;  // ln 20
+
+// The atmosphere with the aerosols (Mie) set for a visibility (D-030,
+// D-048): extinction ln(20) / V for the meteorological optical range V,
+// taken in green light at sea level, the Rayleigh part included. The
+// aerosols keep Bruneton's single-scattering albedo, 0.9 (the ratio of
+// scattering to extinction). Clearer air than Rayleigh alone allows (about
+// 220 km) leaves no aerosols.
 inline Atmosphere with_visibility(Atmosphere a, double visibility_m) {
-    const double extinction = 3.912 / (std::max(visibility_m, 1.0) / 1000.0);  // per km
+    const double extinction =
+        kExtinctionTimesVisibility / (std::max(visibility_m, 1.0) / 1000.0);  // per km
     const double mie = std::max(extinction - a.rayleigh_scattering[1], 0.0);
     a.mie_extinction = mie;
     a.mie_scattering = mie * (3.996 / 4.440);

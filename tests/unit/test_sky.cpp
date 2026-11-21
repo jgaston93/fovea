@@ -430,14 +430,15 @@ TEST(Sky, TheLightFollowsTheDateAndTime) {
                 std::log2(key / night->light / night->exposure));
 }
 
-// Visibility sets the haze (milestone 6 step 3, D-030): along a level ray
-// from sea level, the air's transmittance falls to about 2% at the set
-// visibility (Koschmieder: a black object's contrast against the horizon
-// sky is the air's transmittance), and doubling the visibility moves that
-// distance with it. Read from the aerial-perspective volume (8-bit images
-// can't show a 2% contrast); within a factor of 1.5, the volume holding the
-// mean of red, green and blue where Koschmieder's is green's.
-TEST(Sky, VisibilityIsWhereTheHazeLeavesTwoPercent) {
+// Visibility sets the haze (milestone 6 step 3, D-030, D-048): along a
+// level ray from sea level, the air's transmittance falls to 5% at the set
+// visibility (the WMO's meteorological optical range: a black object's
+// contrast against the horizon sky is the air's transmittance), and doubling
+// the visibility moves that distance with it. Read from the aerial-
+// perspective volume (8-bit images can't show a 5% contrast); within 10%,
+// the volume holding the mean of red, green and blue where the visibility
+// is green's. Koschmieder's 0.02 (3.912) would put it at 77%.
+TEST(Sky, VisibilityIsWhereTheHazeLeavesFivePercent) {
     auto r = make_offscreen({{64, 64}});
     FOVEA_NEED_VULKAN(r);
     ReferenceScene scene;
@@ -454,7 +455,7 @@ TEST(Sky, VisibilityIsWhereTheHazeLeavesTwoPercent) {
         const SkyReadback s = r->read_back_sky(0);
         // The two middle columns' transmittance in the two rows just above
         // level (those below meet the ground at the horizon, 5 km from a
-        // 2 m eye) at each slice's far edge, then where it crosses 2%.
+        // 2 m eye) at each slice's far edge, then where it crosses 5%.
         std::vector<double> t(kAerialDepth);
         for (std::uint32_t k = 0; k < kAerialDepth; ++k) {
             double sum = 0.0;
@@ -473,16 +474,16 @@ TEST(Sky, VisibilityIsWhereTheHazeLeavesTwoPercent) {
         };
         double at = -1.0;
         for (std::uint32_t k = 1; k < kAerialDepth; ++k) {
-            if (t[k] <= 0.02 && t[k - 1] > 0.02) {
+            if (t[k] <= 0.05 && t[k - 1] > 0.05) {
                 // Between the two edges, by the log of the transmittance.
-                const double f = std::log(t[k - 1] / 0.02) / std::log(t[k - 1] / t[k]);
+                const double f = std::log(t[k - 1] / 0.05) / std::log(t[k - 1] / t[k]);
                 at = far_edge(k - 1) + f * (far_edge(k) - far_edge(k - 1));
                 break;
             }
         }
-        std::printf("visibility %.0f km: transmittance 2%% at %.1f km\n", visibility_km, at);
-        EXPECT_GT(at, visibility_km / 1.5);
-        EXPECT_LT(at, visibility_km * 1.5);
+        std::printf("visibility %.0f km: transmittance 5%% at %.1f km\n", visibility_km, at);
+        EXPECT_GT(at, visibility_km * 0.9);
+        EXPECT_LT(at, visibility_km * 1.1);
     }
     EXPECT_EQ(r->validation_messages(), 0U);
 }
