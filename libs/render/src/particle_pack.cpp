@@ -69,8 +69,12 @@ GpuVolumeSpace volume_space(std::span<const Vec3> centres, std::span<const GpuPa
     Vec3 lo(0.0F);
     Vec3 hi(0.0F);
     bool any = false;
+    double extinction_sum = 0.0;
+    std::size_t counted = 0;
     for (std::size_t i = 0; i < centres.size() && i < particles.size(); ++i) {
         const Vec3 r(particles[i].radius * std::max(spread, 1.0F));
+        extinction_sum += static_cast<double>(particles[i].extinction);
+        ++counted;
         lo = any ? glm::min(lo, centres[i] - r) : centres[i] - r;
         hi = any ? glm::max(hi, centres[i] + r) : centres[i] + r;
         any = true;
@@ -86,15 +90,22 @@ GpuVolumeSpace volume_space(std::span<const Vec3> centres, std::span<const GpuPa
     const double need = std::max(std::max(extent.x, extent.y), extent.z);
     const double count = static_cast<double>(v.size);
     double voxel = std::exp2(std::ceil(std::log2(std::max(need, 1.0) / (count - 2.0))));
-    voxel = std::min(voxel, std::exp2(std::floor(std::log2(std::max(static_cast<double>(max_side), 1.0) / count))));
+    voxel = std::min(
+        voxel,
+        std::exp2(std::floor(std::log2(std::max(static_cast<double>(max_side), 1.0) / count))));
     const double side = voxel * count;
     const DVec3 world_low = anchor + DVec3(mid) - DVec3(side * 0.5);
     const DVec3 snapped = glm::floor(world_low / voxel) * voxel;
     const DVec3 corner = snapped - anchor;
-    v.corner = {static_cast<float>(corner.x), static_cast<float>(corner.y), static_cast<float>(corner.z)};
+    v.corner = {static_cast<float>(corner.x), static_cast<float>(corner.y),
+                static_cast<float>(corner.z)};
     v.voxel = static_cast<float>(voxel);
     v.inv_voxel = static_cast<float>(1.0 / voxel);
     v.spread = std::max(spread, 1.0F);
+    const double sp = static_cast<double>(v.spread);
+    const double cube = sp * sp * sp;
+    const double mean = counted > 0 ? extinction_sum / static_cast<double>(counted) / cube : 0.0;
+    v.inv_reference = mean > 0.0 ? static_cast<float>(1.0 / mean) : 1.0F;
     return v;
 }
 
@@ -135,6 +146,66 @@ float erosion_gain(std::span<const std::uint32_t, 256> histogram, float detail,
             const double e = w * std::clamp((s - t) / std::max(1.0 - t, 1e-3) * 4.0, 0.0, 1.0);
             with += p * e * f;
             without += p * w * f;
+        }
+    }
+    return with > 0.0 ? static_cast<float>(without / with) : 1.0F;
+}
+
+float volume_erosion_gain(std::span<const std::uint32_t, 256> histogram, float detail,
+                          float erosion) noexcept {
+    if (erosion <= 0.0F) {
+        return 1.0F;
+    }
+    // The histogram in 32 bins (each its mean level), so the double sum
+    // over the fine and the coarse field stays small.
+    constexpr std::size_t kBins = 32;
+    std::array<double, kBins> p{};
+    std::array<double, kBins> level{};
+    double count = 0.0;
+    for (std::size_t k = 0; k < histogram.size(); ++k) {
+        const std::size_t b = k * kBins / histogram.size();
+        p[b] += histogram[k];
+        level[b] += static_cast<double>(histogram[k]) * static_cast<double>(k) / 255.0;
+        count += histogram[k];
+    }
+    if (count <= 0.0) {
+        return 1.0F;
+    }
+    double mean = 0.0;
+    for (std::size_t b = 0; b < kBins; ++b) {
+        level[b] = p[b] > 0.0 ? level[b] / p[b] : 0.0;
+        p[b] /= count;
+        mean += p[b] * level[b];
+    }
+    const double d = static_cast<double>(detail);
+    const double e = static_cast<double>(erosion);
+    const double normaliser = std::max(1.0 - d * (1.0 - mean), 1e-6);
+    constexpr double kBaseMean = 0.7645;  // particles.slang's
+    // A lone particle, as particles.slang's fs_volume has it: its density
+    // over the particles' mean, w / kBaseMean times the fine field's factor;
+    // s = 1 - exp(-2 that); t from the coarse field, independent of the fine.
+    constexpr int kShells = 128;
+    double with = 0.0;
+    double without = 0.0;
+    for (int k = 0; k < kShells; ++k) {
+        const double u = (k + 0.5) / kShells;
+        const double r2 = std::pow(u, 2.0 / 3.0);
+        const double w = std::clamp(3.0 * (1.0 - r2), 0.0, 1.0) / kBaseMean;
+        for (std::size_t a = 0; a < kBins; ++a) {
+            if (p[a] == 0.0) {
+                continue;
+            }
+            const double sigma = w * (1.0 - d * (1.0 - level[a])) / normaliser;
+            const double s = 1.0 - std::exp(-2.0 * sigma);
+            without += p[a] * sigma;
+            for (std::size_t b = 0; b < kBins; ++b) {
+                if (p[b] == 0.0) {
+                    continue;
+                }
+                const double t = e * (1.0 - level[b]);
+                with += p[a] * p[b] * sigma *
+                        std::clamp((s - t) / std::max(1.0 - t, 1e-3) * 4.0, 0.0, 1.0);
+            }
         }
     }
     return with > 0.0 ? static_cast<float>(without / with) : 1.0F;

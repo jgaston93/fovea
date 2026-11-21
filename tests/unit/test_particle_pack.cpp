@@ -250,7 +250,8 @@ TEST(ParticleVolume, TheBoxCoversTheParticlesAndStaysPut) {
         }
     }
     for (std::size_t a = 0; a < 3; ++a) {
-        const double world = anchor[static_cast<glm::length_t>(a)] + static_cast<double>(v.corner[a]);
+        const double world =
+            anchor[static_cast<glm::length_t>(a)] + static_cast<double>(v.corner[a]);
         const double voxel = static_cast<double>(v.voxel);
         EXPECT_NEAR(world / voxel, std::round(world / voxel), 1e-3) << a;
     }
@@ -278,6 +279,24 @@ TEST(ParticleVolume, TheBoxCoversTheParticlesAndStaysPut) {
     std::vector<GpuParticle> tiny(1);
     tiny[0].radius = 0.01F;
     EXPECT_GE(volume_space(one, tiny, 64, 32, 256.0F, anchor).voxel * 64.0F, 1.0F);
+}
+
+// The volume's erosion gain (D-052): 1 without erosion; rising with it;
+// and the eroded lone particle's mass given back (the render test,
+// ParticlesVolume.ErosionKeepsTheMass, measures it).
+TEST(ParticleErosion, TheVolumesGainRisesWithTheErosion) {
+    std::array<std::uint32_t, 256> spread{};
+    for (std::size_t k = 0; k < spread.size(); ++k) {
+        spread[k] = 1;
+    }
+    EXPECT_EQ(volume_erosion_gain(spread, 0.6F, 0.0F), 1.0F);
+    float last = 1.0F;
+    for (const float e : {0.2F, 0.4F, 0.6F, 0.8F}) {
+        const float g = volume_erosion_gain(spread, 0.6F, e);
+        EXPECT_GT(g, last) << e;
+        last = g;
+    }
+    EXPECT_LT(last, 4.0F);
 }
 
 }  // namespace fovea

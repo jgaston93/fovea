@@ -102,8 +102,11 @@ private:
     std::vector<DVec3> anchors_;
     std::vector<float> times_;                 // per slot: seconds the detail has drifted (D-043)
     std::vector<std::uint8_t> front_to_back_;  // per slot and output
-    std::vector<VkDescriptorSet> view_sets_;   // per output: depth, light, image
-    std::vector<Image> particle_images_;       // per output, its render size (or half)
+    // Per slot: the volume (D-052) packed and not yet built this frame; built
+    // by the first output drawn (any may be skipped, a minimised window).
+    mutable std::vector<std::uint8_t> volume_pending_;
+    std::vector<VkDescriptorSet> view_sets_;  // per output: depth, light, image
+    std::vector<Image> particle_images_;      // per output, its render size (or half)
     std::vector<VkExtent2D> image_extents_;
     Image light_;                                  // shared, used by one view at a time
     VkFormat light_format_ = VK_FORMAT_UNDEFINED;  // R32F where it blends and filters, else R16F

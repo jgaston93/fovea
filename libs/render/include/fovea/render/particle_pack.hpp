@@ -150,7 +150,9 @@ struct GpuVolumeSpace {
     float inv_voxel = 1.0F;
     std::uint32_t particles = 0;  // how many to inject
     float spread = 1.0F;          // each particle's radius times this, its density over its cube
-    std::array<float, 3> unused{};
+    float inv_reference =
+        1.0F;  // 1 / the particles' mean extinction once spread [m] (erosion's scale)
+    std::array<float, 2> unused{};
 };
 static_assert(sizeof(GpuVolumeSpace) == 48, "must match VolumeSpace in particles.slang");
 
@@ -171,6 +173,14 @@ GpuVolumeSpace volume_space(std::span<const Vec3> centres, std::span<const GpuPa
 // more as it rises. No allocation.
 float erosion_gain(std::span<const std::uint32_t, 256> histogram, float detail,
                    float erosion) noexcept;
+
+// The same for the volume (D-052), whose erosion judges how deep in the
+// cloud a point is by its density over the particles' mean (s = 1 -
+// exp(-2 sigma / mean)) and carves with the field at three times its size
+// (independent of the detail's): a lone particle's density integrated
+// without erosion over with it. No allocation.
+float volume_erosion_gain(std::span<const std::uint32_t, 256> histogram, float detail,
+                          float erosion) noexcept;
 
 // The light space over particles with these centres, for light travelling
 // along `travel` (a unit vector). No allocation.

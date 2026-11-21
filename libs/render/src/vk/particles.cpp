@@ -40,12 +40,29 @@ VkFormat light_format_for(VkPhysicalDevice physical) {
 
 // The volume's float images (D-052): written by compute, sampled filtered:
 // 32-bit where the GPU does both, else 16-bit (most do both at 32).
+// The volume's density and sun images: written and read as storage images
+// the shaders declare without a format (Slang's RWTexture3D<float>), and
+// filtered when sampled. R32F where it has all of that, else R16F; neither,
+// and the volume can't be drawn here.
 VkFormat volume_format_for(VkPhysicalDevice physical) {
-    VkFormatProperties p{};
-    vkGetPhysicalDeviceFormatProperties(physical, VK_FORMAT_R32_SFLOAT, &p);
-    const VkFormatFeatureFlags need =
-        VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
-    return (p.optimalTilingFeatures & need) == need ? VK_FORMAT_R32_SFLOAT : VK_FORMAT_R16_SFLOAT;
+    const VkFormatFeatureFlags2 need = VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT |
+                                       VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT |
+                                       VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT |
+                                       VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    for (const VkFormat f : {VK_FORMAT_R32_SFLOAT, VK_FORMAT_R16_SFLOAT}) {
+        VkFormatProperties3 p3{};
+        p3.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3;
+        VkFormatProperties2 p{};
+        p.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2;
+        p.pNext = &p3;
+        vkGetPhysicalDeviceFormatProperties2(physical, f, &p);
+        if ((p3.optimalTilingFeatures & need) == need) {
+            return f;
+        }
+    }
+    throw std::runtime_error(
+        "particles: no float format this GPU can store to without a format and filter, for the "
+        "volume ([particles] renderer = \"volume\"); use \"puffs\"");
 }
 
 constexpr VkShaderStageFlags kAllStages =
@@ -448,6 +465,7 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
       anchors_(slots, DVec3(0.0)),
       times_(slots, 0.0F),
       front_to_back_(std::size_t{slots} * extents.size(), 1),
+      volume_pending_(slots, 0),
       view_sets_(extents.size(), VK_NULL_HANDLE),
       packed_(capacity),
       packed_origins_(kMaxParticleOrigins),
@@ -568,7 +586,9 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
               "vkCreateDescriptorSetLayout (particles' view)");
 
         // The volume's three images (D-052), 1 voxel when it isn't drawn.
-        const VkFormat volume_format = volume_format_for(gpu_.physical);
+        // Off, R32F (storage is mandatory for it): never fails for the puffs.
+        const VkFormat volume_format =
+            quality_.volume ? volume_format_for(gpu_.physical) : VK_FORMAT_R32_SFLOAT;
         const std::uint32_t vsize = quality_.volume ? quality_.volume_size : 1;
         const std::uint32_t lsize = quality_.volume ? quality_.volume_light_size : 1;
         volume_accumulate_ = make_volume_target(vsize, VK_FORMAT_R32_UINT);
@@ -818,7 +838,9 @@ std::size_t ParticlesGpu::pack(std::uint32_t slot, const ParticleFrame& frame, L
     GpuLightSpace ls = light_space(centres, packed, travel);
     ls.erosion = look.erosion;  // D-051
     if (look.detail != gain_detail_ || look.erosion != gain_erosion_) {
-        erosion_gain_ = erosion_gain(detail_histogram_, look.detail, look.erosion);
+        erosion_gain_ = quality_.volume
+                            ? volume_erosion_gain(detail_histogram_, look.detail, look.erosion)
+                            : erosion_gain(detail_histogram_, look.detail, look.erosion);
         gain_detail_ = look.detail;
         gain_erosion_ = look.erosion;
     }
@@ -832,6 +854,7 @@ std::size_t ParticlesGpu::pack(std::uint32_t slot, const ParticleFrame& frame, L
         vs.particles = static_cast<std::uint32_t>(n);
     }
     std::memcpy(base + kVolumeSpaceAt, &vs, sizeof(vs));
+    volume_pending_[slot] = quality_.volume && n > 0 ? 1 : 0;
     const std::size_t outputs = view_sets_.size();
     auto* order = static_cast<std::uint32_t*>(s.order_mapped);
     for (std::size_t o = 0; o < outputs && o < views.size(); ++o) {
@@ -889,8 +912,9 @@ void ParticlesGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t
     // view), then each view marched through it into its particle image,
     // composited as the puffs are.
     if (quality_.volume) {
-        if (output == 0) {
+        if (volume_pending_[slot] != 0) {
             record_volume(cmd, slot, lighting_offset);
+            volume_pending_[slot] = 0;
         }
         const std::array<VkImageMemoryBarrier2, 1> to_image{
             image_barrier(image.image, kFragmentStage, 0, kColourStage, kColourReadWrite,
