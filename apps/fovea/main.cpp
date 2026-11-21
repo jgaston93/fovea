@@ -368,11 +368,13 @@ fovea::RendererOptions renderer_options(const fovea::DisplayConfig& config) {
         r.particle_look.detail = static_cast<float>(p.detail);
         r.particle_look.detail_size = static_cast<float>(p.detail_size);
         r.particle_look.swirl = static_cast<float>(p.swirl);
+        r.particle_look.erosion = static_cast<float>(p.erosion);
         r.particle_look.fade = std::chrono::duration<float>(static_cast<float>(p.fade_s));
         r.particle_quality.self_shadowing = p.self_shadowing;
         r.particle_quality.slices = p.slices;
         r.particle_quality.light_buffer = p.light_buffer;
         r.particle_quality.half_resolution = p.half_resolution;
+        r.particle_quality.volume = p.volume;
     }
     return r;
 }

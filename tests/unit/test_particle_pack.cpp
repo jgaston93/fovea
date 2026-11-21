@@ -198,4 +198,105 @@ TEST(ParticleSlicing, TheCentralRayOfALopsidedChannel) {
 }
 
 }  // namespace
+
+// The erosion's gain (D-051): 1 without erosion, and rising with it, as the
+// erosion takes more of the mass. A flat detail volume (every level mid
+// grey) and the real one's shape both.
+TEST(ParticleErosion, TheGainGivesTheMassBack) {
+    std::array<std::uint32_t, 256> flat{};
+    flat[128] = 1000;
+    std::array<std::uint32_t, 256> spread{};
+    for (std::size_t k = 0; k < spread.size(); ++k) {
+        spread[k] = 10;
+    }
+    for (const auto& h : {flat, spread}) {
+        EXPECT_EQ(erosion_gain(h, 0.6F, 0.0F), 1.0F);
+        const float light = erosion_gain(h, 0.6F, 0.3F);
+        const float strong = erosion_gain(h, 0.6F, 0.8F);
+        EXPECT_GT(light, 1.0F);
+        EXPECT_GT(strong, light);
+        EXPECT_LT(strong, 20.0F);
+    }
+    // An empty histogram: nothing to weigh, no gain.
+    EXPECT_EQ(erosion_gain(std::array<std::uint32_t, 256>{}, 0.6F, 0.6F), 1.0F);
+    // With the field everywhere 1 (n = 1), nothing is eroded but the outer
+    // quarter of s's ramp (4 s, saturated): a gain of a few percent.
+    std::array<std::uint32_t, 256> white{};
+    white[255] = 1;
+    EXPECT_GT(erosion_gain(white, 0.6F, 0.8F), 1.0F);
+    EXPECT_LT(erosion_gain(white, 0.6F, 0.8F), 1.1F);
+}
+
+// The volume's box (D-052): it covers the particles; its voxel is a power
+// of two of metres; its corner is on a multiple of the voxel in the world;
+// and the same particles seen from another eye (anchor) give the same box in
+// the world (a box fitted afresh each frame moved, and the cloud flickered).
+TEST(ParticleVolume, TheBoxCoversTheParticlesAndStaysPut) {
+    const DVec3 anchor(500000.25, -5000000.5, 3600000.75);
+    std::vector<Vec3> centres{Vec3(-10.0F, 0.0F, 0.0F), Vec3(10.0F, 4.0F, -2.0F)};
+    std::vector<GpuParticle> ps(2);
+    ps[0].radius = 2.0F;
+    ps[1].radius = 1.0F;
+    const GpuVolumeSpace v = volume_space(centres, ps, 128, 64, 256.0F, anchor);
+    EXPECT_EQ(v.size, 128U);
+    EXPECT_EQ(v.light_size, 64U);
+    EXPECT_EQ(std::exp2(std::round(std::log2(v.voxel))), v.voxel);  // a power of two
+    const float side = v.voxel * 128.0F;
+    for (std::size_t i = 0; i < 2; ++i) {
+        for (std::size_t a = 0; a < 3; ++a) {
+            const auto c = static_cast<glm::length_t>(a);
+            EXPECT_LE(v.corner[a], centres[i][c] - ps[i].radius);
+            EXPECT_GE(v.corner[a] + side, centres[i][c] + ps[i].radius);
+        }
+    }
+    for (std::size_t a = 0; a < 3; ++a) {
+        const double world =
+            anchor[static_cast<glm::length_t>(a)] + static_cast<double>(v.corner[a]);
+        const double voxel = static_cast<double>(v.voxel);
+        EXPECT_NEAR(world / voxel, std::round(world / voxel), 1e-3) << a;
+    }
+    // The eye 3.3 m away: the particles' offsets from it change, the box's
+    // grid in the world doesn't.
+    const DVec3 moved = anchor + DVec3(3.3, -1.7, 0.9);
+    std::vector<Vec3> from_moved;
+    for (const Vec3& c : centres) {
+        from_moved.push_back(Vec3(DVec3(c) + anchor - moved));
+    }
+    const GpuVolumeSpace w = volume_space(from_moved, ps, 128, 64, 256.0F, moved);
+    EXPECT_EQ(w.voxel, v.voxel);
+    for (std::size_t a = 0; a < 3; ++a) {
+        const auto c = static_cast<glm::length_t>(a);
+        // The same grid: the corners whole voxels apart (the box may step a
+        // voxel as its bounds cross a grid line; its voxels don't move).
+        const double apart = (moved[c] + static_cast<double>(w.corner[a]) -
+                              (anchor[c] + static_cast<double>(v.corner[a]))) /
+                             static_cast<double>(v.voxel);
+        EXPECT_NEAR(apart, std::round(apart), 1e-3) << a;
+    }
+    // Capped: the voxel no larger than the cap allows; at least a metre's box.
+    EXPECT_LE(volume_space(centres, ps, 128, 64, 10.0F, anchor).voxel * 128.0F, 10.0F);
+    std::vector<Vec3> one{Vec3(0.0F)};
+    std::vector<GpuParticle> tiny(1);
+    tiny[0].radius = 0.01F;
+    EXPECT_GE(volume_space(one, tiny, 64, 32, 256.0F, anchor).voxel * 64.0F, 1.0F);
+}
+
+// The volume's erosion gain (D-052): 1 without erosion; rising with it;
+// and the eroded lone particle's mass given back (the render test,
+// ParticlesVolume.ErosionKeepsTheMass, measures it).
+TEST(ParticleErosion, TheVolumesGainRisesWithTheErosion) {
+    std::array<std::uint32_t, 256> spread{};
+    for (std::size_t k = 0; k < spread.size(); ++k) {
+        spread[k] = 1;
+    }
+    EXPECT_EQ(volume_erosion_gain(spread, 0.6F, 0.0F), 1.0F);
+    float last = 1.0F;
+    for (const float e : {0.2F, 0.4F, 0.6F, 0.8F}) {
+        const float g = volume_erosion_gain(spread, 0.6F, e);
+        EXPECT_GT(g, last) << e;
+        last = g;
+    }
+    EXPECT_LT(last, 4.0F);
+}
+
 }  // namespace fovea

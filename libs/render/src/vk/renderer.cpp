@@ -41,6 +41,9 @@
 #include "shaders/kCsMultiScattering.hpp"
 #include "shaders/kCsSkyView.hpp"
 #include "shaders/kCsTransmittance.hpp"
+#include "shaders/kCsVolumeConvert.hpp"
+#include "shaders/kCsVolumeInject.hpp"
+#include "shaders/kCsVolumeSun.hpp"
 #include "shaders/kFsLights.hpp"
 #include "shaders/kFsModel.hpp"
 #include "shaders/kFsModelShadow.hpp"
@@ -52,6 +55,7 @@
 #include "shaders/kFsStars.hpp"
 #include "shaders/kFsTerrain.hpp"
 #include "shaders/kFsTonemap.hpp"
+#include "shaders/kFsVolume.hpp"
 #include "shaders/kVsFullscreen.hpp"
 #include "shaders/kVsLights.hpp"
 #include "shaders/kVsModel.hpp"
@@ -62,6 +66,7 @@
 #include "shaders/kVsStars.hpp"
 #include "shaders/kVsTerrain.hpp"
 #include "shaders/kVsTerrainShadow.hpp"
+#include "shaders/kVsVolume.hpp"
 #include "shadows.hpp"
 #include "sky.hpp"
 #include "stars.hpp"
@@ -1386,8 +1391,10 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
     if (particle_capacity > 0) {
         ParticlesGpu::Modules m;
         const auto free_modules = [&] {
-            for (VkShaderModule s : {m.vs_particles, m.fs_particles, m.vs_light, m.fs_light,
-                                     m.vs_composite, m.fs_composite}) {
+            for (VkShaderModule s :
+                 {m.vs_particles, m.fs_particles, m.vs_light, m.fs_light, m.vs_composite,
+                  m.fs_composite, m.cs_volume_inject, m.cs_volume_convert, m.cs_volume_sun,
+                  m.vs_volume, m.fs_volume}) {
                 vkDestroyShaderModule(device.device, s, nullptr);
             }
         };
@@ -1403,6 +1410,13 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
             m.fs_light = make_module(kFsParticleLight);
             m.vs_composite = make_module(kVsParticleComposite);
             m.fs_composite = make_module(kFsParticleComposite);
+            if (particle_quality.volume) {  // D-052
+                m.cs_volume_inject = make_module(kCsVolumeInject);
+                m.cs_volume_convert = make_module(kCsVolumeConvert);
+                m.cs_volume_sun = make_module(kCsVolumeSun);
+                m.vs_volume = make_module(kVsVolume);
+                m.fs_volume = make_module(kFsVolume);
+            }
             particles =
                 std::make_unique<ParticlesGpu>(gpu_context(), particle_capacity, kFramesInFlight,
                                                extents, kHdrFormat, m, particle_quality);

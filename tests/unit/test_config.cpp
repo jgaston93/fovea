@@ -612,12 +612,14 @@ TEST(Config, ParticlesSectionIsChecked) {
     expect_one_error(parse(head + "port = 9000\ndetail = 1.5\n"), 9, "particles.detail");
     expect_one_error(parse(head + "port = 9000\ndetail_size = 0\n"), 9, "particles.detail_size");
     expect_one_error(parse(head + "port = 9000\nswirl = -1\n"), 9, "particles.swirl");
+    expect_one_error(parse(head + "port = 9000\nerosion = 1.5\n"), 9, "particles.erosion");
     expect_one_error(parse(head + "port = 9000\nself_shadowing = 1\n"), 9,
                      "particles.self_shadowing");
     expect_one_error(parse(head + "port = 9000\nslices = 0\n"), 9, "particles.slices");
     expect_one_error(parse(head + "port = 9000\nlight_buffer = 4096\n"), 9,
                      "particles.light_buffer");
     expect_one_error(parse(head + "port = 9000\nresolution = \"quarter\"\n"), 9, "full, half");
+    expect_one_error(parse(head + "port = 9000\nrenderer = \"voxels\"\n"), 9, "puffs, volume");
 }
 
 }  // namespace

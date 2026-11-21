@@ -57,9 +57,9 @@ struct LightSpace {
     float3 u;  // across the light buffer
     float unused0;
     float3 v;
-    float unused1;
+    float erosion;  // the look's (D-051)
     float3 travel;  // the light's direction of travel
-    float unused2;
+    float erosion_gain;  // the eroded density back to the mass (D-051)
 };
 [[vk::binding(0, 0)]] StructuredBuffer<Particle> particles;
 [[vk::binding(1, 0)]] StructuredBuffer<Origin> origins;
@@ -67,6 +67,20 @@ struct LightSpace {
 // Each view's drawing order (its sort along the half vector), from
 // push.order_base.
 [[vk::binding(3, 0)]] StructuredBuffer<uint> order;
+// The volume's box and sizes (D-052), when [particles] renderer = "volume":
+// mirrors GpuVolumeSpace in particle_pack.hpp.
+struct VolumeSpace {
+    float3 corner;    // the box's lowest corner from the anchor, along `axes` (ECEF)
+    float voxel;      // a voxel's side, metres
+    uint size;        // voxels a side of the density volume
+    uint light_size;  // voxels a side of the sun's volume
+    float inv_voxel;
+    uint particles;   // how many to inject
+    float spread;     // each particle's radius times this, its density over its cube
+    float inv_reference;  // 1 / the particles' mean extinction once spread [m]: the erosion's scale
+    float2 unused;
+};
+[[vk::binding(4, 0)]] StructuredBuffer<VolumeSpace> volume_space;
 // The view's resolved depth (reverse-Z, infinite far plane), read by pixel.
 [[vk::binding(0, 2)]] Texture2D<float> scene_depth;
 // The light buffer: optical depth toward the light, by light-space position.
@@ -79,6 +93,14 @@ struct LightSpace {
 [[vk::binding(4, 2)]] Texture3D<float> detail_noise;
 [[vk::binding(5, 2)]] Texture3D<float4> curl_noise;
 [[vk::binding(6, 2)]] SamplerState noise_sampler;
+// The volume (D-052): the density (extinction per metre) and the optical
+// depth toward the sun, both over the box, sampled filtered.
+[[vk::binding(8, 2)]] Texture3D<float> volume_density;
+[[vk::binding(9, 2)]] Texture3D<float> volume_sun_depth;
+// Written by the volume's compute passes (set 3).
+[[vk::binding(0, 3)]] RWTexture3D<uint> volume_accumulate;
+[[vk::binding(1, 3)]] RWTexture3D<float> volume_density_out;
+[[vk::binding(2, 3)]] RWTexture3D<float> volume_sun_out;
 
 // Mirrors ParticlePush in particles.cpp.
 struct ParticlePush {
@@ -245,12 +267,34 @@ static const float kDetailMean = 0.4586;  // the detail volume's mean (particle_
 static const float kBaseMean = 0.7645;    // the base's mean over the sphere
 // The noise's factor at a point (metres in the origin's frame): 1 on
 // average over the field.
-float detail_factor(float3 enu) {
+// The field at a point (metres in the origin's frame), 0 to 1, swirled.
+float detail_at(float3 enu) {
     float3 at = enu / (4.0 * push.detail_size);
     const float3 curl_at = at * 0.5 + float3(0.0, 0.0, 0.03 * push.time);
     at += curl_noise.SampleLevel(noise_sampler, curl_at, 0.0).xyz * (0.25 * push.swirl);
-    const float n = detail_noise.SampleLevel(noise_sampler, at, 0.0);
+    return detail_noise.SampleLevel(noise_sampler, at, 0.0);
+}
+// The noise's factor for the field's value there: 1 on average over the field.
+float detail_factor(float n) {
     return (1.0 - push.detail * (1.0 - n)) / (1.0 - push.detail * (1.0 - kDetailMean));
+}
+// The particle eaten by the field (D-051), after Schneider and Vos's
+// clouds, whose detail is subtracted "at the edges of the cloud" (SIGGRAPH
+// 2015, slide 39; read for D-043). Against s = 1 - r^2 (1 at the centre, 0
+// at the surface), less t = erosion x (1 - n), stretched back to 1 at the
+// centre: the particle ends where s = t, anywhere from its surface (the
+// field high) in to sqrt(erosion) of its radius from it (the field low), so
+// its outline follows the field's billows, not a sphere. Eroding only the
+// base's outer shell (r^2 past 2/3) was tried first: a small, dense puff is
+// mostly core, and stayed a ball. The base w is kept inside, so with no
+// erosion it's as before: w at erosion 0.
+float eroded(float w, float r2, float n, float erosion) {
+    if (erosion <= 0.0) {
+        return w;
+    }
+    const float t = erosion * (1.0 - n);
+    const float s = max(1.0 - r2, 0.0);
+    return w * saturate((s - t) / max(1.0 - t, 1e-3) * 4.0);
 }
 // The base, min(1, 3 (1 - r^2)), integrated along a line `b2` (squared, in
 // radii) from the centre, from its closest point to `s` radii along it
@@ -269,6 +313,9 @@ float base_along(float s, float b2) {
     return s < 0.0 ? -g : g;
 }
 static const int kDetailSamples = 4;  // along each pixel's chord through a puff
+// With erosion (D-051): its edges are sharper than the detail's variation, and
+// 4 samples took 14 % of a thin puff's cover (8: 5 %).
+static const int kErodedSamples = 8;
 
 [shader("fragment")]
 float4 fs_particles(ParticleVertex i) : SV_Target {
@@ -346,16 +393,21 @@ float4 fs_particles(ParticleVertex i) : SV_Target {
                            (length_inside * inv_r * kBaseMean);
         float weighted = 0.0;
         float weights = 0.0;
-        const float step = length_inside / float(kDetailSamples);
-        for (int k = 0; k < kDetailSamples; ++k) {
+        const int samples = light_space[0].erosion > 0.0 ? kErodedSamples : kDetailSamples;
+        const float step = length_inside / float(samples);
+        for (int k = 0; k < samples; ++k) {
             const float t = enter + (float(k) + 0.5) * step;
             const float3 off = dir * t - i.centre;
             const float w = saturate((1.0 - dot(off, off) * inv_r * inv_r) * 3.0);
             const float3 enu = i.enu + float3(dot(off, o.east), dot(off, o.north), dot(off, o.up));
-            weighted += w * detail_factor(enu);
+            const float n = detail_at(enu);
+            // Each sample weighted by the base there, eroded (D-051), over the
+            // base's own weights: with no erosion, as before.
+            weighted += eroded(w, dot(off, off) * inv_r * inv_r, n, light_space[0].erosion) * detail_factor(n);
             weights += w;
         }
-        density = base * (weights > 0.0 ? weighted / weights : 1.0);
+        // The erosion's mass given back (D-051): 1 without erosion.
+        density = base * (weights > 0.0 ? weighted / weights : 1.0) * light_space[0].erosion_gain;
     }
     const float opacity = 1.0 - exp(-i.extinction * density * length_inside);
     if (opacity < 1e-4) {
@@ -438,3 +490,305 @@ float4 fs_composite(CompositeVertex i) : SV_Target {
     // centre); at half, filtered up (D-042).
     return particle_image.SampleLevel(light_sampler, i.position.xy * push.inv_target, 0.0);
 }
+
+// ---- The volume (D-052) ----
+//
+// One box over the particles, in the anchor's frame with ECEF axes, shared
+// by every view: each particle's extinction added into it (fixed point,
+// atomics: Hillaire 2015's particle voxelization, its "high quality"
+// sphere fill), converted to floats, then the optical depth toward the sun
+// marched over it once a frame (his volumetric shadow maps), and each view
+// marched through it per pixel.
+
+// Fixed point for the atomic adds: an extinction of 1 per metre is 2048
+// (Hillaire 2015, slide 54's scale).
+static const float kVolumeScale = 65536.0;  // 1/65536 per metre; a voxel holds up to 65536 per metre
+
+// A point (from the anchor) in the box: 0 to 1 along each axis.
+float3 volume_uvw(float3 from_anchor) {
+    const VolumeSpace v = volume_space[0];
+    return (from_anchor - v.corner) * (v.inv_voxel / float(v.size));
+}
+
+// A particle's extinction into the voxels it overlaps: its base (D-043's
+// softened sphere, its mean kept) at each voxel's centre. A particle under
+// two voxels across goes into the eight around its centre by their
+// trilinear weights, its whole optical depth kept: a sphere's samples
+// would miss it.
+groupshared float inject_weights[64];
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cs_volume_inject(uint3 group: SV_GroupID, uint3 thread: SV_GroupThreadID) {
+    const VolumeSpace v = volume_space[0];
+    const uint index = group.x + group.y * 65535u;
+    if (index >= v.particles) {
+        return;
+    }
+    const Particle p = particles[index];
+    if (p.extinction <= 0.0) {
+        return;
+    }
+    const float3 c = (centre_from_anchor(p) - v.corner) * v.inv_voxel;  // in voxels
+    // Spread (D-052): wider, thinner, the same mass.
+    const float radius = p.radius * v.spread;
+    const float extinction = p.extinction / (v.spread * v.spread * v.spread);
+    const float r = radius * v.inv_voxel;
+    const int n = int(v.size);
+    // The particle's whole optical volume (extinction times its volume),
+    // as its base keeps it: per voxel, divided by the voxel's volume.
+    if (r < 1.0) {
+        if (thread.x != 0) {
+            return;
+        }
+        const float volume = 4.18879 * radius * radius * radius;  // 4/3 pi r^3
+        const float per_voxel = extinction * volume * (v.inv_voxel * v.inv_voxel * v.inv_voxel);
+        const float3 g = c - 0.5;
+        const int3 lo = int3(floor(g));
+        const float3 f = g - float3(lo);
+        for (int k = 0; k < 8; ++k) {
+            const int3 o = int3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+            const int3 at = lo + o;
+            if (any(at < 0) || any(at >= n)) {
+                continue;
+            }
+            const float3 w3 = select(o == 1, f, 1.0 - f);
+            const float w = w3.x * w3.y * w3.z * per_voxel;
+            InterlockedAdd(volume_accumulate[uint3(at)], uint(w * kVolumeScale + 0.5));
+        }
+        return;
+    }
+    // Over the voxels' centres, the base's sum misses its integral by up to
+    // 2x for a particle one or two voxels across, and by how much changes as
+    // it moves: the cloud flickered. So the weights are summed first (over
+    // the whole sphere, the box's edge aside) and the particle scaled to its
+    // optical volume exactly. The early return above is uniform per group.
+    const int3 lo_all = int3(floor(c - r));
+    const int3 span_all = int3(ceil(c + r)) - lo_all;
+    const uint count_all = uint(span_all.x * span_all.y * span_all.z);
+    float sum = 0.0;
+    for (uint k = thread.x; k < count_all; k += 64u) {
+        const int3 at = lo_all + int3(int(k % uint(span_all.x)),
+                                      int((k / uint(span_all.x)) % uint(span_all.y)),
+                                      int(k / uint(span_all.x * span_all.y)));
+        const float3 d = (float3(at) + 0.5 - c) / r;
+        sum += saturate(3.0 * (1.0 - dot(d, d)));
+    }
+    inject_weights[thread.x] = sum;
+    GroupMemoryBarrierWithGroupSync();
+    for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+        if (thread.x < stride) {
+            inject_weights[thread.x] += inject_weights[thread.x + stride];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+    // Its optical volume (extinction times 4/3 pi r^3, in voxels) over the
+    // weights it's spread by.
+    const float per_weight = extinction * 4.18879 * r * r * r / max(inject_weights[0], 1e-6);
+    const int3 lo = max(lo_all, int3(0, 0, 0));
+    const int3 hi = min(lo_all + span_all, int3(n, n, n));
+    const int3 span = max(hi - lo, int3(0, 0, 0));
+    const uint count = uint(span.x * span.y * span.z);
+    for (uint k = thread.x; k < count; k += 64u) {
+        const int3 at = lo + int3(int(k % uint(span.x)), int((k / uint(span.x)) % uint(span.y)),
+                                  int(k / uint(span.x * span.y)));
+        const float3 d = (float3(at) + 0.5 - c) / r;
+        const float w = saturate(3.0 * (1.0 - dot(d, d)));
+        if (w <= 0.0) {
+            continue;
+        }
+        InterlockedAdd(volume_accumulate[uint3(at)], uint(w * per_weight * kVolumeScale + 0.5));
+    }
+}
+
+// The fixed point to extinction per metre.
+[shader("compute")]
+[numthreads(4, 4, 4)]
+void cs_volume_convert(uint3 id: SV_DispatchThreadID) {
+    const uint n = volume_space[0].size;
+    if (any(id >= n)) {
+        return;
+    }
+    volume_density_out[id] = float(volume_accumulate[id]) / kVolumeScale;
+}
+
+// The optical depth from each voxel of the sun's volume toward the sun, to
+// the box's edge, marched a voxel of the density at a time (nearest: the
+// density volume is being read as an image here).
+[shader("compute")]
+[numthreads(4, 4, 4)]
+void cs_volume_sun(uint3 id: SV_DispatchThreadID) {
+    const VolumeSpace v = volume_space[0];
+    if (any(id >= v.light_size)) {
+        return;
+    }
+    const float3 toward_sun = -light_space[0].travel;
+    const float side = float(v.size) * v.voxel;
+    float3 at = v.corner + (float3(id) + 0.5) * (side / float(v.light_size));
+    float depth = 0.0;
+    const int n = int(v.size);
+    for (int k = 0; k < 4 * n; ++k) {
+        at += toward_sun * v.voxel;
+        const int3 cell = int3(floor((at - v.corner) * v.inv_voxel));
+        if (any(cell < 0) || any(cell >= n)) {
+            break;
+        }
+        depth += volume_density_out[uint3(cell)] * v.voxel;
+    }
+    volume_sun_out[id] = depth;
+}
+
+struct VolumeVertex {
+    float4 position : SV_Position;
+    [[vk::location(0)]] float2 ndc;
+};
+
+[shader("vertex")]
+VolumeVertex vs_volume(uint id: SV_VulkanVertexID) {
+    VolumeVertex o;
+    const float2 uv = float2((id << 1) & 2, id & 2);
+    o.ndc = uv * 2.0 - 1.0;
+    o.position = float4(o.ndc, 0.0, 1.0);
+    return o;
+}
+
+// Where a ray enters and leaves the box (the eye at the origin, the box's
+// corner relative to the eye): t in metres along the unit direction.
+float2 box_span(float3 corner, float side, float3 dir) {
+    // No component exactly 0 (0 * inf is NaN where a corner's is 0 too).
+    const float3 safe = select(abs(dir) < 1e-12, float3(1e-12, 1e-12, 1e-12), dir);
+    const float3 inv = 1.0 / safe;
+    const float3 a = (corner) * inv;
+    const float3 b = (corner + side) * inv;
+    const float3 lo = min(a, b);
+    const float3 hi = max(a, b);
+    return float2(max(max(lo.x, lo.y), max(lo.z, 0.0)), min(min(hi.x, hi.y), hi.z));
+}
+
+// A pixel's march through the volume: the light it scatters toward the eye
+// over the dust before the scene, premultiplied, and its cover; as the
+// puffs' particle image holds it, so the composite is the same.
+[shader("fragment")]
+float4 fs_volume(VolumeVertex i) : SV_Target {
+    // The ray: the eye-relative frame has no translation, so a direction d
+    // projects to x = (row0 . d) / (row3 . d), y likewise; d is
+    // perpendicular to row0 - x row3 and to row1 - y row3.
+    const float3 r0 = push.ecef_to_clip[0].xyz;
+    const float3 r1 = push.ecef_to_clip[1].xyz;
+    const float3 r3 = push.ecef_to_clip[3].xyz;
+    float3 dir = normalize(cross(r0 - i.ndc.x * r3, r1 - i.ndc.y * r3));
+    if (dot(dir, r3) < 0.0) {
+        dir = -dir;
+    }
+    const VolumeSpace v = volume_space[0];
+    const float side = float(v.size) * v.voxel;
+    const float3 corner = push.anchor + v.corner;  // from the eye
+    float2 span = box_span(corner, side, dir);
+    // Cut where the scene is nearer (as fs_particles: the nearest of the
+    // scene's depths under this pixel at half resolution).
+    uint depth_w;
+    uint depth_h;
+    scene_depth.GetDimensions(depth_w, depth_h);
+    const int2 full = int2(int(depth_w), int(depth_h));
+    const int2 here = int2(i.position.xy);
+    int2 lo = here;
+    int2 hi = here;
+    if (push.depth_scale > 1) {
+        const int2 half_size = (full + 1) / 2;
+        lo = (here * full) / half_size;
+        hi = ((here + 1) * full + half_size - 1) / half_size - 1;
+    }
+    lo = clamp(lo, int2(0, 0), full - 1);
+    hi = clamp(hi, lo, full - 1);
+    float depth = 0.0;
+    for (int y = lo.y; y <= hi.y; ++y) {
+        for (int x = lo.x; x <= hi.x; ++x) {
+            depth = max(depth, scene_depth.Load(int3(x, y, 0)));
+        }
+    }
+    if (depth > 0.0) {
+        const float along = dot(r3, dir);  // view z per metre of ray
+        span.y = min(span.y, near_distance() / depth / max(along, 1e-6));
+    }
+    if (span.y <= span.x) {
+        discard;
+    }
+    // Steps of about a voxel, the first offset by a fixed per-pixel jitter.
+    const int steps = clamp(int(ceil((span.y - span.x) * v.inv_voxel)), 1, 256);
+    const float step = (span.y - span.x) / float(steps);
+    uint h = uint(here.x) * 0x8da6b343u ^ uint(here.y) * 0xd8163841u;
+    h ^= h >> 16;
+    h *= 0x7feb352du;
+    h ^= h >> 15;
+    const float jitter = float(h >> 8) * (1.0 / 16777216.0);
+    const ViewSky sky = view_sky[lighting.view];
+    const float g = push.forward_scattering;
+    const Origin o = origins[0];
+    // A pixel's width in metres per metre along the ray: the projection's
+    // vertical scale (row 1 less its forward part, as vs_particles takes the
+    // view's axes) over the view's height in pixels. The noise fades to its
+    // mean where its features are under 4 pixels across, so a far cloud's
+    // edge isn't hair (D-052: seen as fur at 20 000 puffs).
+    const float3 forward = normalize(r3);
+    const float scale_y = length(r1 - dot(r1, forward) * forward) / length(r3);
+    // Metres a pixel of the particle image spans at 1 m (at half resolution
+    // its pixels are two of the view's).
+    const float m_per_pixel = 2.0 * push.inv_target.y * float(push.depth_scale) / max(scale_y, 1e-6);
+    float through = 1.0;  // transmittance from the eye
+    float3 light_sum = float3(0.0);
+    for (int k = 0; k < steps; ++k) {
+        const float t = span.x + (float(k) + jitter) * step;
+        const float3 p = dir * t - push.anchor;  // from the anchor
+        const float3 uvw = volume_uvw(p);
+        float sigma = volume_density.SampleLevel(light_sampler, uvw, 0.0);
+        if (sigma <= 0.0) {
+            continue;
+        }
+        if (push.detail > 0.0) {
+            const float3 off = p - o.offset;
+            const float footprint = t * m_per_pixel;  // metres a pixel covers here
+            const float fade = saturate(push.detail_size / (4.0 * max(footprint, 1e-4)));
+            const float3 enu = float3(dot(off, o.east), dot(off, o.north), dot(off, o.up));
+            const float n = lerp(kDetailMean, detail_at(enu), fade);
+            sigma *= detail_factor(n);
+            // The erosion (D-051) at the cloud's edge, not each puff's: the
+            // cloud's own thickness here, as 1 - e^(-sigma x 2 m) (its core
+            // near 1, its fringe near 0), less erosion x (1 - n), as a
+            // puff's s is eroded. Thin dust where the field is low goes;
+            // the core is kept.
+            const float erosion = light_space[0].erosion;
+            if (erosion > 0.0) {
+                // The edge carved by the field at three times its size:
+                // billows, not the fine detail's strands (which made a thick
+                // cloud's edge look like fur).
+                const float coarse = detail_at(enu * (1.0 / 3.0));
+                // How deep in the cloud, against its particles' own
+                // density (not per metre: thin dust was erased whole): about
+                // 1 - r^2 through a lone particle, as D-051's s.
+                const float s = 1.0 - exp(-2.0 * sigma * volume_space[0].inv_reference);
+                const float t = erosion * (1.0 - coarse);
+                sigma *= saturate((s - t) / max(1.0 - t, 1e-3) * 4.0) * light_space[0].erosion_gain;
+            }
+        }
+        const float sun_depth = volume_sun_depth.SampleLevel(light_sampler, uvw, 0.0);
+        const float3 light =
+            sky.sun_irradiance * multiple_scattering_phase(g, dot(dir, lighting.sun), sun_depth) +
+            sky.moon_irradiance * multiple_scattering_phase(g, dot(dir, lighting.moon), 0.0) +
+            sky.sky_irradiance * (0.5 * kInvPi * kOctaveEnergy);
+        // Hillaire 2016, equation 17: the step's scattering integrated
+        // against its own extinction (the light scattered per metre is
+        // sigma x albedo x light; over sigma, albedo x light).
+        const float step_t = exp(-sigma * step);
+        light_sum += through * (1.0 - step_t) * push.albedo * light;
+        through *= step_t;
+        if (through < 1e-3) {
+            break;
+        }
+    }
+    const float cover = 1.0 - through;
+    if (cover < 1e-4) {
+        discard;
+    }
+    return float4(min(light_sum * sky.exposure, float3(60000.0)), cover);
+}
+

@@ -34,6 +34,12 @@ public:
         VkShaderModule fs_light = VK_NULL_HANDLE;
         VkShaderModule vs_composite = VK_NULL_HANDLE;
         VkShaderModule fs_composite = VK_NULL_HANDLE;
+        // The volume (D-052).
+        VkShaderModule cs_volume_inject = VK_NULL_HANDLE;
+        VkShaderModule cs_volume_convert = VK_NULL_HANDLE;
+        VkShaderModule cs_volume_sun = VK_NULL_HANDLE;
+        VkShaderModule vs_volume = VK_NULL_HANDLE;
+        VkShaderModule fs_volume = VK_NULL_HANDLE;
     };
     ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uint32_t slots,
                  std::span<const VkExtent2D> extents, VkFormat colour, const Modules& modules,
@@ -96,8 +102,11 @@ private:
     std::vector<DVec3> anchors_;
     std::vector<float> times_;                 // per slot: seconds the detail has drifted (D-043)
     std::vector<std::uint8_t> front_to_back_;  // per slot and output
-    std::vector<VkDescriptorSet> view_sets_;   // per output: depth, light, image
-    std::vector<Image> particle_images_;       // per output, its render size (or half)
+    // Per slot: the volume (D-052) packed and not yet built this frame; built
+    // by the first output drawn (any may be skipped, a minimised window).
+    mutable std::vector<std::uint8_t> volume_pending_;
+    std::vector<VkDescriptorSet> view_sets_;  // per output: depth, light, image
+    std::vector<Image> particle_images_;      // per output, its render size (or half)
     std::vector<VkExtent2D> image_extents_;
     Image light_;                                  // shared, used by one view at a time
     VkFormat light_format_ = VK_FORMAT_UNDEFINED;  // R32F where it blends and filters, else R16F
@@ -117,6 +126,13 @@ private:
     std::vector<Vec3> centres_;
     std::vector<std::uint32_t> keys_;
     std::vector<std::uint32_t> scratch_;
+    // The detail volume's values as the GPU has them (R8 levels), and the
+    // erosion's gain for the look last packed (D-051): worked out again only
+    // when the look changes.
+    std::array<std::uint32_t, 256> detail_histogram_{};
+    float gain_detail_ = -1.0F;
+    float gain_erosion_ = -1.0F;
+    float erosion_gain_ = 1.0F;
     VkDescriptorSetLayout buffers_layout_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout view_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
@@ -125,6 +141,21 @@ private:
     VkPipeline under_ = VK_NULL_HANDLE;  // front to back from the eye
     VkPipeline light_pipeline_ = VK_NULL_HANDLE;
     VkPipeline composite_ = VK_NULL_HANDLE;
+    // The volume (D-052): the fixed-point accumulation, the extinction, the
+    // optical depth toward the sun (1 voxel each when not drawn as a volume,
+    // so the descriptors are always valid); their set, the passes.
+    Image volume_accumulate_;
+    Image volume_density_;
+    Image volume_sun_;
+    VkDescriptorSetLayout volume_layout_ = VK_NULL_HANDLE;
+    VkDescriptorSet volume_set_ = VK_NULL_HANDLE;
+    VkPipeline volume_inject_ = VK_NULL_HANDLE;
+    VkPipeline volume_convert_ = VK_NULL_HANDLE;
+    VkPipeline volume_sun_pass_ = VK_NULL_HANDLE;
+    VkPipeline volume_march_ = VK_NULL_HANDLE;
+    Image make_volume_target(std::uint32_t size, VkFormat format) const;
+    void record_volume(VkCommandBuffer cmd, std::uint32_t slot,
+                       std::uint32_t lighting_offset) const;
 };
 
 }  // namespace fovea

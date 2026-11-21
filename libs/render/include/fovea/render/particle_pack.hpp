@@ -55,6 +55,10 @@ struct ParticleLook {
     float detail = 0.6F;
     float detail_size = 2.0F;  // [m]
     float swirl = 0.5F;
+    // How far the same noise eats into each particle's outer shell (D-051):
+    // the field subtracted there, so its outline follows the noise rather
+    // than a sphere's. 0: not at all. Needs detail above 0.
+    float erosion = 0.0F;
     // A particle's fade in and out (as the adapter's).
     std::chrono::duration<float> fade{0.25F};
 };
@@ -66,6 +70,17 @@ struct ParticleQuality {
     std::uint32_t slices = 32;         // the slices each view's particles are drawn in
     std::uint32_t light_buffer = 512;  // its texels a side
     bool half_resolution = false;      // drawn at half each view's size, composited up
+    // Drawn as a volume instead (D-052): one box over the particles, its
+    // voxels a side, its sun volume's, and its largest side (metres).
+    bool volume = false;
+    std::uint32_t volume_size = 128;
+    std::uint32_t volume_light_size = 64;
+    float volume_max_m = 256.0F;
+    // Each particle spread over this many times its radius as it's added to
+    // the volume, its density over the cube of it (its mass kept): sparse
+    // particles merge into one cloud, as a fluid's particles are smoothed
+    // onto a grid (D-052). 1: as sent.
+    float volume_spread = 1.0F;
 };
 
 // Mirrors Particle in shaders/particles.slang (std430).
@@ -120,11 +135,52 @@ struct GpuLightSpace {
     std::array<float, 3> u{};       // ECEF unit vectors across the light buffer
     float unused0 = 0.0F;
     std::array<float, 3> v{};
-    float unused1 = 0.0F;
+    float erosion = 0.0F;  // the look's (D-051): fixed at start, carried here for want of push room
     std::array<float, 3> travel{};  // the light's direction of travel (away from the sun)
-    float unused2 = 0.0F;
+    float erosion_gain = 1.0F;  // the eroded density scaled back to the mass (D-051, erosion_gain)
 };
 static_assert(sizeof(GpuLightSpace) == 64, "must match LightSpace in particles.slang");
+
+// The volume's box (D-052): mirrors VolumeSpace in particles.slang.
+struct GpuVolumeSpace {
+    std::array<float, 3> corner{};  // [m] its lowest corner from the anchor, ECEF axes
+    float voxel = 1.0F;             // [m] a voxel's side
+    std::uint32_t size = 1;         // voxels a side
+    std::uint32_t light_size = 1;   // the sun volume's voxels a side
+    float inv_voxel = 1.0F;
+    std::uint32_t particles = 0;  // how many to inject
+    float spread = 1.0F;          // each particle's radius times this, its density over its cube
+    float inv_reference =
+        1.0F;  // 1 / the particles' mean extinction once spread [m] (erosion's scale)
+    std::array<float, 2> unused{};
+};
+static_assert(sizeof(GpuVolumeSpace) == 48, "must match VolumeSpace in particles.slang");
+
+// The box over particles with these centres (from the anchor, ECEF axes)
+// and radii: a cube of `size` voxels, each a power of two of metres, the
+// smallest holding their bounds with a voxel to spare each side (at most
+// `max_side` metres a side), its corner on a multiple of the voxel in ECEF
+// (`anchor`, ECEF), so the grid stays put in the world. No allocation.
+GpuVolumeSpace volume_space(std::span<const Vec3> centres, std::span<const GpuParticle> particles,
+                            std::uint32_t size, std::uint32_t light_size, float max_side,
+                            const DVec3& anchor, float spread = 1.0F) noexcept;
+
+// What the erosion (D-051) takes from a particle's mass, as the factor that
+// gives it back: the particle's density integrated over its volume as
+// particles.slang has it (the base, softened; the detail's factor) without
+// erosion, over the same with it. `histogram` counts the detail volume's
+// values as the GPU stores them (R8: level k is k / 255). 1 at erosion 0;
+// more as it rises. No allocation.
+float erosion_gain(std::span<const std::uint32_t, 256> histogram, float detail,
+                   float erosion) noexcept;
+
+// The same for the volume (D-052), whose erosion judges how deep in the
+// cloud a point is by its density over the particles' mean (s = 1 -
+// exp(-2 sigma / mean)) and carves with the field at three times its size
+// (independent of the detail's): a lone particle's density integrated
+// without erosion over with it. No allocation.
+float volume_erosion_gain(std::span<const std::uint32_t, 256> histogram, float detail,
+                          float erosion) noexcept;
 
 // The light space over particles with these centres, for light travelling
 // along `travel` (a unit vector). No allocation.

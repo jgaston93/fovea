@@ -5,6 +5,7 @@
 // FOVEA_PARTICLE_PNG set to a directory, the images are written there to
 // look at.
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -396,6 +397,111 @@ TEST(ParticlesRender, DetailKeepsTheMass) {
         << "total cover " << smooth << " smooth, " << detailed << " detailed";
 }
 
+// The erosion (D-051) eats into the puff, its mass given back: a puff thin
+// enough that its cover goes nearly as its optical depth, its cover summed
+// over the disc about the same eroded as not.
+TEST(ParticlesRender, ErosionKeepsTheMass) {
+    ParticleLook look;
+    look.detail = 0.6F;
+    look.detail_size = 1.0F;
+    look.erosion = 0.6F;
+    bool vulkan = false;
+    const DetailShots s = detail_shots(look, 1.5e-5F, vulkan);
+    if (!vulkan) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const auto total = [](const std::vector<int>& c) {
+        double sum = 0.0;
+        for (const int x : c) {
+            sum += x;
+        }
+        return sum;
+    };
+    const double smooth = total(cover(s.plain, s.empty));
+    const double eroded = total(cover(s.detailed, s.empty));
+    std::printf("total cover: smooth %.0f, eroded %.0f\n", smooth, eroded);
+    EXPECT_GT(smooth, 1500.0);
+    // Measured on lavapipe: 4.6 % less (with 4 samples a chord, 14 %).
+    EXPECT_NEAR(eroded, smooth, 0.08 * smooth)
+        << "total cover " << smooth << " smooth, " << eroded << " eroded";
+}
+
+// The erosion breaks the puff's outline (D-051): a dense puff, its cover
+// along a ring at 85 % of its disc's radius varies far more eroded than
+// with the detail alone (which leaves the outline a circle).
+TEST(ParticlesRender, ErosionBreaksTheOutline) {
+    ParticleLook detail_only;
+    detail_only.detail = 0.6F;
+    detail_only.detail_size = 1.0F;
+    ParticleLook eroding = detail_only;
+    eroding.erosion = 0.6F;
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleFrame f = frame_at_eye(view, 10);
+    add(f, t, Vec3(0.0F, 30.0F, 2.0F), 8.0F, 2e-3F);
+    std::vector<std::uint8_t> plain;
+    std::vector<std::uint8_t> eroded;
+    std::vector<std::uint8_t> empty;
+    {
+        auto a = make_renderer(10, {}, detail_only);
+        if (a == nullptr) {
+            GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+        }
+        a->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        plain = draw(*a, view, &f, t, "particles-outline-detail.png");
+        empty = draw(*a, view, nullptr, t, nullptr);
+    }
+    {
+        auto b = make_renderer(10, {}, eroding);
+        b->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        eroded = draw(*b, view, &f, t, "particles-outline-eroded.png");
+        EXPECT_EQ(b->validation_messages(), 0U);
+    }
+    // The disc: the pixels the uneroded puff covers at all, their centre and
+    // radius from their count.
+    const std::vector<int> cp = cover(plain, empty);
+    const std::vector<int> ce = cover(eroded, empty);
+    double cx = 0.0;
+    double cy = 0.0;
+    double n = 0.0;
+    for (std::uint32_t y = 0; y < kH; ++y) {
+        for (std::uint32_t x = 0; x < kW; ++x) {
+            if (cp[std::size_t{y} * kW + x] > 8) {
+                cx += x;
+                cy += y;
+                n += 1.0;
+            }
+        }
+    }
+    ASSERT_GT(n, 400.0);
+    cx /= n;
+    cy /= n;
+    const double radius = std::sqrt(n / 3.14159265);
+    const auto spread = [&](const std::vector<int>& c) {
+        double sum = 0.0;
+        double sum2 = 0.0;
+        int k = 0;
+        for (int a = 0; a < 180; ++a) {
+            const double th = a * 3.14159265 / 90.0;
+            const auto x = static_cast<int>(cx + 0.85 * radius * std::cos(th));
+            const auto y = static_cast<int>(cy + 0.85 * radius * std::sin(th));
+            if (x < 0 || y < 0 || x >= static_cast<int>(kW) || y >= static_cast<int>(kH)) {
+                continue;
+            }
+            const double v = c[static_cast<std::size_t>(y) * kW + static_cast<std::size_t>(x)];
+            sum += v;
+            sum2 += v * v;
+            ++k;
+        }
+        const double mean = sum / k;
+        return std::sqrt(std::max(sum2 / k - mean * mean, 0.0)) / std::max(mean, 1.0);
+    };
+    const double round = spread(cp);
+    const double broken = spread(ce);
+    std::printf("the outline's spread along the ring: detail %.3f, eroded %.3f\n", round, broken);
+    EXPECT_GT(broken, 1.5 * round);
+}
+
 // The swirl drifts in time (D-043): the same puff a few seconds on looks
 // different with swirl, the same without.
 TEST(ParticlesRender, TheSwirlDriftsInTime) {
@@ -526,12 +632,18 @@ TEST(ParticlesRender, TheParticlePassIsTimed) {
     }
     EXPECT_GT(with.particles_ms[0], 0.0F);
     EXPECT_LT(with.particles_ms[0], with.gpu_ms[0]);
-    for (int i = 0; i < 4; ++i) {
+    // Without: the least of several frames (lavapipe's timestamps are the
+    // CPU's, and with other tests running alongside one frame's pass can be
+    // held up for milliseconds with nothing in it: CI, 2.9 and 4.7 ms).
+    float without_ms = 1e9F;
+    for (int i = 0; i < 10; ++i) {
         r->set_particles(nullptr, t);
         r->draw_scene_frame(std::span(&view, 1));
+        if (i >= 3) {  // GPU times arrive two frames later
+            without_ms = std::min(without_ms, r->last_timing().particles_ms[0]);
+        }
     }
-    const FrameTiming without = r->last_timing();
-    EXPECT_LT(without.particles_ms[0], 0.25F * with.particles_ms[0]);
+    EXPECT_LT(without_ms, 0.25F * with.particles_ms[0]);
     EXPECT_EQ(r->validation_messages(), 0U);
 }
 
@@ -578,6 +690,283 @@ TEST(ParticlesRender, DrawingThemAllocatesNothing) {
         r->draw_scene_frame(std::span(&view, 1));
     }
     EXPECT_EQ(counter.count(), 0U);
+}
+
+}  // namespace
+}  // namespace fovea
+
+namespace fovea {
+namespace {
+
+// Drawn as a volume (D-052): a puff's cover about the same as the puffs'
+// (the same optical depth, now through a grid), no validation message, and
+// the scene beside it untouched.
+TEST(ParticlesVolume, APuffDrawsAsTheSamePuff) {
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleFrame f = frame_at_eye(view, 10);
+    add(f, t, Vec3(0.0F, 30.0F, 2.0F), 8.0F, 5e-5F);
+    ParticleLook look;
+    look.detail = 0.0F;  // the grid alone
+    std::vector<std::uint8_t> puffs;
+    std::vector<std::uint8_t> volume;
+    std::vector<std::uint8_t> empty;
+    {
+        auto a = make_renderer(10, {}, look);
+        if (a == nullptr) {
+            GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+        }
+        a->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        puffs = draw(*a, view, &f, t, "volume-as-puffs.png");
+        empty = draw(*a, view, nullptr, t, nullptr);
+    }
+    {
+        ParticleQuality q;
+        q.volume = true;
+        q.volume_size = 64;
+        q.volume_light_size = 32;
+        auto b = make_renderer(10, q, look);
+        b->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        volume = draw(*b, view, &f, t, "volume-as-volume.png");
+        EXPECT_EQ(b->validation_messages(), 0U);
+    }
+    const auto total = [](const std::vector<int>& c) {
+        double sum = 0.0;
+        for (const int x : c) {
+            sum += x;
+        }
+        return sum;
+    };
+    const double p = total(cover(puffs, empty));
+    const double v = total(cover(volume, empty));
+    std::printf("total cover: puffs %.0f, volume %.0f\n", p, v);
+    EXPECT_GT(p, 5000.0);
+    EXPECT_NEAR(v, p, 0.2 * p);
+}
+
+// The total and centroid of a cover image.
+struct CoverStats {
+    double total = 0.0;
+    double x = 0.0;
+    double y = 0.0;
+};
+CoverStats cover_stats(const std::vector<int>& c) {
+    CoverStats s;
+    for (std::uint32_t y = 0; y < kH; ++y) {
+        for (std::uint32_t x = 0; x < kW; ++x) {
+            const double v = c[std::size_t{y} * kW + x];
+            s.total += v;
+            s.x += v * x;
+            s.y += v * y;
+        }
+    }
+    if (s.total > 0.0) {
+        s.x /= s.total;
+        s.y /= s.total;
+    }
+    return s;
+}
+
+// Where the volume draws a puff: where the puffs draw it (a ray flipped, or
+// the box misplaced, moves it), for two puffs apart on screen.
+TEST(ParticlesVolume, PuffsLandWhereThePuffsDo) {
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleLook look;
+    look.detail = 0.0F;
+    ParticleQuality q;
+    q.volume = true;
+    q.volume_size = 96;
+    q.volume_light_size = 32;
+    for (const Vec3 at : {Vec3(-12.0F, 40.0F, 8.0F), Vec3(10.0F, 35.0F, 4.0F)}) {
+        ParticleFrame f = frame_at_eye(view, 10);
+        add(f, t, at, 4.0F, 1e-4F);
+        std::vector<std::uint8_t> puffs;
+        std::vector<std::uint8_t> volume;
+        std::vector<std::uint8_t> empty;
+        {
+            auto a = make_renderer(10, {}, look);
+            if (a == nullptr) {
+                GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+            }
+            a->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+            puffs = draw(*a, view, &f, t, nullptr);
+            empty = draw(*a, view, nullptr, t, nullptr);
+        }
+        {
+            auto b = make_renderer(10, q, look);
+            b->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+            volume = draw(*b, view, &f, t, nullptr);
+            EXPECT_EQ(b->validation_messages(), 0U);
+        }
+        const CoverStats p = cover_stats(cover(puffs, empty));
+        const CoverStats v = cover_stats(cover(volume, empty));
+        std::printf("centroid: puffs (%.1f, %.1f), volume (%.1f, %.1f)\n", p.x, p.y, v.x, v.y);
+        ASSERT_GT(p.total, 1000.0);
+        EXPECT_NEAR(v.x, p.x, 1.5);
+        EXPECT_NEAR(v.y, p.y, 1.5);
+    }
+}
+
+// A puff one or two voxels across keeps its dust as it moves through the
+// grid (summed at the voxels' centres alone it swung about 2x, and moving
+// dust flickered): a far puff makes the voxels 2 m, and a 2.4 m puff steps
+// across one diagonally.
+TEST(ParticlesVolume, AMovingPuffKeepsItsDust) {
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleLook look;
+    look.detail = 0.0F;
+    ParticleQuality q;
+    q.volume = true;
+    q.volume_size = 128;
+    q.volume_light_size = 32;
+    std::vector<std::uint8_t> empty;
+    std::vector<double> totals;
+    {
+        auto r = make_renderer(10, q, look);
+        if (r == nullptr) {
+            GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+        }
+        r->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        empty = draw(*r, view, nullptr, t, nullptr);
+        for (int k = 0; k < 8; ++k) {
+            ParticleFrame f = frame_at_eye(view, 10);
+            const auto step = static_cast<float>(k);
+            add(f, t, Vec3(0.37F * step, 30.0F + 0.29F * step, 2.0F + 0.23F * step), 2.4F, 2e-4F);
+            add(f, t, Vec3(0.0F, 200.0F, -150.0F), 1.0F, 1e-6F);  // behind the eye's view: the box
+            const std::vector<std::uint8_t> img = draw(*r, view, &f, t, nullptr);
+            totals.push_back(cover_stats(cover(img, empty)).total);
+        }
+        EXPECT_EQ(r->validation_messages(), 0U);
+    }
+    const auto [lo, hi] = std::minmax_element(totals.begin(), totals.end());
+    std::printf("a moving puff's cover: %.0f to %.0f\n", *lo, *hi);
+    ASSERT_GT(*lo, 500.0);
+    EXPECT_LT(*hi / *lo, 1.12);
+}
+
+// The volume's erosion keeps a thin cloud's dust (judged against the
+// particles' own density: per metre, thin dust was erased whole).
+TEST(ParticlesVolume, ErosionKeepsTheMass) {
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleFrame f = frame_at_eye(view, 10);
+    add(f, t, Vec3(0.0F, 30.0F, 2.0F), 8.0F, 5e-5F);
+    ParticleQuality q;
+    q.volume = true;
+    q.volume_size = 96;
+    q.volume_light_size = 32;
+    ParticleLook plain;
+    plain.detail = 0.6F;
+    plain.detail_size = 1.0F;
+    ParticleLook eroding = plain;
+    eroding.erosion = 0.6F;
+    std::vector<std::uint8_t> a_img;
+    std::vector<std::uint8_t> b_img;
+    std::vector<std::uint8_t> empty;
+    {
+        auto a = make_renderer(10, q, plain);
+        if (a == nullptr) {
+            GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+        }
+        a->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        a_img = draw(*a, view, &f, t, nullptr);
+        empty = draw(*a, view, nullptr, t, nullptr);
+    }
+    {
+        auto b = make_renderer(10, q, eroding);
+        b->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        b_img = draw(*b, view, &f, t, nullptr);
+        EXPECT_EQ(b->validation_messages(), 0U);
+    }
+    const double p = cover_stats(cover(a_img, empty)).total;
+    const double e = cover_stats(cover(b_img, empty)).total;
+    std::printf("a thin cloud's cover: detail %.0f, eroded %.0f\n", p, e);
+    ASSERT_GT(p, 5000.0);
+    EXPECT_NEAR(e, p, 0.15 * p);
+}
+
+// The volume's erosion (D-051, D-052) breaks the cloud's outline: a dense
+// puff, its cover along a ring at 85 % of its disc varies far more eroded
+// than with the detail alone.
+TEST(ParticlesVolume, ErosionBreaksTheCloudsEdge) {
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleFrame f = frame_at_eye(view, 10);
+    add(f, t, Vec3(0.0F, 30.0F, 2.0F), 8.0F, 2e-3F);
+    ParticleQuality q;
+    q.volume = true;
+    q.volume_size = 96;
+    q.volume_light_size = 32;
+    ParticleLook detail_only;
+    detail_only.detail = 0.6F;
+    detail_only.detail_size = 0.5F;
+    ParticleLook eroding = detail_only;
+    eroding.erosion = 0.8F;
+    std::vector<std::uint8_t> plain;
+    std::vector<std::uint8_t> eroded;
+    std::vector<std::uint8_t> empty;
+    {
+        auto a = make_renderer(10, q, detail_only);
+        if (a == nullptr) {
+            GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+        }
+        a->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        plain = draw(*a, view, &f, t, "volume-edge-detail.png");
+        empty = draw(*a, view, nullptr, t, nullptr);
+    }
+    {
+        auto b = make_renderer(10, q, eroding);
+        b->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        eroded = draw(*b, view, &f, t, "volume-edge-eroded.png");
+        EXPECT_EQ(b->validation_messages(), 0U);
+    }
+    const std::vector<int> cp = cover(plain, empty);
+    const std::vector<int> ce = cover(eroded, empty);
+    double cx = 0.0;
+    double cy = 0.0;
+    double n = 0.0;
+    for (std::uint32_t y = 0; y < kH; ++y) {
+        for (std::uint32_t x = 0; x < kW; ++x) {
+            if (cp[std::size_t{y} * kW + x] > 8) {
+                cx += x;
+                cy += y;
+                n += 1.0;
+            }
+        }
+    }
+    ASSERT_GT(n, 400.0);
+    cx /= n;
+    cy /= n;
+    const double radius = std::sqrt(n / 3.14159265);
+    const auto spread = [&](const std::vector<int>& c) {
+        double sum = 0.0;
+        double sum2 = 0.0;
+        int k = 0;
+        for (int a = 0; a < 180; ++a) {
+            const double th = a * 3.14159265 / 90.0;
+            const auto x = static_cast<int>(cx + 0.85 * radius * std::cos(th));
+            const auto y = static_cast<int>(cy + 0.85 * radius * std::sin(th));
+            if (x < 0 || y < 0 || x >= static_cast<int>(kW) || y >= static_cast<int>(kH)) {
+                continue;
+            }
+            const double v = c[static_cast<std::size_t>(y) * kW + static_cast<std::size_t>(x)];
+            sum += v;
+            sum2 += v * v;
+            ++k;
+        }
+        const double mean = sum / k;
+        return std::sqrt(std::max(sum2 / k - mean * mean, 0.0)) / std::max(mean, 1.0);
+    };
+    const double round = spread(cp);
+    const double broken = spread(ce);
+    std::printf("the volume's outline along the ring: detail %.3f, eroded %.3f\n", round, broken);
+    // Measured on lavapipe: 0.709 detail alone, 0.865 eroded; with the
+    // erosion taken out of the march, 0.709. Coarse carving (the field at
+    // three times its size, D-052) gives a puff this size few billows round
+    // its rim, so the margin is modest.
+    EXPECT_GT(broken, 1.12 * round);
 }
 
 }  // namespace
