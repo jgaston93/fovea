@@ -138,6 +138,21 @@ struct ScenePixel {
 };
 
 [shader("fragment")]
+// The sky far above the tone map's shoulder goes toward white (D-046), as
+// film and the eye take it: from four times the shoulder's input (the
+// brightest channel, exposed, at 4: the curve at 0.96) to all of it at 32,
+// its colour moves toward the grey of its own luminance, so the tone map
+// (on the brightest channel, keeping hue: D-031) takes it toward white.
+// Before, a deep orange sun at dusk, its brightest channel pinned at 1,
+// showed darker than the sky around it. The sky alone: the airport's lights
+// keep their colour however bright (a PAPI's red is a pilot's cue), and so
+// does everything lit.
+float3 sky_toward_white(float3 c) {
+    const float m = max(c.r, max(c.g, c.b));
+    const float lum = dot(c, float3(0.2126, 0.7152, 0.0722));
+    return lerp(c, float3(lum), smoothstep(4.0, 32.0, m));
+}
+
 ScenePixel fs_scene(Fullscreen i) {
     // Any depth works for the direction; 1 is the near plane (reverse-Z).
     // The rotation leaves w alone, so the divide still gives the point.
@@ -164,7 +179,7 @@ ScenePixel fs_scene(Fullscreen i) {
     const float ground_kind = precipitation_above(lighting.eye_height_m - scene.eye_height_m);
     float3 colour;
     if (ray.z > 0.0 && scene.grid == 0) {
-        colour = sky_radiance(ray) * s.exposure;
+        colour = sky_toward_white(sky_radiance(ray) * s.exposure);
     } else if (ray.z > 0.0) {
         // Below the horizon: the ground plane, eye_height_m below the eye,
         // lit as level ground.
@@ -185,6 +200,7 @@ ScenePixel fs_scene(Fullscreen i) {
         // dim sky, would pass their largest).
         colour += disc * min(s.sun_irradiance * s.exposure / (kPi * r * r), float3(60000.0));
         colour += min(moon_disc(ray, sun_width) * s.exposure, float3(60000.0));
+        colour = sky_toward_white(colour);
     }
     // Through the fog, rain and snow (step 6): to the ground plane, or out
     // of them.

@@ -271,6 +271,39 @@ TEST(Sky, EveryViewTakesTheSameExposure) {
     EXPECT_EQ(r->validation_messages(), 0U);
 }
 
+// The sun at dusk, a few degrees up (D-046): its disc the brightest thing
+// in the sky and near white, the sky beside it still coloured. Before, a
+// deep orange disc, its brightest channel pinned at 1 by the tone map,
+// showed darker than the glow around it.
+TEST(Sky, TheSunAtDuskIsWhiteAndBrighterThanTheSkyBesideIt) {
+    auto r = make_offscreen({{96, 96}});
+    FOVEA_NEED_VULKAN(r);
+    const SkyBodies sky = at_utc(3, 20, 23.0 + 40.0 / 60.0);
+    const SunAt sun = sun_at(view_towards(0.0, 0.0, 96, 96), sky);
+    ASSERT_GT(sun.elevation_deg, 1.0);
+    ASSERT_LT(sun.elevation_deg, 6.0);
+    // Two degrees across, centred on the sun: its disc (0.27 degrees in
+    // radius) about 13 pixels across; the sky 1.5 degrees off it, 36 away.
+    const SceneView v = view_towards(sun.azimuth_deg, sun.elevation_deg, 96, 96, 1.0, 20.0);
+    r->set_sky(sky);
+    for (int f = 0; f < 2; ++f) {
+        r->draw_scene_frame(std::vector<SceneView>{v});
+    }
+    const auto px = r->read_back_rgba(0);
+    EXPECT_EQ(r->validation_messages(), 0U);
+    const auto at = [&](int x, int y) {
+        const std::size_t i = (static_cast<std::size_t>(y) * 96 + static_cast<std::size_t>(x)) * 4;
+        return std::array<int, 3>{px[i], px[i + 1], px[i + 2]};
+    };
+    const std::array<int, 3> disc = at(48, 48);
+    const std::array<int, 3> beside = at(48, 12);  // 1.5 degrees above it
+    std::printf("the sun at dusk (%.1f deg up): disc (%d %d %d), the sky beside it (%d %d %d)\n",
+                sun.elevation_deg, disc[0], disc[1], disc[2], beside[0], beside[1], beside[2]);
+    EXPECT_GT(disc[0] + disc[1] + disc[2], beside[0] + beside[1] + beside[2]);
+    EXPECT_GE(std::min({disc[0], disc[1], disc[2]}), 230) << "near white";
+    EXPECT_GT(beside[0] - beside[2], 30) << "the sky beside it still coloured";
+}
+
 // The light follows the sun (milestone 6 step 1, now through the air): a
 // level surface gets more at noon than at 8 am, and none from the sun at
 // night; each first frame takes its exposure at once, so it is exactly the
