@@ -227,18 +227,21 @@ TEST(ParticleErosion, TheGainGivesTheMassBack) {
     EXPECT_LT(erosion_gain(white, 0.6F, 0.8F), 1.1F);
 }
 
-// The volume's box (D-052): a cube over the particles' bounds, centred on
-// them, its voxel the side over the count; capped; at least a metre.
-TEST(ParticleVolume, TheBoxCoversTheParticles) {
+// The volume's box (D-052): it covers the particles; its voxel is a power
+// of two of metres; its corner is on a multiple of the voxel in the world;
+// and the same particles seen from another eye (anchor) give the same box in
+// the world (a box fitted afresh each frame moved, and the cloud flickered).
+TEST(ParticleVolume, TheBoxCoversTheParticlesAndStaysPut) {
+    const DVec3 anchor(500000.25, -5000000.5, 3600000.75);
     std::vector<Vec3> centres{Vec3(-10.0F, 0.0F, 0.0F), Vec3(10.0F, 4.0F, -2.0F)};
     std::vector<GpuParticle> ps(2);
     ps[0].radius = 2.0F;
     ps[1].radius = 1.0F;
-    const GpuVolumeSpace v = volume_space(centres, ps, 128, 64, 256.0F);
+    const GpuVolumeSpace v = volume_space(centres, ps, 128, 64, 256.0F, anchor);
     EXPECT_EQ(v.size, 128U);
     EXPECT_EQ(v.light_size, 64U);
+    EXPECT_EQ(std::exp2(std::round(std::log2(v.voxel))), v.voxel);  // a power of two
     const float side = v.voxel * 128.0F;
-    EXPECT_NEAR(side, 23.0F * 1.02F, 1e-3F);  // x from -12 to 11
     for (std::size_t i = 0; i < 2; ++i) {
         for (std::size_t a = 0; a < 3; ++a) {
             const auto c = static_cast<glm::length_t>(a);
@@ -246,13 +249,35 @@ TEST(ParticleVolume, TheBoxCoversTheParticles) {
             EXPECT_GE(v.corner[a] + side, centres[i][c] + ps[i].radius);
         }
     }
-    EXPECT_NEAR(v.inv_voxel * v.voxel, 1.0F, 1e-6F);
-    // Capped, and at least a metre.
-    EXPECT_NEAR(volume_space(centres, ps, 128, 64, 10.0F).voxel * 128.0F, 10.0F, 1e-4F);
+    for (std::size_t a = 0; a < 3; ++a) {
+        const double world = anchor[static_cast<glm::length_t>(a)] + static_cast<double>(v.corner[a]);
+        const double voxel = static_cast<double>(v.voxel);
+        EXPECT_NEAR(world / voxel, std::round(world / voxel), 1e-3) << a;
+    }
+    // The eye 3.3 m away: the particles' offsets from it change, the box's
+    // grid in the world doesn't.
+    const DVec3 moved = anchor + DVec3(3.3, -1.7, 0.9);
+    std::vector<Vec3> from_moved;
+    for (const Vec3& c : centres) {
+        from_moved.push_back(Vec3(DVec3(c) + anchor - moved));
+    }
+    const GpuVolumeSpace w = volume_space(from_moved, ps, 128, 64, 256.0F, moved);
+    EXPECT_EQ(w.voxel, v.voxel);
+    for (std::size_t a = 0; a < 3; ++a) {
+        const auto c = static_cast<glm::length_t>(a);
+        // The same grid: the corners whole voxels apart (the box may step a
+        // voxel as its bounds cross a grid line; its voxels don't move).
+        const double apart = (moved[c] + static_cast<double>(w.corner[a]) -
+                              (anchor[c] + static_cast<double>(v.corner[a]))) /
+                             static_cast<double>(v.voxel);
+        EXPECT_NEAR(apart, std::round(apart), 1e-3) << a;
+    }
+    // Capped: the voxel no larger than the cap allows; at least a metre's box.
+    EXPECT_LE(volume_space(centres, ps, 128, 64, 10.0F, anchor).voxel * 128.0F, 10.0F);
     std::vector<Vec3> one{Vec3(0.0F)};
     std::vector<GpuParticle> tiny(1);
     tiny[0].radius = 0.01F;
-    EXPECT_NEAR(volume_space(one, tiny, 64, 32, 256.0F).voxel * 64.0F, 1.0F, 1e-5F);
+    EXPECT_GE(volume_space(one, tiny, 64, 32, 256.0F, anchor).voxel * 64.0F, 1.0F);
 }
 
 }  // namespace fovea

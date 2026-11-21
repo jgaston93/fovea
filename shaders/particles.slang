@@ -76,6 +76,8 @@ struct VolumeSpace {
     uint light_size;  // voxels a side of the sun's volume
     float inv_voxel;
     uint particles;   // how many to inject
+    float spread;     // each particle's radius times this, its density over its cube
+    float3 unused;
 };
 [[vk::binding(4, 0)]] StructuredBuffer<VolumeSpace> volume_space;
 // The view's resolved depth (reverse-Z, infinite far plane), read by pixel.
@@ -525,7 +527,10 @@ void cs_volume_inject(uint3 group: SV_GroupID, uint3 thread: SV_GroupThreadID) {
         return;
     }
     const float3 c = (centre_from_anchor(p) - v.corner) * v.inv_voxel;  // in voxels
-    const float r = p.radius * v.inv_voxel;
+    // Spread (D-052): wider, thinner, the same mass.
+    const float radius = p.radius * v.spread;
+    const float extinction = p.extinction / (v.spread * v.spread * v.spread);
+    const float r = radius * v.inv_voxel;
     const int n = int(v.size);
     // The particle's whole optical volume (extinction times its volume),
     // as its base keeps it: per voxel, divided by the voxel's volume.
@@ -533,8 +538,8 @@ void cs_volume_inject(uint3 group: SV_GroupID, uint3 thread: SV_GroupThreadID) {
         if (thread.x != 0) {
             return;
         }
-        const float volume = 4.18879 * p.radius * p.radius * p.radius;  // 4/3 pi r^3
-        const float per_voxel = p.extinction * volume * (v.inv_voxel * v.inv_voxel * v.inv_voxel);
+        const float volume = 4.18879 * radius * radius * radius;  // 4/3 pi r^3
+        const float per_voxel = extinction * volume * (v.inv_voxel * v.inv_voxel * v.inv_voxel);
         const float3 g = c - 0.5;
         const int3 lo = int3(floor(g));
         const float3 f = g - float3(lo);
@@ -563,7 +568,7 @@ void cs_volume_inject(uint3 group: SV_GroupID, uint3 thread: SV_GroupThreadID) {
             continue;
         }
         const float base = saturate(3.0 * (1.0 - r2)) / kBaseMean;
-        InterlockedAdd(volume_accumulate[uint3(at)], uint(base * p.extinction * kVolumeScale + 0.5));
+        InterlockedAdd(volume_accumulate[uint3(at)], uint(base * extinction * kVolumeScale + 0.5));
     }
 }
 

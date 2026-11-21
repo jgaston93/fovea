@@ -76,6 +76,11 @@ struct ParticleQuality {
     std::uint32_t volume_size = 128;
     std::uint32_t volume_light_size = 64;
     float volume_max_m = 256.0F;
+    // Each particle spread over this many times its radius as it's added to
+    // the volume, its density over the cube of it (its mass kept): sparse
+    // particles merge into one cloud, as a fluid's particles are smoothed
+    // onto a grid (D-052). 1: as sent.
+    float volume_spread = 1.0F;
 };
 
 // Mirrors Particle in shaders/particles.slang (std430).
@@ -144,14 +149,19 @@ struct GpuVolumeSpace {
     std::uint32_t light_size = 1;   // the sun volume's voxels a side
     float inv_voxel = 1.0F;
     std::uint32_t particles = 0;  // how many to inject
+    float spread = 1.0F;          // each particle's radius times this, its density over its cube
+    std::array<float, 3> unused{};
 };
-static_assert(sizeof(GpuVolumeSpace) == 32, "must match VolumeSpace in particles.slang");
+static_assert(sizeof(GpuVolumeSpace) == 48, "must match VolumeSpace in particles.slang");
 
-// The box over particles with these centres (from the anchor) and radii: a
-// cube, `size` voxels a side, as large as their bounds (at least a metre)
-// but at most `max_side` metres, centred on them. No allocation.
+// The box over particles with these centres (from the anchor, ECEF axes)
+// and radii: a cube of `size` voxels, each a power of two of metres, the
+// smallest holding their bounds with a voxel to spare each side (at most
+// `max_side` metres a side), its corner on a multiple of the voxel in ECEF
+// (`anchor`, ECEF), so the grid stays put in the world. No allocation.
 GpuVolumeSpace volume_space(std::span<const Vec3> centres, std::span<const GpuParticle> particles,
-                            std::uint32_t size, std::uint32_t light_size, float max_side) noexcept;
+                            std::uint32_t size, std::uint32_t light_size, float max_side,
+                            const DVec3& anchor, float spread = 1.0F) noexcept;
 
 // What the erosion (D-051) takes from a particle's mass, as the factor that
 // gives it back: the particle's density integrated over its volume as

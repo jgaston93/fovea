@@ -61,7 +61,8 @@ void particle_centres(std::span<const GpuParticle> particles, std::span<const Gp
 }
 
 GpuVolumeSpace volume_space(std::span<const Vec3> centres, std::span<const GpuParticle> particles,
-                            std::uint32_t size, std::uint32_t light_size, float max_side) noexcept {
+                            std::uint32_t size, std::uint32_t light_size, float max_side,
+                            const DVec3& anchor, float spread) noexcept {
     GpuVolumeSpace v;
     v.size = std::max(size, 1U);
     v.light_size = std::max(light_size, 1U);
@@ -69,19 +70,31 @@ GpuVolumeSpace volume_space(std::span<const Vec3> centres, std::span<const GpuPa
     Vec3 hi(0.0F);
     bool any = false;
     for (std::size_t i = 0; i < centres.size() && i < particles.size(); ++i) {
-        const Vec3 r(particles[i].radius);
+        const Vec3 r(particles[i].radius * std::max(spread, 1.0F));
         lo = any ? glm::min(lo, centres[i] - r) : centres[i] - r;
         hi = any ? glm::max(hi, centres[i] + r) : centres[i] + r;
         any = true;
     }
+    // Still in the world from frame to frame, so a particle lands in the
+    // same voxels while it stays put (a box fitted afresh each frame moved
+    // its grid by fractions of a voxel, and the cloud flickered): the voxel
+    // a power of two of metres, the smallest that holds the bounds and a
+    // voxel's margin each side, and the corner on a multiple of it in ECEF
+    // (in doubles: the anchor is millions of metres out).
     const Vec3 mid = (lo + hi) * 0.5F;
     const Vec3 extent = hi - lo;
-    float side = std::max(std::max(extent.x, extent.y), extent.z) * 1.02F;
-    side = std::clamp(side, 1.0F, std::max(max_side, 1.0F));
-    const Vec3 corner = mid - Vec3(side * 0.5F);
-    v.corner = {corner.x, corner.y, corner.z};
-    v.voxel = side / static_cast<float>(v.size);
-    v.inv_voxel = 1.0F / v.voxel;
+    const double need = std::max(std::max(extent.x, extent.y), extent.z);
+    const double count = static_cast<double>(v.size);
+    double voxel = std::exp2(std::ceil(std::log2(std::max(need, 1.0) / (count - 2.0))));
+    voxel = std::min(voxel, std::exp2(std::floor(std::log2(std::max(static_cast<double>(max_side), 1.0) / count))));
+    const double side = voxel * count;
+    const DVec3 world_low = anchor + DVec3(mid) - DVec3(side * 0.5);
+    const DVec3 snapped = glm::floor(world_low / voxel) * voxel;
+    const DVec3 corner = snapped - anchor;
+    v.corner = {static_cast<float>(corner.x), static_cast<float>(corner.y), static_cast<float>(corner.z)};
+    v.voxel = static_cast<float>(voxel);
+    v.inv_voxel = static_cast<float>(1.0 / voxel);
+    v.spread = std::max(spread, 1.0F);
     return v;
 }
 
