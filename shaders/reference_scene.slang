@@ -264,13 +264,16 @@ float4 fs_tonemap(Fullscreen i) : SV_Target {
     // resolve clamps it), and infinity over infinity is a NaN.
     const float3 hdr = clamp(hdr_scene.Sample(uv).rgb, 0.0, 65504.0);
     const float3 mapped = tone_map(hdr * tonemap.exposure);
-    // An 8-bit UNORM target (every swapchain and offscreen output Fovea
-    // makes) is encoded and dithered here; an sRGB one encodes itself, past
-    // where a dither can go evenly, and isn't dithered.
+    // An 8-bit UNORM target (what Fovea asks for, for every swapchain and
+    // offscreen output) is encoded and dithered here; an sRGB one (a surface
+    // without UNORM) encodes itself, past where a dither can go evenly, and
+    // isn't dithered.
     if (tonemap.encode_srgb == 0) {
         return float4(mapped, 1.0);
     }
-    // Black stays black (night's sky, a dark screen), and white white.
+    // What the tone map leaves at exactly 0 stays 0, and what it clips to
+    // white stays white (night's sky isn't black: its airglow is dithered,
+    // where banding shows most).
     const float3 encoded = encode_srgb(mapped);
     const float3 dithered = select(encoded > 0.0 && encoded < 1.0, dither_8bit(encoded, i.position.xy), encoded);
     return float4(saturate(dithered), 1.0);
