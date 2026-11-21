@@ -517,7 +517,9 @@ The box's three passes take about 0.1 ms at 20 000. The whole frame's GPU work, 
 - `ParticleErosion.TheVolumesGainRisesWithTheErosion`; the config's `renderer`.
 - Reviewed by a fresh agent: the frames in flight (the shared images ordered by the next frame's barrier on the one queue, sync validation clean), the barriers, the atomics, the descriptors and the dispatch found sound; its findings (the per-metre erosion, the conservation, the first view, the fixed point, the formats, the fade at half resolution, a NaN at a zero direction) fixed as above.
 
-**Open:** the spread to choose against the site's dust sim (the measurements above were with none); `self_shadowing = false` doesn't apply to the volume (its sun pass is always made); the box's cap, voxel count and spread as `[particles]` keys (a dust trail longer than 256 m is cut to its middle's box); a cloud larger than the cap, nearest first; KHSV's A6000.
+**Spread stays 1** (the user's choice, 2026-11-21): stretching the puffs is a departure from the data the simulation sends; a cloud that reads as balls is the sender's to fix, by sending puffs that overlap. `volume_spread` remains in `ParticleQuality` for tests, not in `[particles]`.
+
+**Open:** `self_shadowing = false` doesn't apply to the volume (its sun pass is always made); the box's cap, voxel count and spread as `[particles]` keys (a dust trail longer than 256 m is cut to its middle's box); a cloud larger than the cap, nearest first; KHSV's A6000.
 
 Sources (read for this, 2026-11-21, from the authors' own files):
 - [H15] S. Hillaire, "Physically Based and Unified Volumetric Rendering in Frostbite", SIGGRAPH 2015, Advances in Real-Time Rendering in Games (slides with notes): slides 12-41, 53-56.
