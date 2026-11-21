@@ -320,8 +320,8 @@ std::optional<std::array<double, N>> number_fields(Parser& p, const toml::node& 
 void parse_particles(Parser& p, const toml::table& t, ParticlesConfig& out) {
     p.check_keys(t,
                  {"port", "listen_address", "capacity", "fade_s", "extinction_m2_per_kg", "albedo",
-                  "forward_scattering", "detail", "detail_size", "swirl", "self_shadowing",
-                  "slices", "light_buffer", "resolution", "renderer"},
+                  "forward_scattering", "detail", "detail_size", "swirl", "erosion",
+                  "self_shadowing", "slices", "light_buffer", "resolution", "renderer"},
                  "particles");
     if (const auto* n = t.get("self_shadowing")) {
         if (const auto* b = n->as_boolean()) {
@@ -415,6 +415,12 @@ void parse_particles(Parser& p, const toml::table& t, ParticlesConfig& out) {
         if (auto v = p.number(*n, "particles.swirl")) {
             check_range(p, *n, "particles.swirl", *v, 0.0, 4.0, false);
             out.swirl = *v;
+        }
+    }
+    if (const auto* n = t.get("erosion")) {
+        if (auto v = p.number(*n, "particles.erosion")) {
+            check_range(p, *n, "particles.erosion", *v, 0.0, 1.0, false);
+            out.erosion = *v;
         }
     }
 }

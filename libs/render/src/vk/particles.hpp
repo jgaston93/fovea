@@ -123,6 +123,13 @@ private:
     std::vector<Vec3> centres_;
     std::vector<std::uint32_t> keys_;
     std::vector<std::uint32_t> scratch_;
+    // The detail volume's values as the GPU has them (R8 levels), and the
+    // erosion's gain for the look last packed (D-051): worked out again only
+    // when the look changes.
+    std::array<std::uint32_t, 256> detail_histogram_{};
+    float gain_detail_ = -1.0F;
+    float gain_erosion_ = -1.0F;
+    float erosion_gain_ = 1.0F;
     VkDescriptorSetLayout buffers_layout_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout view_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
