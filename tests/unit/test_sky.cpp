@@ -306,21 +306,26 @@ TEST(Sky, AJumpTakesItsExposureAtOnce) {
     if (night < 0.0F) {
         GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
     }
-    // The clock set to night: night's exposure at once (it is about six stops
-    // from day's: eased, the frame would be a tenth of a stop toward it).
-    EXPECT_FLOAT_EQ(after_day(at_utc(6, 21, 3.0), here), night);
+    // The clock set to night: night's exposure at once, bit for bit (it is
+    // about 18 stops from day's: eased, the frame would be 0.3 of a stop
+    // toward it).
+    EXPECT_EQ(after_day(at_utc(6, 21, 3.0), here), night);
+    // And at 01:30, where easing all the way, a + (b - a) 1, missed the
+    // target by a few units in the last place (the review's finding).
+    EXPECT_EQ(after_day(at_utc(6, 21, 1.5), here), first(at_utc(6, 21, 1.5), here));
     const float day = first(at_utc(6, 21, 17.0), here);
     EXPECT_GT(night / day, 16.0F);
     // The eye 10 km up: that place's exposure at once.
     const SceneView high = view_towards(0.0, 10.0, 64, 32, 30.0, 10000.0);
-    EXPECT_FLOAT_EQ(after_day(at_utc(6, 21, 17.0), high), first(at_utc(6, 21, 17.0), high));
+    EXPECT_EQ(after_day(at_utc(6, 21, 17.0), high), first(at_utc(6, 21, 17.0), high));
     // 900 m up: not a jump, eased from day's at the ground toward its own.
     const SceneView up = view_towards(0.0, 10.0, 64, 32, 30.0, 902.0);
     const float target = first(at_utc(6, 21, 17.0), up);
     const float eased = after_day(at_utc(6, 21, 17.0), up);
-    EXPECT_NE(eased, target);
+    // A frame's easing: 1 - e^(-1/60), under 2 % of the way (the target is
+    // 0.5 % from day's here: a jump would be all of it).
     EXPECT_GT(std::abs(eased - day), 0.0F);
-    EXPECT_LT(std::abs(eased - day), std::abs(target - day));
+    EXPECT_LT(std::abs(eased - day), 0.1F * std::abs(target - day));
 }
 
 // The light follows the sun (milestone 6 step 1, now through the air): a
