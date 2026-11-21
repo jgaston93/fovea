@@ -149,7 +149,13 @@ Pose pose_at(const EntityState& e, LocalTime at, bool allowed) {
     if (step.w < 0.0) {
         step = -step;  // the short way round
     }
-    const double angle = 2.0 * std::acos(std::clamp(step.w, -1.0, 1.0));
+    // The angle from the axis part's length and w together (D-047): from w
+    // alone, two equal samples (a frozen host's) whose product's w rounds
+    // below 1 gave a small angle with an axis of exactly zero, and its
+    // direction, NaN: the eye nowhere while frozen.
+    const DVec3 axis_part(step.x, step.y, step.z);
+    const double axis_length = glm::length(axis_part);
+    const double angle = 2.0 * std::atan2(axis_length, step.w);
     if (glm::length(cur.ecef - prev.ecef) / span > kMaxSpeedMps ||
         glm::degrees(angle) / span > kMaxTurnDps) {
         return cur;  // a jump, not motion: the host moved it
@@ -159,8 +165,8 @@ Pose pose_at(const EntityState& e, LocalTime at, bool allowed) {
     const double f = lead / span;  // negative: between the samples
     Pose p = cur;
     p.ecef = cur.ecef + (cur.ecef - prev.ecef) * f;
-    if (angle > 1e-12) {
-        const DVec3 axis = glm::normalize(DVec3(step.x, step.y, step.z));
+    if (axis_length > 0.0) {
+        const DVec3 axis = axis_part / axis_length;
         p.orientation = glm::normalize(glm::angleAxis(angle * f, axis) * cur.orientation);
     }
     return p;
