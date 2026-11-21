@@ -632,12 +632,18 @@ TEST(ParticlesRender, TheParticlePassIsTimed) {
     }
     EXPECT_GT(with.particles_ms[0], 0.0F);
     EXPECT_LT(with.particles_ms[0], with.gpu_ms[0]);
-    for (int i = 0; i < 4; ++i) {
+    // Without: the least of several frames (lavapipe's timestamps are the
+    // CPU's, and with other tests running alongside one frame's pass can be
+    // held up for milliseconds with nothing in it: CI, 2.9 and 4.7 ms).
+    float without_ms = 1e9F;
+    for (int i = 0; i < 10; ++i) {
         r->set_particles(nullptr, t);
         r->draw_scene_frame(std::span(&view, 1));
+        if (i >= 3) {  // GPU times arrive two frames later
+            without_ms = std::min(without_ms, r->last_timing().particles_ms[0]);
+        }
     }
-    const FrameTiming without = r->last_timing();
-    EXPECT_LT(without.particles_ms[0], 0.25F * with.particles_ms[0]);
+    EXPECT_LT(without_ms, 0.25F * with.particles_ms[0]);
     EXPECT_EQ(r->validation_messages(), 0U);
 }
 
