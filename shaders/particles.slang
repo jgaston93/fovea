@@ -150,6 +150,10 @@ float3 centre_from_anchor(Particle p) {
     return o.offset + o.east * p.position.x + o.north * p.position.y + o.up * p.position.z;
 }
 
+// The share of a 3D Gaussian's mass within 3 sigma: erf(3 / sqrt 2) - sqrt(2
+// / pi) 3 e^(-9/2), 0.970709; its reciprocal.
+static const float kInvInside3 = 1.0 / 0.970709;
+
 // An ECEF vector in an origin's east, north and up.
 float3 to_enu(Origin o, float3 v) {
     return float3(dot(v, o.east), dot(v, o.north), dot(v, o.up));
@@ -176,7 +180,12 @@ float erf_approx(float x) {
 float gauss_along(float3 dw, float3 cw, float t0, float t1) {
     const float a = max(dot(dw, dw), 1e-12);
     const float m = dot(dw, cw) / a;
-    const float k = max(dot(cw, cw) - m * m * a, 0.0);
+    // The closest approach squared as |cw - m dw|^2, not |cw|^2 - m^2 a:
+    // those two are nearly equal for a small or far particle, and their
+    // difference lost most of its digits (review: 15 % off at sigma 0.5 m
+    // and 500 m, 7500 % at 5 cm and 1 km; this, under 1 %).
+    const float3 lv = cw - m * dw;
+    const float k = dot(lv, lv);
     const float s = sqrt(0.5 * a);
     return exp(-0.5 * k) * sqrt(kPi / (2.0 * a)) * (erf_approx(s * (t1 - m)) - erf_approx(s * (t0 - m)));
 }
@@ -273,9 +282,8 @@ float multiple_scattering_phase(float g, float c, float depth) {
 static const float kOctaveEnergy = 1.75;  // b^0 + b^1 + b^2: the octaves' sum for an isotropic light
 
 // Detail in the particles (D-043): the density at a point as a fraction of
-// a particle's uniform density, `enu` the point in the particle's origin's
-// frame (metres), `r2` its squared distance from the particle's centre in
-// radii. After Schneider and Vos ("The Real-time Volumetric Cloudscapes of
+// the particle's own there, `enu` the point in the particle's origin's frame
+// (metres). After Schneider and Vos ("The Real-time Volumetric Cloudscapes of
 // Horizon: Zero Dawn", SIGGRAPH 2015 Advances in Real-Time Rendering; the
 // slides read), whose detail is inverted cellular noise at increasing
 // frequencies ("tightly packed billow shapes", slides 31 and 34), applied
@@ -286,14 +294,11 @@ static const float kOctaveEnergy = 1.75;  // b^0 + b^1 + b^2: the octaves' sum f
 // billows run across them. Theirs erodes only the edges of a cloud they
 // draw from one density field; here a cloud is many particles, its inside
 // the inside of each, so the field varies the density everywhere: the
-// fraction is base x (1 - detail (1 - n)) / (1 - detail kDetailMean'),
-// the division keeping the particles' mass on average (the sender's
-// density is a mass; the detail moves it, doesn't remove it). The base is
-// the sphere softened over its outer part, min(1, 3 (1 - r^2)): 1 inside
-// r^2 = 2/3, 0 at the surface, so a particle's own edge doesn't show as a
-// sphere's; divided by its mean over the sphere's volume, the integral of
-// 3 r^2 min(1, 3 (1 - r^2)) from 0 to 1, 0.7645, so it keeps the mass too
-// (the outer shell holds 46 % of the volume). Their
+// fraction is (1 - detail (1 - n)) / (1 - detail kDetailMean'), the
+// division keeping the particles' mass on average (the sender's density is a
+// mass; the detail moves it, doesn't remove it). Each particle is a Gaussian
+// (D-053; until then a sphere softened over its outer part), so its own edge
+// is soft already. Their
 // curl texture is 2D; here it's a 3D volume, the curl of a vector
 // potential (Bridson, Hourihan and Nordenstam, "Curl-Noise for Procedural
 // Fluid Flow", SIGGRAPH 2007, equation 1; read), drifting in time: billows
@@ -316,16 +321,17 @@ float detail_factor(float n) {
 }
 // The particle eaten by the field (D-051), after Schneider and Vos's
 // clouds, whose detail is subtracted "at the edges of the cloud" (SIGGRAPH
-// 2015, slide 39; read for D-043). Against s = 1 - r^2 (1 at the centre, 0
-// at the surface), less t = erosion x (1 - n), stretched back to 1 at the
-// centre: the particle ends where s = t, anywhere from its surface (the
-// field high) in to sqrt(erosion) of its radius from it (the field low), so
-// its outline follows the field's billows, not a sphere. Eroding only the
-// base's outer shell (r^2 past 2/3) was tried first: a small, dense puff is
-// mostly core, and stayed a ball. The base w is kept inside, so with no
-// erosion it's as before: w at erosion 0.
-// For a Gaussian (D-053), s is its density relative to its centre's, w
-// itself: eroded where it's thin.
+// 2015, slide 39; read for D-043). Against s (1 at the centre, 0 at the
+// particle's edge), less t = erosion x (1 - n), stretched back to 1 at the
+// centre: the particle ends where s = t, anywhere from its edge (the field
+// high) in to sqrt(1 - erosion) of the way out (the field low), so its
+// outline follows the field's billows. Eroding only an outer shell was
+// tried first (on spheres): a small, dense puff is mostly core, and stayed a
+// ball. The density w is kept inside, so with no erosion it's as before.
+// For a Gaussian (D-053), s is 1 - rho^2 / 9, rho its distance from the
+// centre in sigmas: 1 there, 0 at 3 sigma, as the sphere's 1 - r^2 was, so
+// with the field high only its outermost edge is trimmed (s = w trimmed
+// everywhere past 1.7 sigma: review).
 float eroded(float w, float s, float n, float erosion) {
     if (erosion <= 0.0) {
         return w;
@@ -402,7 +408,9 @@ float4 fs_particles(ParticleVertex i) : SV_Target {
     // The Gaussian's optical depth along the ray, exactly (gauss_along); with
     // detail (D-043), its factor at samples along it, weighted by the
     // Gaussian there, and eroded (D-051) where the Gaussian is thin.
-    float tau = p.peak * gauss_along(dw, cw, enter, leave);
+    // Within 3 sigma is 97.07 % of a Gaussian; divided by that, the drawn part
+    // carries all its extinction, as the volume's normalised injection does.
+    float tau = p.peak * kInvInside3 * gauss_along(dw, cw, enter, leave);
     if (push.detail > 0.0) {
         float weighted = 0.0;
         float weights = 0.0;
@@ -412,9 +420,10 @@ float4 fs_particles(ParticleVertex i) : SV_Target {
             const float t = enter + (float(k) + 0.5) * step;
             const float3 off = to_enu(o, dir * t - i.centre);
             const float3 y = whiten(p, off);
-            const float w = exp(-0.5 * dot(y, y));
+            const float q = dot(y, y);
+            const float w = exp(-0.5 * q);
             const float n = detail_at(i.enu + off);
-            weighted += eroded(w, w, n, light_space[0].erosion) * detail_factor(n);
+            weighted += eroded(w, 1.0 - q / 9.0, n, light_space[0].erosion) * detail_factor(n);
             weights += w;
         }
         // The erosion's mass given back (D-051): 1 without erosion.
@@ -443,9 +452,10 @@ float4 fs_particles(ParticleVertex i) : SV_Target {
     return float4(min(radiance, float3(60000.0)) * opacity, opacity);
 }
 
-// The light pass: each puff drawn as the light sees it, orthographic along
-// its travel, into the light buffer (R16F, added: optical depths sum, in
-// any order within a slice). The quad is the sphere's silhouette, exactly.
+// The light pass: each particle drawn as the light sees it, orthographic
+// along its travel, into the light buffer (R16F, added: optical depths sum,
+// in any order within a slice). The quad is a square round its 3-sigma
+// bound; each texel takes the Gaussian's optical depth along the light.
 struct LightVertex {
     float4 position : SV_Position;
     [[vk::location(0)]] float2 across;  // from the centre, in bounds' radii
@@ -583,29 +593,39 @@ void cs_volume_inject(uint3 group: SV_GroupID, uint3 thread: SV_GroupThreadID) {
     // The weights summed first over the whole 3-sigma bound (the box's edge
     // aside), then the particle scaled to its cross-section exactly. The
     // early return above is uniform per group.
+    // A large particle's weights sum to its integral, (2 pi)^1.5 sqrt(det
+    // Sigma) 0.970709 / voxel^3 (within 3 sigma), to well under a percent:
+    // per weight, then, peak / 0.970709. A small one's are summed, so it
+    // keeps its cross-section exactly at any place on the grid (D-052). The
+    // branch is uniform per group; a small one's bound is at most 8 voxels,
+    // so its sum is at most 17^3 samples.
     const int3 lo_all = int3(floor(c - r));
     const int3 span_all = int3(ceil(c + r)) - lo_all;
-    const uint count_all = uint(span_all.x * span_all.y * span_all.z);
-    float sum = 0.0;
-    for (uint k = thread.x; k < count_all; k += 64u) {
-        const int3 at = lo_all + int3(int(k % uint(span_all.x)),
-                                      int((k / uint(span_all.x)) % uint(span_all.y)),
-                                      int(k / uint(span_all.x * span_all.y)));
-        const float3 y = whiten(p, to_enu(o, (float3(at) + 0.5 - c) * v.voxel));
-        const float q = dot(y, y);
-        sum += q < 9.0 ? exp(-0.5 * q) : 0.0;
-    }
-    inject_weights[thread.x] = sum;
-    GroupMemoryBarrierWithGroupSync();
-    for (uint stride = 32u; stride > 0u; stride >>= 1u) {
-        if (thread.x < stride) {
-            inject_weights[thread.x] += inject_weights[thread.x + stride];
+    float per_weight = p.peak * kInvInside3;
+    if (r <= 8.0) {
+        const uint count_all = uint(span_all.x * span_all.y * span_all.z);
+        float sum = 0.0;
+        for (uint k = thread.x; k < count_all; k += 64u) {
+            const int3 at = lo_all + int3(int(k % uint(span_all.x)),
+                                          int((k / uint(span_all.x)) % uint(span_all.y)),
+                                          int(k / uint(span_all.x * span_all.y)));
+            const float3 y = whiten(p, to_enu(o, (float3(at) + 0.5 - c) * v.voxel));
+            const float q = dot(y, y);
+            sum += q < 9.0 ? exp(-0.5 * q) : 0.0;
         }
+        inject_weights[thread.x] = sum;
         GroupMemoryBarrierWithGroupSync();
+        for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+            if (thread.x < stride) {
+                inject_weights[thread.x] += inject_weights[thread.x + stride];
+            }
+            GroupMemoryBarrierWithGroupSync();
+        }
+        per_weight = total / max(inject_weights[0], 1e-6);
     }
-    const float per_weight = total / max(inject_weights[0], 1e-6);
+    // Only the voxels in the box (a particle past it adds there no further).
     const int3 lo = max(lo_all, int3(0, 0, 0));
-    const int3 hi = min(lo_all + span_all, int3(n, n, n));
+    const int3 hi = min(int3(ceil(c + min(r, float(n) + 1.0))), int3(n, n, n));
     const int3 span = max(hi - lo, int3(0, 0, 0));
     const uint count = uint(span.x * span.y * span.z);
     for (uint k = thread.x; k < count; k += 64u) {
@@ -784,7 +804,7 @@ float4 fs_volume(VolumeVertex i) : SV_Target {
                 const float coarse = detail_at(enu * (1.0 / 3.0));
                 // How deep in the cloud, against its particles' own
                 // density (not per metre: thin dust was erased whole): about
-                // 1 - r^2 through a lone particle, as D-051's s.
+                // its densest part through a lone particle (D-053).
                 const float s = 1.0 - exp(-2.0 * sigma * volume_space[0].inv_reference);
                 const float t = erosion * (1.0 - coarse);
                 sigma *= saturate((s - t) / max(1.0 - t, 1e-3) * 4.0) * light_space[0].erosion_gain;

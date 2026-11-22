@@ -561,4 +561,36 @@ The particle stream's 0.2 adds clusters: anisotropic Gaussians, each with its co
   - with the shader using Wᵀ instead of W, −0.66, and the test fails.
 - **The existing particle tests,** on Gaussians now: puffs against the volume, 24 380 and 25 710 cover. Erosion's gain, with the field all 1, is 1.2712 against an independent integral's 1.27119.
 
-**Open:** the puffs' renderer's sort is still by centre (D-041), so two large overlapping Gaussians can blend in the wrong order; Kerbl et al. note the same "popping" from their per-tile sort (p. 10).
+**Review** (a fresh agent's; each finding checked before it was fixed):
+- **Precision.** The line integral's closest approach was |cw|² − m²a, two nearly equal numbers. That put a small or far particle's optical depth off by 15 % at σ 0.5 m and 500 m, and 7500 % at 5 cm and 1 km (the review's float emulation). It is now |cw − m dw|², under 1 % off.
+- **The volume's cost.** A large particle's normalising loop ran over its whole bound, up to billions of iterations for one near the cap, enough to trip a GPU timeout. Its loops also weren't clipped to the box. Now:
+  - a particle over 8 voxels in bound takes its sum analytically, (2π)^1.5 √det Σ · 0.970709 / voxel³, so each voxel holds peak / 0.970709 · exp(−q / 2);
+  - smaller ones are still summed (at most 17³ samples), to keep their cross-section exactly anywhere on the grid;
+  - the injection is clipped to the box.
+- **Totals.** The puffs' view pass integrated within 3σ, 97.07 % of the extinction, while the volume normalised to 100 %. The view pass now divides by 0.970709 too.
+- **Erosion.**
+  - The per-particle s was the Gaussian's own density w, which trimmed everywhere past 1.7σ, even with the field high. It is now 1 − ρ²/9, ρ in σs: the sphere's ramp, so only the outer edge goes where the field is high.
+  - The volume's reference was the mean of the peaks, which one tiny dense particle dominates. It is now the cloud's mean density, Σ extinction / Σ (extinction / peak).
+- **The cap.** A particle reaching the cap popped out. It now fades out over the last 400 m of bound.
+- **Tests.** A light-pass mutation (its optical depth quartered) and the dropped bound scale passed every test before. Now:
+  - `BothRenderersShadowAlike` compares how much a caster darkens a receiver in the two renderers, two independent computations: 0.107 as puffs against 0.073 as the volume. With the light pass quartered, the puffs' darkening is 0.044, below the test's 0.8–1.8 times the volume's.
+  - New tests cover a cluster replacing a puff, the determinant threshold and the cap's fade.
+- **Stale sphere wording** in the shader, the integration guide and the architecture, fixed.
+
+Re-measured (lavapipe) after the fixes:
+- a stretched cluster, 6722 cover as puffs against 7011 as the volume (4 %);
+- a puff, 25 099 against 25 701 (2 %);
+- erosion's gain, with the field all 1, is 1.02255, matching an independent integral.
+
+**Open:**
+- **Shadow strength:** the two renderers' shadows differ by about 1.5×. The puffs' light buffer (512²) is finer than the volume's sun volume (48³ in the test), which is marched nearest-voxel.
+- **Blending order:** the puffs' renderer's sort is still by centre (D-041), so two large overlapping Gaussians can blend in the wrong order. Kerbl et al. note the same "popping" from their per-tile sort (p. 10).
+- **Cost:** a puff's bound is now 1.5 times its old radius, so it covers about 3.4 times the voxels and 2.25 times the quad area. Re-timed on the RTX 5070 Ti (three 1920×1080 views at half resolution, the particle pass summed over them, Mews's `puff-sender.py` ring, the GPU idle before):
+
+  | Particles | Puffs, D-052 | Puffs, now | Volume, D-052 | Volume, now |
+  |---|---|---|---|---|
+  | 1000 | 0.9 ms | 1.6 ms | 0.5 ms | 0.55 ms |
+  | 5000 | 2.5 ms | 5.4 ms | 0.3 ms | 0.34 ms |
+  | 20 000 | 8.6 ms | 20.0 ms | 0.3 ms | 0.48 ms |
+
+  The volume is essentially unchanged. The puffs' renderer is about 2.3 times the cost: at 20 000 it no longer fits a frame. The volume is the renderer for many particles (KHSV's).

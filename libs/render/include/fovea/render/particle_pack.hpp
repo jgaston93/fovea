@@ -101,7 +101,7 @@ static_assert(sizeof(GpuParticle) == 64, "must match Particle in particles.slang
 // The floor and cap on a particle's size (D-053; the stream lets a reader
 // set them, and asks it to say): sigma^2 has (5 cm)^2 added on every axis, so
 // a tiny cluster isn't a sub-pixel point of extreme density; one whose
-// 3-sigma bound is past 2 km isn't drawn.
+// 3-sigma bound is past 2 km isn't drawn, fading out over the last 400 m.
 inline constexpr float kSigmaFloorM = 0.05F;
 inline constexpr float kMaxBoundM = 2000.0F;
 

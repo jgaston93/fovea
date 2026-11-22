@@ -551,6 +551,37 @@ TEST_F(PuffAdapterTest, ClustersAreKeptAndBadOnesRefused) {
     EXPECT_EQ(g.particles[0].extinction_m2, 0.0F);
     EXPECT_GT(g.particles[0].mass_kg, 0.0F);
     EXPECT_EQ(g.particles[0].diffusivity, 0.0F);
+    // And a cluster back over the puff, newer still: its own again.
+    later.sim_time_ns += 1000;
+    std::array<puff::Cluster, 1> again{c[0]};
+    const std::size_t m = puff::write_clusters(buf, later, again);
+    send(std::vector<std::uint8_t>(buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(m)), t0);
+    const ParticleFrame& h = published(t0);
+    ASSERT_EQ(h.count, 1U);
+    EXPECT_EQ(h.particles[0].extinction_m2, 3.0F);
+    EXPECT_EQ(h.particles[0].mass_kg, 0.0F);
+    EXPECT_EQ(h.particles[0].diffusivity, 0.1F);
+}
+
+// The stream's determinant threshold: a covariance positive definite but
+// with det Sigma under 1e-12 m^6 (sigma 1 cm on every axis: 1e-12 exactly,
+// and below) is refused; one just above is kept.
+TEST_F(PuffAdapterTest, ATooSmallCovarianceIsRefused) {
+    send(origin_datagram(header()), t0);
+    std::array<puff::Cluster, 2> c{};
+    c[0].id = 1;
+    c[0].c_ee = c[0].c_nn = c[0].c_uu = 0.9e-4F;  // det 7.3e-13
+    c[0].extinction = 1.0F;
+    c[1].id = 2;
+    c[1].c_ee = c[1].c_nn = c[1].c_uu = 1.1e-4F;  // det 1.3e-12
+    c[1].extinction = 1.0F;
+    std::array<std::uint8_t, puff::kMaxDatagram> buf{};
+    const std::size_t n = puff::write_clusters(buf, header(), c);
+    send(std::vector<std::uint8_t>(buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(n)), t0);
+    const ParticleFrame& f = published(t0);
+    ASSERT_EQ(f.count, 1U);
+    EXPECT_EQ(f.particles[0].covariance[0], 1.1e-4F);
+    EXPECT_EQ(stat(adapter.stats().rejected_records), 1U);
 }
 
 TEST_F(PuffAdapterTest, ApplyingAndPublishingAllocateNothing) {

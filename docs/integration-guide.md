@@ -147,14 +147,13 @@ When Fovea exits, it prints what the host link did: messages received and reject
 ## Particle volumes
 
 A simulation of dust, smoke or spray sends its particles to Fovea on a UDP port of their own, apart from CIGI ([D-039](decisions.md)). Each is a *cluster*, an anisotropic Gaussian with a velocity that spreads as it goes, or a *puff*, a sphere of uniform density with a velocity. Fovea draws them in every view ([D-040](decisions.md)):
-- each sphere's optical depth along each pixel's ray, from its bulk density;
 - cut off softly where the ground or anything else is nearer;
 - lit by the sun, moon and sky, the sun's light shadowed by the cloud itself ([D-041](decisions.md));
 - each particle an anisotropic Gaussian, its optical depth along each pixel's ray worked out exactly ([D-053](decisions.md));
 - its density varied by one field of billowy noise across the whole cloud, swirled and drifting, the mass kept on average ([D-043](decisions.md)), which can also eat into the cloud's thin parts ([D-051](decisions.md));
 - moved on its velocity between updates.
 
-Drawn as puffs by default, or as a volume ([D-052](decisions.md)): the puffs added each frame into one box of voxels around them all, shared by every view, and marched through per pixel. The volume shows one continuous cloud without the puffs' outlines and costs far less with many puffs (about 0.3 ms against 8.6 ms for 20 000 on an RTX 5070 Ti, three views at half resolution). Each particle goes in as sent: its extinction kept exactly, wherever it falls on the grid. Particles far apart stay apart, so a sender wanting one cloud sends ones that overlap. The box is at most 256 m a side.
+Drawn as puffs by default, or as a volume ([D-052](decisions.md)): the puffs added each frame into one box of voxels around them all, shared by every view, and marched through per pixel. The volume shows one continuous cloud and costs far less with many particles (about 0.5 ms against 20 ms for 20 000 on an RTX 5070 Ti, three views at half resolution: [D-053](decisions.md)); with more than a few thousand particles, use it. Each particle goes in as sent: its extinction kept exactly, wherever it falls on the grid. Particles far apart stay apart, so a sender wanting one cloud sends ones that overlap. The box is at most 256 m a side.
 
 ```toml
 [particles]
@@ -167,7 +166,7 @@ extinction_m2_per_kg = 320.0 # optical depth per kg/m^2 along a ray: mineral dus
 albedo = { r = 0.62, g = 0.52, b = 0.40 }  # the light scattered, linear sRGB: a chosen tan, tune by eye
 forward_scattering = 0.68    # Cornette-Shanks g: 0 even, toward 1 forward; the same dust's asymmetry
 # Detail (D-043; chosen, tune by eye): one field of noise shared by all the particles
-detail = 0.6                 # 0 to 1: how much it varies their density, mass kept on average (0: uniform spheres, no cost)
+detail = 0.6                 # 0 to 1: how much it varies their density, mass kept on average (0: smooth Gaussians, no cost)
 detail_size = 2.0            # 0.1 to 100: its features, metres
 swirl = 0.5                  # 0 to 4: curl noise swirling it, in features; it drifts in time
 erosion = 0.0                # 0 to 1 (D-051): the noise eats into each puff's edge, or the volume's cloud's; its mass given back (needs detail)

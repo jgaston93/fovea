@@ -498,7 +498,10 @@ TEST(ParticlesRender, ErosionBreaksTheOutline) {
     const double round = spread(cp);
     const double broken = spread(ce);
     std::printf("the outline's spread along the ring: detail %.3f, eroded %.3f\n", round, broken);
-    EXPECT_GT(broken, 1.5 * round);
+    // Measured with the Gaussian's erosion (D-053, s = 1 - rho^2 / 9: only
+    // the outer edge trimmed where the field is high): 0.845 detail alone,
+    // 1.134 eroded; with the sphere (until D-053), 0.70 and 1.57.
+    EXPECT_GT(broken, 1.2 * round);
 }
 
 // The swirl drifts in time (D-043): the same puff a few seconds on looks
@@ -1127,6 +1130,71 @@ TEST(ParticlesGaussian, ATiltedClusterLeans) {
     // whitening's transpose used instead, -0.66.
     EXPECT_NEAR(puffs, -0.882, 0.07);
     EXPECT_NEAR(volume, -0.882, 0.07);
+}
+
+// The light pass's Gaussian, quantitatively (D-053): a caster over a
+// receiver darkens it by its optical depth toward the sun; the puffs'
+// renderer (the light buffer's closed form) and the volume (its own sun
+// march over the voxels) are independent, and must agree on how much.
+TEST(ParticlesGaussian, BothRenderersShadowAlike) {
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    const auto cluster = [&](ParticleFrame& f, Vec3 at, float sigma, float extinction) {
+        Particle& p = f.particles.at(f.count++);
+        p.position = at;
+        const float s2 = sigma * sigma;
+        p.covariance = {s2, 0.0F, 0.0F, s2, 0.0F, s2};
+        p.extinction_m2 = extinction;
+        p.received = t;
+        p.first_seen = t - 10s;
+        p.fade_from = t + 10s;
+    };
+    ParticleFrame alone = frame_at_eye(view, 10);
+    cluster(alone, Vec3(0.0F, 40.0F, 3.0F), 1.5F, 20.0F);
+    ParticleFrame shadowed = alone;
+    // Over it, toward the noon sun: optical depth through its middle
+    // extinction / (2 pi sigma^2) = 3.
+    cluster(shadowed, Vec3(0.0F, 40.0F, 23.0F), 3.0F, 170.0F);
+    ParticleLook look;
+    look.detail = 0.0F;
+    ParticleQuality vq;
+    vq.volume = true;
+    vq.volume_size = 96;
+    vq.volume_light_size = 48;
+    const auto ratio = [&](Renderer& r, const char* a, const char* b) {
+        const auto lit = draw(r, view, &alone, t, a);
+        const auto dark = draw(r, view, &shadowed, t, b);
+        const Rgb x = mean(lit, kW / 2 - 4, kH / 2 - 6, kW / 2 + 4, kH / 2 + 2);
+        const Rgb y = mean(dark, kW / 2 - 4, kH / 2 - 6, kW / 2 + 4, kH / 2 + 2);
+        return (y.r + y.g + y.b) / (x.r + x.g + x.b);
+    };
+    double puffs = 0.0;
+    double volume = 0.0;
+    {
+        auto a = make_renderer(10, {}, look);
+        if (a == nullptr) {
+            GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+        }
+        a->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        puffs = ratio(*a, "gaussian-lit-puffs.png", "gaussian-shadowed-puffs.png");
+        EXPECT_EQ(a->validation_messages(), 0U);
+    }
+    {
+        auto b = make_renderer(10, vq, look);
+        b->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        volume = ratio(*b, "gaussian-lit-volume.png", "gaussian-shadowed-volume.png");
+        EXPECT_EQ(b->validation_messages(), 0U);
+    }
+    std::printf("shadowed over lit: puffs %.3f, volume %.3f\n", puffs, volume);
+    // Measured on lavapipe: 0.893 and 0.927, darkenings of 0.107 and 0.073
+    // (the sky's light, unshadowed, keeps most of the brightness). The
+    // puffs' is about 1.5 times the volume's: its light buffer is finer than
+    // the volume's 48^3 sun volume, marched a voxel at a time (open, D-053).
+    // With the light pass's optical depth quartered (a mutation), 0.956:
+    // 0.6 times the volume's darkening, outside the bar.
+    const double darkening = (1.0 - puffs) / (1.0 - volume);
+    EXPECT_GT(darkening, 0.8);
+    EXPECT_LT(darkening, 1.8);
 }
 
 }  // namespace

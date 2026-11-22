@@ -234,6 +234,34 @@ TEST(ParticleGaussian, ItGrowsByItsDiffusivity) {
     EXPECT_NEAR(q.mass_kg, 0.01F * 4.18879F * 8.0F, 1e-6F);
 }
 
+// The cap (D-053): a particle whose 3-sigma bound passes 2 km isn't drawn;
+// over the last 400 m before it, it fades out rather than pops.
+TEST(ParticleGaussian, ItFadesOutNearTheCap) {
+    const LocalTime t = LocalTime{} + 100s;
+    ParticleFrame f;
+    f.particles.resize(3);
+    f.origins.push_back(ParticleOrigin{});
+    const float sigmas[3] = {100.0F, 633.333F, 700.0F};  // bounds 300 m, 1900 m, 2100 m
+    for (std::size_t i = 0; i < 3; ++i) {
+        Particle& p = f.particles[i];
+        const float s2 = sigmas[i] * sigmas[i];
+        p.covariance = {s2, 0.0F, 0.0F, s2, 0.0F, s2};
+        p.extinction_m2 = 10.0F;
+        p.received = t;
+        p.first_seen = t - 10s;
+        p.fade_from = t + 10s;
+    }
+    f.count = 3;
+    std::array<GpuParticle, 4> out{};
+    std::array<GpuOrigin, kMaxParticleOrigins> origins{};
+    const std::size_t n = pack_particles(f, t, ParticleLook{}, DVec3(0.0), out, origins);
+    ASSERT_EQ(n, 2U);
+    EXPECT_NEAR(out[0].extinction, 10.0F, 1e-4F);
+    // 1900 m of 2000: a quarter of the way into the last 400 m's fade, from
+    // its far end: 100 / 400 left.
+    EXPECT_NEAR(out[1].extinction, 10.0F * 0.25F, 0.05F);
+}
+
 }  // namespace
 }  // namespace fovea
 
@@ -289,13 +317,13 @@ TEST(ParticleErosion, TheGainGivesTheMassBack) {
     }
     // An empty histogram: nothing to weigh, no gain.
     EXPECT_EQ(erosion_gain(std::array<std::uint32_t, 256>{}, 0.6F, 0.6F), 1.0F);
-    // With the field everywhere 1 (n = 1, so t = 0), only where the Gaussian
-    // is under a quarter of its peak (4 s saturates above it) is it trimmed,
-    // to 4 w^2: over 3 sigma, the integral of w over that of w min(1, 4 w),
-    // each weighted r^2 dr, is 1.27119 (computed apart, 200 000 shells).
+    // With the field everywhere 1 (n = 1, so t = 0), only the outer edge,
+    // where s = 1 - rho^2 / 9 is under a quarter (rho past 2.6 sigma), is
+    // trimmed: over 3 sigma, the integral of w over that of w min(1, 4 s),
+    // each weighted rho^2 d rho, is 1.02255 (computed apart, 200 000 shells).
     std::array<std::uint32_t, 256> white{};
     white[255] = 1;
-    EXPECT_NEAR(erosion_gain(white, 0.6F, 0.8F), 1.27119F, 2e-3F);
+    EXPECT_NEAR(erosion_gain(white, 0.6F, 0.8F), 1.02255F, 2e-3F);
 }
 
 // The volume's box (D-052): it covers the particles; its voxel is a power
