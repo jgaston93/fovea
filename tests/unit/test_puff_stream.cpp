@@ -474,6 +474,116 @@ TEST_F(PuffAdapterTest, NonFiniteOrNegativePuffsAreRejected) {
     EXPECT_EQ(stat(adapter.stats().rejected), 0U);
 }
 
+// Clusters (0.2, D-053): written and read back field for field; a record
+// shorter than 64 bytes refused.
+TEST(PuffStream, RoundTripsClusters) {
+    puff::Cluster c;
+    c.id = 9;
+    c.east = 1.0F;
+    c.north = -2.0F;
+    c.up = 3.0F;
+    c.v_east = 0.5F;
+    c.c_ee = 4.0F;
+    c.c_en = 0.5F;
+    c.c_eu = -0.25F;
+    c.c_nn = 2.0F;
+    c.c_nu = 0.1F;
+    c.c_uu = 1.0F;
+    c.diffusivity = 0.05F;
+    c.extinction = 12.5F;
+    std::array<std::uint8_t, puff::kMaxDatagram> buf{};
+    const std::size_t n = puff::write_clusters(buf, header(), std::span(&c, 1));
+    ASSERT_EQ(n, 48U + 64U);
+    puff::Header h;
+    ASSERT_EQ(puff::read_header(std::span(buf.data(), n), h), puff::HeaderResult::ok);
+    EXPECT_EQ(h.type, static_cast<std::uint8_t>(puff::Type::clusters));
+    const puff::Cluster r = puff::read_cluster(std::span(buf.data(), n), h, 0);
+    EXPECT_EQ(r.id, 9U);
+    EXPECT_EQ(r.north, -2.0F);
+    EXPECT_EQ(r.c_en, 0.5F);
+    EXPECT_EQ(r.c_eu, -0.25F);
+    EXPECT_EQ(r.c_uu, 1.0F);
+    EXPECT_EQ(r.diffusivity, 0.05F);
+    EXPECT_EQ(r.extinction, 12.5F);
+    // record_bytes 63: refused.
+    buf[36] = 63;
+    EXPECT_EQ(puff::read_header(std::span(buf.data(), n), h), puff::HeaderResult::rejected);
+}
+
+// The adapter keeps a cluster's covariance, diffusivity and extinction; a
+// puff and a cluster share ids (the newer replaces); a cluster that isn't
+// finite, has a negative diffusivity or extinction, or whose covariance isn't
+// positive definite is refused.
+TEST_F(PuffAdapterTest, ClustersAreKeptAndBadOnesRefused) {
+    send(origin_datagram(header()), t0);
+    std::array<puff::Cluster, 5> c{};
+    for (std::size_t i = 0; i < c.size(); ++i) {
+        c[i].id = static_cast<std::uint32_t>(i + 1);
+        c[i].c_ee = 4.0F;
+        c[i].c_nn = 1.0F;
+        c[i].c_uu = 1.0F;
+        c[i].c_en = 0.5F;
+        c[i].diffusivity = 0.1F;
+        c[i].extinction = 3.0F;
+    }
+    c[1].c_en = 3.0F;  // |c_en| > sqrt(c_ee c_nn): not positive definite
+    c[2].extinction = -1.0F;
+    c[3].c_uu = std::nanf("");
+    c[4].diffusivity = -0.1F;
+    std::array<std::uint8_t, puff::kMaxDatagram> buf{};
+    const std::size_t n = puff::write_clusters(buf, header(), c);
+    send(std::vector<std::uint8_t>(buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(n)), t0);
+    const ParticleFrame& f = published(t0);
+    ASSERT_EQ(f.count, 1U);
+    EXPECT_EQ(f.particles[0].covariance[0], 4.0F);
+    EXPECT_EQ(f.particles[0].covariance[1], 0.5F);
+    EXPECT_EQ(f.particles[0].diffusivity, 0.1F);
+    EXPECT_EQ(f.particles[0].extinction_m2, 3.0F);
+    EXPECT_EQ(f.particles[0].mass_kg, 0.0F);
+    EXPECT_EQ(stat(adapter.stats().rejected_records), 4U);
+    // A puff with the same id replaces it: a sphere's Gaussian and mass.
+    auto later = header();
+    later.sim_time_ns += 1000;
+    const std::array<puff::Puff, 1> p{puff_at(1, 5.0F)};
+    send(puff_datagram(later, p), t0);
+    const ParticleFrame& g = published(t0);
+    ASSERT_EQ(g.count, 1U);
+    EXPECT_EQ(g.particles[0].extinction_m2, 0.0F);
+    EXPECT_GT(g.particles[0].mass_kg, 0.0F);
+    EXPECT_EQ(g.particles[0].diffusivity, 0.0F);
+    // And a cluster back over the puff, newer still: its own again.
+    later.sim_time_ns += 1000;
+    std::array<puff::Cluster, 1> again{c[0]};
+    const std::size_t m = puff::write_clusters(buf, later, again);
+    send(std::vector<std::uint8_t>(buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(m)), t0);
+    const ParticleFrame& h = published(t0);
+    ASSERT_EQ(h.count, 1U);
+    EXPECT_EQ(h.particles[0].extinction_m2, 3.0F);
+    EXPECT_EQ(h.particles[0].mass_kg, 0.0F);
+    EXPECT_EQ(h.particles[0].diffusivity, 0.1F);
+}
+
+// The stream's determinant threshold: a covariance positive definite but
+// with det Sigma under 1e-12 m^6 (sigma 1 cm on every axis: 1e-12 exactly,
+// and below) is refused; one just above is kept.
+TEST_F(PuffAdapterTest, ATooSmallCovarianceIsRefused) {
+    send(origin_datagram(header()), t0);
+    std::array<puff::Cluster, 2> c{};
+    c[0].id = 1;
+    c[0].c_ee = c[0].c_nn = c[0].c_uu = 0.9e-4F;  // det 7.3e-13
+    c[0].extinction = 1.0F;
+    c[1].id = 2;
+    c[1].c_ee = c[1].c_nn = c[1].c_uu = 1.1e-4F;  // det 1.3e-12
+    c[1].extinction = 1.0F;
+    std::array<std::uint8_t, puff::kMaxDatagram> buf{};
+    const std::size_t n = puff::write_clusters(buf, header(), c);
+    send(std::vector<std::uint8_t>(buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(n)), t0);
+    const ParticleFrame& f = published(t0);
+    ASSERT_EQ(f.count, 1U);
+    EXPECT_EQ(f.particles[0].covariance[0], 1.1e-4F);
+    EXPECT_EQ(stat(adapter.stats().rejected_records), 1U);
+}
+
 TEST_F(PuffAdapterTest, ApplyingAndPublishingAllocateNothing) {
     std::vector<std::vector<std::uint8_t>> datagrams;
     datagrams.push_back(origin_datagram(header()));

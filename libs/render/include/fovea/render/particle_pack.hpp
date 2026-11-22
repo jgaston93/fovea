@@ -76,22 +76,44 @@ struct ParticleQuality {
     std::uint32_t volume_size = 128;
     std::uint32_t volume_light_size = 64;
     float volume_max_m = 256.0F;
-    // Each particle spread over this many times its radius as it's added to
-    // the volume, its density over the cube of it (its mass kept): sparse
-    // particles merge into one cloud, as a fluid's particles are smoothed
-    // onto a grid (D-052). 1: as sent.
-    float volume_spread = 1.0F;
 };
 
 // Mirrors Particle in shaders/particles.slang (std430).
+// A particle as the GPU draws it (D-053): an anisotropic Gaussian, kept as
+// its whitening transform W = L^-1 (Sigma = L L^T, L the Cholesky factor):
+// at an offset x (east, north, up) from its centre its extinction coefficient
+// is peak exp(-|W x|^2 / 2). Drawn out to |W x| = 3 (3 sigma, 97 % of it),
+// inside `radius`.
 struct GpuParticle {
     std::array<float, 3> position{};  // [m] east, north, up from its origin, at the frame's time
-    float radius = 0.0F;              // [m]
-    float extinction = 0.0F;          // [1/m] bulk density x the coefficient x its opacity
-    std::uint32_t origin = 0;         // index into the origins
-    std::array<float, 2> unused{};
+    float radius = 0.0F;              // [m] a sphere holding its 3-sigma ellipsoid
+    float extinction = 0.0F;          // [m^2] its extinction cross-section x its opacity
+    float peak =
+        0.0F;  // [1/m] its extinction coefficient at the centre: extinction det W / (2 pi)^1.5
+    std::uint32_t origin = 0;  // index into the origins
+    float unused = 0.0F;
+    // W, lower triangular, east-north-up: w00, w10, w11, w20, w21, w22.
+    std::array<float, 6> whiten{};
+    std::array<float, 2> pad{};
 };
-static_assert(sizeof(GpuParticle) == 32, "must match Particle in particles.slang");
+static_assert(sizeof(GpuParticle) == 64, "must match Particle in particles.slang");
+
+// The floor and cap on a particle's size (D-053; the stream lets a reader
+// set them, and asks it to say): sigma^2 has (5 cm)^2 added on every axis, so
+// a tiny cluster isn't a sub-pixel point of extreme density; one whose
+// 3-sigma bound is past 2 km isn't drawn, fading out over the last 400 m.
+inline constexpr float kSigmaFloorM = 0.05F;
+inline constexpr float kMaxBoundM = 2000.0F;
+
+// Abramowitz and Stegun's 7.1.26 approximation to erf, as particles.slang
+// computes it (its error tested against std::erf).
+float erf_approx(float x) noexcept;
+
+// A covariance (ee, en, eu, nn, nu, uu) as its whitening transform (w00, w10,
+// w11, w20, w21, w22) and a bound on its largest standard deviation
+// (Gershgorin's, on the largest eigenvalue). False if not positive definite.
+bool whitening(const std::array<float, 6>& covariance, std::array<float, 6>& whiten,
+               float& sigma_bound) noexcept;
 
 // Mirrors Origin in shaders/particles.slang (std430).
 struct GpuOrigin {
@@ -149,10 +171,10 @@ struct GpuVolumeSpace {
     std::uint32_t light_size = 1;   // the sun volume's voxels a side
     float inv_voxel = 1.0F;
     std::uint32_t particles = 0;  // how many to inject
-    float spread = 1.0F;          // each particle's radius times this, its density over its cube
+    float unused0 = 0.0F;
     float inv_reference =
-        1.0F;  // 1 / the particles' mean extinction once spread [m] (erosion's scale)
-    std::array<float, 2> unused{};
+        1.0F;  // 1 / the particles' mean peak extinction coefficient [m] (the erosion's scale)
+    std::array<float, 2> unused1{};
 };
 static_assert(sizeof(GpuVolumeSpace) == 48, "must match VolumeSpace in particles.slang");
 
@@ -163,7 +185,7 @@ static_assert(sizeof(GpuVolumeSpace) == 48, "must match VolumeSpace in particles
 // (`anchor`, ECEF), so the grid stays put in the world. No allocation.
 GpuVolumeSpace volume_space(std::span<const Vec3> centres, std::span<const GpuParticle> particles,
                             std::uint32_t size, std::uint32_t light_size, float max_side,
-                            const DVec3& anchor, float spread = 1.0F) noexcept;
+                            const DVec3& anchor) noexcept;
 
 // What the erosion (D-051) takes from a particle's mass, as the factor that
 // gives it back: the particle's density integrated over its volume as

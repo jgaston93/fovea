@@ -14,6 +14,57 @@ std::array<float, 3> floats3(const DVec3& v) noexcept {
 
 }  // namespace
 
+float erf_approx(float x) noexcept {
+    // Abramowitz and Stegun, Handbook of Mathematical Functions, 7.1.26 (from
+    // memory; its error, under 1.5e-7 there, tested here against std::erf).
+    const float a = std::abs(x);
+    const float t = 1.0F / (1.0F + 0.3275911F * a);
+    const float poly =
+        t * (0.254829592F +
+             t * (-0.284496736F + t * (1.421413741F + t * (-1.453152027F + t * 1.061405429F))));
+    const float y = 1.0F - poly * std::exp(-a * a);
+    return x < 0.0F ? -y : y;
+}
+
+bool whitening(const std::array<float, 6>& cov, std::array<float, 6>& w,
+               float& sigma_bound) noexcept {
+    const auto ee = static_cast<double>(cov[0]);
+    const auto en = static_cast<double>(cov[1]);
+    const auto eu = static_cast<double>(cov[2]);
+    const auto nn = static_cast<double>(cov[3]);
+    const auto nu = static_cast<double>(cov[4]);
+    const auto uu = static_cast<double>(cov[5]);
+    if (!(ee > 0.0)) {
+        return false;
+    }
+    // Sigma = L L^T, L = [[a, 0, 0], [b, c, 0], [d, e, f]].
+    const double a = std::sqrt(ee);
+    const double b = en / a;
+    const double d = eu / a;
+    const double c2 = nn - b * b;
+    if (!(c2 > 0.0)) {
+        return false;
+    }
+    const double c = std::sqrt(c2);
+    const double e = (nu - d * b) / c;
+    const double f2 = uu - d * d - e * e;
+    if (!(f2 > 0.0) || !(a * c * std::sqrt(f2) > 1e-6)) {
+        return false;
+    }
+    const double f = std::sqrt(f2);
+    // W = L^-1, lower triangular too.
+    w = {static_cast<float>(1.0 / a),      static_cast<float>(-b / (a * c)),
+         static_cast<float>(1.0 / c),      static_cast<float>((b * e - c * d) / (a * c * f)),
+         static_cast<float>(-e / (c * f)), static_cast<float>(1.0 / f)};
+    // Gershgorin: every eigenvalue under the largest row's diagonal plus its
+    // off-diagonals' magnitudes.
+    const double gersh =
+        std::max({ee + std::abs(en) + std::abs(eu), nn + std::abs(en) + std::abs(nu),
+                  uu + std::abs(eu) + std::abs(nu)});
+    sigma_bound = static_cast<float>(std::sqrt(gersh));
+    return true;
+}
+
 std::size_t pack_particles(const ParticleFrame& frame, LocalTime at, const ParticleLook& look,
                            const DVec3& anchor, std::span<GpuParticle> out,
                            std::span<GpuOrigin> origins) noexcept {
@@ -26,23 +77,43 @@ std::size_t pack_particles(const ParticleFrame& frame, LocalTime at, const Parti
         g.north = floats3(o.enu_to_ecef[1]);
         g.up = floats3(o.enu_to_ecef[2]);
     }
+    constexpr float kTwoPi32 = 15.7496099F;  // (2 pi)^1.5
+    const float floor2 = kSigmaFloorM * kSigmaFloorM;
     std::size_t n = 0;
     const std::size_t count = std::min(frame.count, frame.particles.size());
     for (std::size_t i = 0; i < count && n < out.size(); ++i) {
         const Particle& p = frame.particles[i];
-        if (p.origin >= n_origins || p.radius <= 0.0F || p.bulk_density <= 0.0F) {
+        // Its extinction: a cluster's, or a puff's mass times the coefficient.
+        const float extinction =
+            p.extinction_m2 > 0.0F ? p.extinction_m2 : p.mass_kg * look.extinction_m2_per_kg;
+        if (p.origin >= n_origins || !(extinction > 0.0F)) {
             continue;
         }
         const float opacity = particle_opacity_at(p, at, look.fade);
         if (opacity <= 0.0F) {
             continue;
         }
+        std::array<float, 6> cov = particle_covariance_at(p, at);
+        cov[0] += floor2;
+        cov[3] += floor2;
+        cov[5] += floor2;
+        std::array<float, 6> w{};
+        float sigma = 0.0F;
+        if (!whitening(cov, w, sigma) || 3.0F * sigma >= kMaxBoundM) {
+            continue;
+        }
+        // Faded out over the last fifth before the cap, not popped (the
+        // stream's "fade, don't pop").
+        const float near_cap =
+            std::clamp((kMaxBoundM - 3.0F * sigma) / (0.2F * kMaxBoundM), 0.0F, 1.0F);
         const Vec3 pos = particle_position_at(p, at);
         GpuParticle& g = out[n++];
         g.position = {pos.x, pos.y, pos.z};
-        g.radius = p.radius;
-        g.extinction = p.bulk_density * look.extinction_m2_per_kg * opacity;
+        g.radius = 3.0F * sigma;
+        g.extinction = extinction * opacity * near_cap;
+        g.peak = g.extinction * w[0] * w[2] * w[5] / kTwoPi32;
         g.origin = p.origin;
+        g.whiten = w;
     }
     return n;
 }
@@ -62,7 +133,7 @@ void particle_centres(std::span<const GpuParticle> particles, std::span<const Gp
 
 GpuVolumeSpace volume_space(std::span<const Vec3> centres, std::span<const GpuParticle> particles,
                             std::uint32_t size, std::uint32_t light_size, float max_side,
-                            const DVec3& anchor, float spread) noexcept {
+                            const DVec3& anchor) noexcept {
     GpuVolumeSpace v;
     v.size = std::max(size, 1U);
     v.light_size = std::max(light_size, 1U);
@@ -70,10 +141,19 @@ GpuVolumeSpace volume_space(std::span<const Vec3> centres, std::span<const GpuPa
     Vec3 hi(0.0F);
     bool any = false;
     double extinction_sum = 0.0;
+    double size_sum = 0.0;
     std::size_t counted = 0;
     for (std::size_t i = 0; i < centres.size() && i < particles.size(); ++i) {
-        const Vec3 r(particles[i].radius * std::max(spread, 1.0F));
+        const Vec3 r(particles[i].radius);
+        // The cloud's mean density (review, D-053): its cross-sections over
+        // their Gaussians' sizes, sum(extinction) / sum(extinction / peak),
+        // not the peaks' mean (a tiny dense particle's peak is thousands of
+        // times a large one's, and set every s near 0).
         extinction_sum += static_cast<double>(particles[i].extinction);
+        if (particles[i].peak > 0.0F) {
+            size_sum += static_cast<double>(particles[i].extinction) /
+                        static_cast<double>(particles[i].peak);
+        }
         ++counted;
         lo = any ? glm::min(lo, centres[i] - r) : centres[i] - r;
         hi = any ? glm::max(hi, centres[i] + r) : centres[i] + r;
@@ -101,10 +181,9 @@ GpuVolumeSpace volume_space(std::span<const Vec3> centres, std::span<const GpuPa
                 static_cast<float>(corner.z)};
     v.voxel = static_cast<float>(voxel);
     v.inv_voxel = static_cast<float>(1.0 / voxel);
-    v.spread = std::max(spread, 1.0F);
-    const auto sp = static_cast<double>(v.spread);
-    const double cube = sp * sp * sp;
-    const double mean = counted > 0 ? extinction_sum / static_cast<double>(counted) / cube : 0.0;
+    // The erosion's scale (D-052): the cloud's mean density (a lone
+    // Gaussian's, its peak).
+    const double mean = counted > 0 && size_sum > 0.0 ? extinction_sum / size_sum : 0.0;
     v.inv_reference = mean > 0.0 ? static_cast<float>(1.0 / mean) : 1.0F;
     return v;
 }
@@ -130,10 +209,13 @@ float erosion_gain(std::span<const std::uint32_t, 256> histogram, float detail,
     double with = 0.0;
     double without = 0.0;
     for (int k = 0; k < kShells; ++k) {
-        const double u = (k + 0.5) / kShells;  // the volume inside: r^3
-        const double r2 = std::pow(u, 2.0 / 3.0);
-        const double w = std::clamp(3.0 * (1.0 - r2), 0.0, 1.0);
-        const double s = std::max(1.0 - r2, 0.0);
+        // A Gaussian out to 3 sigma (D-053), shells of equal volume: rho^2
+        // in sigmas; the density's profile w, 1 at the centre; the erosion's
+        // s = 1 - rho^2 / 9, as particles.slang's (a sphere's ramp).
+        const double u = (k + 0.5) / kShells;
+        const double r2 = 9.0 * std::pow(u, 2.0 / 3.0);
+        const double w = std::exp(-0.5 * r2);
+        const double s = 1.0 - r2 / 9.0;
         for (std::size_t level = 0; level < histogram.size(); ++level) {
             if (histogram[level] == 0) {
                 continue;
@@ -180,17 +262,18 @@ float volume_erosion_gain(std::span<const std::uint32_t, 256> histogram, float d
     const auto d = static_cast<double>(detail);
     const auto e = static_cast<double>(erosion);
     const double normaliser = std::max(1.0 - d * (1.0 - mean), 1e-6);
-    constexpr double kBaseMean = 0.7645;  // particles.slang's
     // A lone particle, as particles.slang's fs_volume has it: its density
-    // over the particles' mean, w / kBaseMean times the fine field's factor;
-    // s = 1 - exp(-2 that); t from the coarse field, independent of the fine.
+    // over the particles' mean peak, w times the fine field's factor; s = 1 -
+    // exp(-2 that); t from the coarse field, independent of the fine.
     constexpr int kShells = 128;
     double with = 0.0;
     double without = 0.0;
     for (int k = 0; k < kShells; ++k) {
         const double u = (k + 0.5) / kShells;
-        const double r2 = std::pow(u, 2.0 / 3.0);
-        const double w = std::clamp(3.0 * (1.0 - r2), 0.0, 1.0) / kBaseMean;
+        // A lone Gaussian (D-053) out to 3 sigma, its density over the
+        // particles' mean peak: 1 at its centre.
+        const double r2 = 9.0 * std::pow(u, 2.0 / 3.0);
+        const double w = std::exp(-0.5 * r2);
         for (std::size_t a = 0; a < kBins; ++a) {
             if (p[a] == 0.0) {
                 continue;

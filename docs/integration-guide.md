@@ -146,14 +146,14 @@ When Fovea exits, it prints what the host link did: messages received and reject
 
 ## Particle volumes
 
-A simulation of dust, smoke or spray sends its particles to Fovea on a UDP port of their own, apart from CIGI ([D-039](decisions.md)). Each particle (a *puff*) is a sphere of uniform density with a velocity. Fovea draws them in every view ([D-040](decisions.md)):
-- each sphere's optical depth along each pixel's ray, from its bulk density;
+A simulation of dust, smoke or spray sends its particles to Fovea on a UDP port of their own, apart from CIGI ([D-039](decisions.md)). Each is a *cluster*, an anisotropic Gaussian with a velocity that spreads as it goes, or a *puff*, a sphere of uniform density with a velocity. Fovea draws them in every view ([D-040](decisions.md)):
 - cut off softly where the ground or anything else is nearer;
 - lit by the sun, moon and sky, the sun's light shadowed by the cloud itself ([D-041](decisions.md));
-- its density varied by one field of billowy noise across the whole cloud, swirled and drifting, the mass kept on average ([D-043](decisions.md)), which can also eat into the cloud's edges ([D-051](decisions.md));
+- each particle an anisotropic Gaussian, its optical depth along each pixel's ray worked out exactly ([D-053](decisions.md));
+- its density varied by one field of billowy noise across the whole cloud, swirled and drifting, the mass kept on average ([D-043](decisions.md)), which can also eat into the cloud's thin parts ([D-051](decisions.md));
 - moved on its velocity between updates.
 
-Drawn as puffs by default, or as a volume ([D-052](decisions.md)): the puffs added each frame into one box of voxels around them all, shared by every view, and marched through per pixel. The volume shows one continuous cloud without the puffs' outlines and costs far less with many puffs (about 0.3 ms against 8.6 ms for 20 000 on an RTX 5070 Ti, three views at half resolution). Each puff goes in as sent: its dust kept exactly, wherever it falls on the grid. Puffs far apart stay apart, so a sender wanting one cloud sends puffs that overlap. The box is at most 256 m a side.
+Drawn as puffs by default, or as a volume ([D-052](decisions.md)): the puffs added each frame into one box of voxels around them all, shared by every view, and marched through per pixel. The volume shows one continuous cloud and costs far less with many particles (about 0.5 ms against 20 ms for 20 000 on an RTX 5070 Ti, three views at half resolution: [D-053](decisions.md)); with more than a few thousand particles, use it. Each particle goes in as sent: its extinction kept exactly, wherever it falls on the grid. Particles far apart stay apart, so a sender wanting one cloud sends ones that overlap. The box is at most 256 m a side.
 
 ```toml
 [particles]
@@ -166,7 +166,7 @@ extinction_m2_per_kg = 320.0 # optical depth per kg/m^2 along a ray: mineral dus
 albedo = { r = 0.62, g = 0.52, b = 0.40 }  # the light scattered, linear sRGB: a chosen tan, tune by eye
 forward_scattering = 0.68    # Cornette-Shanks g: 0 even, toward 1 forward; the same dust's asymmetry
 # Detail (D-043; chosen, tune by eye): one field of noise shared by all the particles
-detail = 0.6                 # 0 to 1: how much it varies their density, mass kept on average (0: uniform spheres, no cost)
+detail = 0.6                 # 0 to 1: how much it varies their density, mass kept on average (0: smooth Gaussians, no cost)
 detail_size = 2.0            # 0.1 to 100: its features, metres
 swirl = 0.5                  # 0 to 4: curl noise swirling it, in features; it drifts in time
 erosion = 0.0                # 0 to 1 (D-051): the noise eats into each puff's edge, or the volume's cloud's; its mass given back (needs detail)
@@ -182,24 +182,24 @@ Origins' heights are MSL, made ellipsoidal with `[host]`'s `geoid_height_m` (0 w
 
 ### The stream
 
-Every datagram stands alone: a header, then an origin or whole puffs. There are no frames or chunks to reassemble. Little-endian, no padding; at most 1472 bytes, so IP never fragments one (up to 39 puffs at this version). Version 0.1.
+Every datagram stands alone: a header, then an origin, whole puffs or whole clusters. There are no frames or chunks to reassemble. Little-endian, no padding; at most 1472 bytes, so IP never fragments one (up to 39 puffs or 22 clusters at this version). Version 0.2.
 
 **Header (48 bytes):**
 
 | Offset | Field | Type | |
 |---|---|---|---|
 | 0 | `magic` | u32 | `PUFF` in memory |
-| 4 | `version_major`, `version_minor` | u16, u16 | 0, 1. Another major is rejected. |
-| 8 | `type` | u8 | 1 an origin, 2 puffs; any other is a newer minor's, skipped |
-| 9 | `flags` | u8 | bit 0: the sender is frozen (its particles aren't moved on their velocity) |
+| 4 | `version_major`, `version_minor` | u16, u16 | 0, 2. Another major is rejected; any minor of 0 is read. |
+| 8 | `type` | u8 | 1 an origin, 2 puffs, 3 clusters; any other is a newer minor's, skipped |
+| 9 | `flags` | u8 | bit 0: the sender is frozen (its particles aren't moved on their velocity, nor clusters grown) |
 | 10 | `header_bytes` | u16 | where the body starts: at least 48 (a newer, longer header is skipped) |
 | 12 | `source_id` | u32 | the sender; particles and origins are per source |
 | 16 | `sim_time_ns` | u64 | the sender's own time: orders one particle's records |
 | 24 | `sequence` | u32 | +1 per datagram, per source and session; for counting losses only |
-| 28 | `origin_id` | u32 | puffs: the origin their positions are from; an origin: its own id |
-| 32 | `hold_us` | u32 | puffs: µs a particle lives without a refresh, on Fovea's clock |
-| 36 | `record_bytes` | u16 | puffs: one record's size, at least 36 (a newer, longer record is read for what's known) |
-| 38 | `count` | u16 | puffs: records in this datagram |
+| 28 | `origin_id` | u32 | puffs, clusters: the origin their positions are from; an origin: its own id |
+| 32 | `hold_us` | u32 | puffs, clusters: µs a particle lives without a refresh, on Fovea's clock |
+| 36 | `record_bytes` | u16 | puffs, clusters: one record's size, at least 36 or 64 (a newer, longer record is read for what's known) |
+| 38 | `count` | u16 | puffs, clusters: records in this datagram |
 | 40 | `session` | u32 | the sender's run, new at each start: a new one resets the source |
 | 44 | reserved | u32 | 0 |
 
@@ -215,6 +215,20 @@ Every datagram stands alone: a header, then an origin or whole puffs. There are 
 | 28 | `radius` | f32 | m, the sphere's extent |
 | 32 | `bulk_density` | f32 | kg/m³, the particle's mass over its sphere's volume |
 
+**Clusters (type 3): the header, then `count` records of 64 bytes**, each an anisotropic Gaussian:
+
+| Offset | Field | Type | |
+|---|---|---|---|
+| 0 | `id` | u32 | the same particle keeps its id; one id space with puffs (either replaces the other) |
+| 4 | `east`, `north`, `up` | 3 × f32 | m, its centre, from the origin |
+| 16 | `v_east`, `v_north`, `v_up` | 3 × f32 | m/s |
+| 28 | `c_ee`, `c_en`, `c_eu`, `c_nn`, `c_nu`, `c_uu` | 6 × f32 | m², its covariance Σ in east-north-up: symmetric, positive definite |
+| 52 | `diffusivity` | f32 | m²/s, K: Σ grows by 2K I a second |
+| 56 | `extinction` | f32 | m², its total extinction cross-section: what all of it blocks |
+| 60 | reserved | u32 | 0 |
+
+Its extinction coefficient at x from its centre is `extinction` / ((2π)^1.5 √det Σ) · exp(−xᵀ Σ⁻¹ x / 2) per metre.
+
 ### What Fovea does with it
 
 - **Origins** are kept by source and id. Puffs naming an origin not yet heard are dropped, so a sender sends a new origin (three times) before puffs name it, then about once a second.
@@ -223,7 +237,9 @@ Every datagram stands alone: a header, then an origin or whole puffs. There are 
 - **It fades** in over `fade_s` when new, and out over `fade_s` once `hold_us` passes without a refresh; then it is dropped. A sender retires a particle by not refreshing it.
 - **A new `session`** from a source drops that source's particles and origins. A datagram from the session before it (a stray, after a restart) is rejected. Each sender needs its own `source_id`: two sharing one would reset each other.
 - **Limits:** 8 sources and 64 origins at once, and `capacity` particles. A source silent for 10 s with no particles left is forgotten, and an origin no particle names is forgotten 2 s after it was last sent or named, so senders and origins come and go freely within those limits.
-- **Non-finite values, or a negative radius or density,** reject that record. Particles over the capacity are dropped.
+- **Every particle is drawn as a Gaussian** ([D-053](decisions.md)). A puff becomes the Gaussian with σ half its radius (74 % of it inside the sphere) and its mass, times `extinction_m2_per_kg`. A cluster's own extinction is used, and the coefficient doesn't apply to it. A cluster's covariance grows by 2Kt I with time since its record arrived, unless frozen.
+- **Floor and cap:** (5 cm)² is added to every particle's variances, so a tiny one isn't a sub-pixel point of extreme density. One whose 3σ bound (by Gershgorin's bound on Σ's largest eigenvalue) is past 2 km isn't drawn. Each is drawn out to 3σ (97 % of it).
+- **Rejected records:** non-finite values, a negative radius or density (puffs), or a negative diffusivity or extinction, or a covariance that isn't positive definite (clusters). Particles over the capacity are dropped.
 - **Losses** are counted from gaps in `sequence` over each second, continuing from one second to the next; reordering isn't counted, nor a jump of more than 65 536 (a corrupt number: counting starts again from it).
 - **On exit,** Fovea prints the stream's counts: datagrams (rejected, skipped, lost), records taken, late and rejected, origins, sessions, and particles dropped for an unknown origin or a full table. A failure of the particle thread stops Fovea with an error.
 
