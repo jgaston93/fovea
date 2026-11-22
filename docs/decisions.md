@@ -528,3 +528,37 @@ Sources (read for this, 2026-11-21, from the authors' own files):
 - [S15] A. Schneider and N. Vos, as D-043 (slides 33-39, 61-66, 85-95).
 - Unreal Engine documentation, "Volumetric Fog" (read through a summary, not verbatim).
 - Not read: Pixar's "Production Volume Rendering" (2017), Wrenninge et al. 2013 itself beyond what D-040 records, Jansen 2010 (Fourier opacity maps), Salvi 2010 (adaptive volumetric shadow maps).
+
+## D-053 Particles are anisotropic Gaussians
+
+**Status:** Accepted (2026-11-22, the user's choice: "I'm not super concerned with backwards compatibility with spheres").
+
+The particle stream's 0.2 adds clusters: anisotropic Gaussians, each with its covariance, a diffusivity and its total extinction cross-section (Mews's `puff-stream`, which explains the choice). Fovea now draws every particle as a Gaussian. A cluster is drawn as sent. A puff becomes the Gaussian with σ half its radius and its mass; its extinction is the mass times `extinction_m2_per_kg`, and the stream's README gives that conversion. The softened sphere (D-040, D-043) is gone from both renderers.
+
+- **Representation:** each particle is kept on the GPU as its whitening transform W = L⁻¹, where Σ = LLᵀ (Cholesky), lower triangular in 6 floats. In whitened coordinates y = Wx it is a round unit Gaussian, so the sphere's intersection carries over: the 3σ ellipsoid is the sphere |y| = 3 (Haines et al.'s precise roots, as before).
+  - The optical depth along a ray within it is exact: a Gaussian in the ray's parameter, integrated by erf.
+  - erf is Abramowitz and Stegun's 7.1.26. It is cited from memory, but its error is tested: 4.1 × 10⁻⁷ against std::erf in floats.
+  - The light pass gives each texel the Gaussian's optical depth along the light through it, exactly, over the whole line.
+  - The volume adds each Gaussian into its voxels out to 3σ, scaled to its cross-section exactly, as D-052's conservation did for spheres.
+  - Detail (D-043) is sampled along each ray, weighted by the Gaussian.
+  - The per-particle erosion (D-051) takes s as the Gaussian's density relative to its centre, so it eats where the particle is thin. Its mass gain is integrated over the Gaussian.
+  - The volume's erosion takes its reference as the particles' mean peak extinction coefficient.
+- **Why the whitening rather than a projected 2D ellipse (Kerbl et al. 2023's EWA splat):** the eye is often inside the dust, where a projection's affine approximation fails. A ray through the Gaussian is exact anywhere, and the scene's depth cuts it as before.
+- **Floor and cap** (the stream asks readers to set and say them):
+  - (5 cm)² is added to every particle's variances, so a tiny one isn't a sub-pixel point of extreme density.
+  - One whose 3σ bound is past 2 km isn't drawn.
+  - The bound is 3√(Gershgorin's bound on Σ's largest eigenvalue). It is at most √3 times too large, and only for a strongly correlated Σ.
+- **Gone:** the volume's `volume_spread` (D-052; the user chose 1). Gaussians overlap smoothly, and a sender wanting one cloud sends ones that overlap.
+
+**Tried** (on lavapipe, validation on):
+- **The codec and adapter:** `PuffStream.RoundTripsClusters`; `PuffAdapterTest.ClustersAreKeptAndBadOnesRefused` (four bad records refused: not positive definite, a negative extinction, a NaN, a negative diffusivity; a puff with the same id replaces it).
+- **The maths:** `ParticleGaussian.ErfIsCloseEnough`; `WhiteningMakesItRound` (WΣWᵀ = I within 10⁻⁵; the bound at or above the largest eigenvalue by power iteration; one not positive definite refused); `ItGrowsByItsDiffusivity`.
+- **A stretched cluster** (`ParticlesGaussian.AStretchedClusterLooksStretched`: σ 4 m east, 1 m north and up, seen from the south):
+  - footprints 62 × 10 and 67 × 12 pixels;
+  - total cover 6542 as puffs, 7009 as the volume (7 % apart).
+- **A tilted cluster** (`ATiltedClusterLeans`: σ 4 m along east-up, 1 m across):
+  - its cover's correlation is −0.85 as puffs and −0.84 as the volume, against the projected covariance's −0.88;
+  - with the shader using Wᵀ instead of W, −0.66, and the test fails.
+- **The existing particle tests,** on Gaussians now: puffs against the volume, 24 380 and 25 710 cover. Erosion's gain, with the field all 1, is 1.2712 against an independent integral's 1.27119.
+
+**Open:** the puffs' renderer's sort is still by centre (D-041), so two large overlapping Gaussians can blend in the wrong order; Kerbl et al. note the same "popping" from their per-tile sort (p. 10).

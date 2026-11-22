@@ -98,8 +98,7 @@ ParticleFrame frame_at_eye(const SceneView& view, std::size_t capacity) {
 void add(ParticleFrame& f, LocalTime t, Vec3 enu, float radius, float density) {
     Particle& p = f.particles.at(f.count++);
     p.position = enu;
-    p.radius = radius;
-    p.bulk_density = density;
+    set_puff(p, radius, density);
     p.received = t;
     p.first_seen = t - 10s;  // faded in
     p.fade_from = t + 10s;
@@ -967,6 +966,167 @@ TEST(ParticlesVolume, ErosionBreaksTheCloudsEdge) {
     // three times its size, D-052) gives a puff this size few billows round
     // its rim, so the margin is modest.
     EXPECT_GT(broken, 1.12 * round);
+}
+
+// A cluster stretched east-west (D-053): seen from the south its cover is
+// wider than tall, by its standard deviations' ratio about, in both
+// renderers; and the two agree on its total.
+TEST(ParticlesGaussian, AStretchedClusterLooksStretched) {
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleFrame f = frame_at_eye(view, 10);
+    {
+        Particle& p = f.particles.at(f.count++);
+        p.position = Vec3(0.0F, 30.0F, 2.0F);
+        p.covariance = {16.0F, 0.0F, 0.0F, 1.0F, 0.0F, 1.0F};  // sigma 4 m east, 1 m north and up
+        p.extinction_m2 = 8.0F;  // optical depth 0.3 through its middle: thin, so cover tracks it
+        p.received = t;
+        p.first_seen = t - 10s;
+        p.fade_from = t + 10s;
+    }
+    ParticleLook look;
+    look.detail = 0.0F;
+    ParticleQuality vq;
+    vq.volume = true;
+    vq.volume_size = 96;
+    vq.volume_light_size = 32;
+    // Its footprint: the pixels over a quarter of its densest's cover.
+    const auto extent = [](const std::vector<int>& c, int& w, int& h, double& total) {
+        int x0 = 1 << 20;
+        int x1 = -1;
+        int y0 = 1 << 20;
+        int y1 = -1;
+        total = 0.0;
+        const int most = *std::max_element(c.begin(), c.end());
+        for (std::uint32_t y = 0; y < kH; ++y) {
+            for (std::uint32_t x = 0; x < kW; ++x) {
+                const int v = c[std::size_t{y} * kW + x];
+                total += v;
+                if (most > 0 && 4 * v > most) {
+                    x0 = std::min(x0, static_cast<int>(x));
+                    x1 = std::max(x1, static_cast<int>(x));
+                    y0 = std::min(y0, static_cast<int>(y));
+                    y1 = std::max(y1, static_cast<int>(y));
+                }
+            }
+        }
+        w = x1 - x0 + 1;
+        h = y1 - y0 + 1;
+    };
+    std::vector<std::uint8_t> puffs;
+    std::vector<std::uint8_t> volume;
+    std::vector<std::uint8_t> empty;
+    {
+        auto a = make_renderer(10, {}, look);
+        if (a == nullptr) {
+            GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+        }
+        a->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        puffs = draw(*a, view, &f, t, "gaussian-stretched-puffs.png");
+        empty = draw(*a, view, nullptr, t, nullptr);
+        EXPECT_EQ(a->validation_messages(), 0U);
+    }
+    {
+        auto b = make_renderer(10, vq, look);
+        b->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        volume = draw(*b, view, &f, t, "gaussian-stretched-volume.png");
+        EXPECT_EQ(b->validation_messages(), 0U);
+    }
+    int pw = 0;
+    int ph = 0;
+    int vw = 0;
+    int vh = 0;
+    double ptot = 0.0;
+    double vtot = 0.0;
+    extent(cover(puffs, empty), pw, ph, ptot);
+    extent(cover(volume, empty), vw, vh, vtot);
+    std::printf("stretched cluster: puffs %d x %d (cover %.0f), volume %d x %d (cover %.0f)\n", pw,
+                ph, ptot, vw, vh, vtot);
+    ASSERT_GT(ptot, 1000.0);
+    ASSERT_GT(ph, 0);  // found
+    ASSERT_GT(vh, 0);
+    EXPECT_GT(pw, 2 * ph);
+    EXPECT_GT(vw, 2 * vh);
+    EXPECT_NEAR(vtot, ptot, 0.15 * ptot);
+}
+
+// A cluster tilted 45 degrees in the east-up plane (D-053: its covariance's
+// off-diagonal terms): seen from the south, its footprint leans up to the
+// right (screen x east, y down) in both renderers. Its cover's second moment
+// across x and y negative, its correlation strong.
+TEST(ParticlesGaussian, ATiltedClusterLeans) {
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleFrame f = frame_at_eye(view, 10);
+    {
+        // sigma 4 m along (1, 0, 1) / sqrt 2, 1 m across: I + 15 a a^T.
+        Particle& p = f.particles.at(f.count++);
+        p.position = Vec3(0.0F, 30.0F, 4.0F);
+        p.covariance = {8.5F, 0.0F, 7.5F, 1.0F, 0.0F, 8.5F};
+        p.extinction_m2 = 8.0F;
+        p.received = t;
+        p.first_seen = t - 10s;
+        p.fade_from = t + 10s;
+    }
+    ParticleLook look;
+    look.detail = 0.0F;
+    ParticleQuality vq;
+    vq.volume = true;
+    vq.volume_size = 96;
+    vq.volume_light_size = 32;
+    const auto lean = [](const std::vector<int>& c) {
+        double n = 0.0;
+        double mx = 0.0;
+        double my = 0.0;
+        for (std::uint32_t y = 0; y < kH; ++y) {
+            for (std::uint32_t x = 0; x < kW; ++x) {
+                const double v = c[std::size_t{y} * kW + x];
+                n += v;
+                mx += v * x;
+                my += v * y;
+            }
+        }
+        mx /= n;
+        my /= n;
+        double sxx = 0.0;
+        double syy = 0.0;
+        double sxy = 0.0;
+        for (std::uint32_t y = 0; y < kH; ++y) {
+            for (std::uint32_t x = 0; x < kW; ++x) {
+                const double v = c[std::size_t{y} * kW + x];
+                sxx += v * (x - mx) * (x - mx);
+                syy += v * (y - my) * (y - my);
+                sxy += v * (x - mx) * (y - my);
+            }
+        }
+        return sxy / std::sqrt(sxx * syy);  // the correlation
+    };
+    std::vector<std::uint8_t> empty;
+    double puffs = 0.0;
+    double volume = 0.0;
+    {
+        auto a = make_renderer(10, {}, look);
+        if (a == nullptr) {
+            GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+        }
+        a->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        const std::vector<std::uint8_t> img = draw(*a, view, &f, t, "gaussian-tilted-puffs.png");
+        empty = draw(*a, view, nullptr, t, nullptr);
+        puffs = lean(cover(img, empty));
+    }
+    {
+        auto b = make_renderer(10, vq, look);
+        b->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
+        volume = lean(cover(draw(*b, view, &f, t, "gaussian-tilted-volume.png"), empty));
+        EXPECT_EQ(b->validation_messages(), 0U);
+    }
+    std::printf("tilted cluster's correlation: puffs %.3f, volume %.3f\n", puffs, volume);
+    // Projected on the screen (east across, up down it), its covariance is
+    // [[8.5, 7.5], [7.5, 8.5]]: correlation 7.5 / 8.5 = 0.88, negative as y
+    // runs down. Measured -0.85 and -0.84 (pixels, perspective); with the
+    // whitening's transpose used instead, -0.66.
+    EXPECT_NEAR(puffs, -0.882, 0.07);
+    EXPECT_NEAR(volume, -0.882, 0.07);
 }
 
 }  // namespace

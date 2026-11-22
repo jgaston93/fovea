@@ -1,5 +1,6 @@
 #include "fovea/net/puff_stream.hpp"
 
+#include <array>
 #include <bit>
 #include <cstring>
 #include <type_traits>
@@ -82,11 +83,13 @@ HeaderResult read_header(std::span<const std::uint8_t> d, Header& out) noexcept 
     if (h.type == static_cast<std::uint8_t>(Type::origin)) {
         return body >= kOriginBytes ? HeaderResult::ok : HeaderResult::rejected;
     }
-    if (h.type == static_cast<std::uint8_t>(Type::puffs)) {
+    if (h.type == static_cast<std::uint8_t>(Type::puffs) ||
+        h.type == static_cast<std::uint8_t>(Type::clusters)) {
         // At most 65535 x 65535: no overflow in a 64-bit size_t, nor a 32-bit one.
         const std::size_t need = std::size_t{h.record_bytes} * h.count;
-        return h.record_bytes >= kPuffBytes && need <= body ? HeaderResult::ok
-                                                            : HeaderResult::rejected;
+        const std::size_t least =
+            h.type == static_cast<std::uint8_t>(Type::puffs) ? kPuffBytes : kClusterBytes;
+        return h.record_bytes >= least && need <= body ? HeaderResult::ok : HeaderResult::rejected;
     }
     return HeaderResult::unknown_type;
 }
@@ -109,6 +112,19 @@ Puff read_puff(std::span<const std::uint8_t> d, const Header& h, std::size_t i) 
     p.radius = get<float>(d, at + 28);
     p.bulk_density = get<float>(d, at + 32);
     return p;
+}
+
+Cluster read_cluster(std::span<const std::uint8_t> d, const Header& h, std::size_t i) noexcept {
+    const std::size_t at = h.header_bytes + i * h.record_bytes;
+    Cluster c;
+    c.id = get<std::uint32_t>(d, at);
+    const std::array<float*, 14> fields{&c.east, &c.north, &c.up,          &c.v_east,    &c.v_north,
+                                        &c.v_up, &c.c_ee,  &c.c_en,        &c.c_eu,      &c.c_nn,
+                                        &c.c_nu, &c.c_uu,  &c.diffusivity, &c.extinction};
+    for (std::size_t k = 0; k < fields.size(); ++k) {
+        *fields[k] = get<float>(d, at + 4 + 4 * k);
+    }
+    return c;
 }
 
 std::size_t write_origin(std::span<std::uint8_t> out, Header h, const Origin& o) noexcept {
@@ -149,6 +165,32 @@ std::size_t write_puffs(std::span<std::uint8_t> out, Header h,
         put(out, at + 24, p.v_up);
         put(out, at + 28, p.radius);
         put(out, at + 32, p.bulk_density);
+    }
+    return n;
+}
+
+std::size_t write_clusters(std::span<std::uint8_t> out, Header h,
+                           std::span<const Cluster> clusters) noexcept {
+    const std::size_t n = kHeaderBytes + clusters.size() * kClusterBytes;
+    if (clusters.size() > 0xFFFF || out.size() < n) {
+        return 0;
+    }
+    h.type = static_cast<std::uint8_t>(Type::clusters);
+    h.header_bytes = kHeaderBytes;
+    h.record_bytes = kClusterBytes;
+    h.count = static_cast<std::uint16_t>(clusters.size());
+    put_header(out, h);
+    for (std::size_t i = 0; i < clusters.size(); ++i) {
+        const std::size_t at = kHeaderBytes + i * kClusterBytes;
+        const Cluster& c = clusters[i];
+        put(out, at, c.id);
+        const std::array<float, 14> fields{c.east, c.north, c.up,          c.v_east,    c.v_north,
+                                           c.v_up, c.c_ee,  c.c_en,        c.c_eu,      c.c_nn,
+                                           c.c_nu, c.c_uu,  c.diffusivity, c.extinction};
+        for (std::size_t k = 0; k < fields.size(); ++k) {
+            put(out, at + 4 + 4 * k, fields[k]);
+        }
+        put(out, at + 60, std::uint32_t{0});
     }
     return n;
 }

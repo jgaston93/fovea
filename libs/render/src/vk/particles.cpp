@@ -850,7 +850,7 @@ std::size_t ParticlesGpu::pack(std::uint32_t slot, const ParticleFrame& frame, L
     GpuVolumeSpace vs;
     if (quality_.volume) {
         vs = volume_space(centres, packed, quality_.volume_size, quality_.volume_light_size,
-                          quality_.volume_max_m, anchor, quality_.volume_spread);
+                          quality_.volume_max_m, anchor);
         vs.particles = static_cast<std::uint32_t>(n);
     }
     std::memcpy(base + kVolumeSpaceAt, &vs, sizeof(vs));

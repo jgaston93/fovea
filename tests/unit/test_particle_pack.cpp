@@ -31,8 +31,7 @@ Particle particle(LocalTime t, float east, float v_east) {
     Particle p;
     p.position = Vec3(east, 2.0F, 3.0F);
     p.velocity = Vec3(v_east, 0.0F, 0.0F);
-    p.radius = 1.5F;
-    p.bulk_density = 0.002F;
+    set_puff(p, 1.5F, 0.002F);
     p.received = t;
     p.first_seen = t - 10s;
     p.fade_from = t + 10s;
@@ -48,7 +47,7 @@ TEST(ParticlePack, MovesFadesAndPlacesThem) {
     f.particles[2] = particle(t, 30.0F, 0.0F);
     f.particles[2].fade_from = t - 1s;  // long gone
     f.particles[3] = particle(t, 40.0F, 0.0F);
-    f.particles[3].bulk_density = 0.0F;  // nothing to see
+    f.particles[3].mass_kg = 0.0F;  // nothing to see
     f.count = 4;
     ParticleLook look;
     look.extinction_m2_per_kg = 100.0F;
@@ -57,18 +56,25 @@ TEST(ParticlePack, MovesFadesAndPlacesThem) {
     const DVec3 anchor(6378137.0, 2000.0, 3000.0);
     const std::size_t n = pack_particles(f, t + 500ms, look, anchor, out, origins);
     ASSERT_EQ(n, 2U);
+    // A puff of radius 1.5 m as a Gaussian (D-053): sigma 0.75 m, with the
+    // 5 cm floor added in quadrature; its mass times 100 m^2/kg.
+    const float sigma = std::sqrt(0.75F * 0.75F + kSigmaFloorM * kSigmaFloorM);
+    const float cross = 0.002F * 4.18879F * 1.5F * 1.5F * 1.5F * 100.0F;
     EXPECT_FLOAT_EQ(out[0].position[0], 12.0F);  // 10 m + 4 m/s x 0.5 s
-    EXPECT_FLOAT_EQ(out[0].radius, 1.5F);
-    EXPECT_FLOAT_EQ(out[0].extinction, 0.2F);  // 0.002 kg/m^3 x 100 m^2/kg, fully in
+    EXPECT_NEAR(out[0].radius, 3.0F * sigma, 1e-5F);
+    EXPECT_NEAR(out[0].extinction, cross, 1e-5F);  // fully in
+    EXPECT_NEAR(out[0].peak, cross / (15.7496099F * sigma * sigma * sigma), 1e-5F);
+    EXPECT_NEAR(out[0].whiten[0], 1.0F / sigma, 1e-5F);
+    EXPECT_FLOAT_EQ(out[0].whiten[1], 0.0F);
     EXPECT_FLOAT_EQ(out[1].position[0], 20.0F);
-    EXPECT_FLOAT_EQ(out[1].extinction, 0.2F);  // in by t + 0.5 s
+    EXPECT_NEAR(out[1].extinction, cross, 1e-5F);  // in by t + 0.5 s
     EXPECT_FLOAT_EQ(origins[0].offset[0], 100.0F);
     EXPECT_FLOAT_EQ(origins[0].east[1], 1.0F);
     EXPECT_FLOAT_EQ(origins[0].up[0], 1.0F);
     // Halfway faded in, at t: half the extinction.
     const std::size_t m = pack_particles(f, t, look, anchor, out, origins);
     ASSERT_EQ(m, 2U);
-    EXPECT_NEAR(out[1].extinction, 0.1F, 1e-6F);
+    EXPECT_NEAR(out[1].extinction, 0.5F * cross, 1e-5F);
 }
 
 TEST(ParticlePack, StopsAtTheOutputsSizeAndSkipsUnknownOrigins) {
@@ -164,6 +170,70 @@ TEST(ParticleSlicing, TheLightSpaceHoldsEveryParticle) {
     }
 }
 
+// Abramowitz and Stegun's 7.1.26, as the shader computes it: within 5e-7 of
+// std::erf from -5 to 5 (its 1.5e-7 is exact arithmetic's; floats add a
+// little: measured 4.1e-7).
+TEST(ParticleGaussian, ErfIsCloseEnough) {
+    float worst = 0.0F;
+    for (int k = -5000; k <= 5000; ++k) {
+        const float x = static_cast<float>(k) / 1000.0F;
+        worst = std::max(worst, std::abs(erf_approx(x) - std::erf(x)));
+    }
+    EXPECT_LT(worst, 5e-7F);
+}
+
+// The whitening transform: W Sigma W^T = I; its bound holds the largest
+// standard deviation; a matrix that isn't positive definite refused.
+TEST(ParticleGaussian, WhiteningMakesItRound) {
+    const std::array<float, 6> cov{4.0F, 0.5F, -0.3F, 2.0F, 0.2F, 1.0F};
+    std::array<float, 6> w{};
+    float bound = 0.0F;
+    ASSERT_TRUE(whitening(cov, w, bound));
+    const glm::mat3 sigma(cov[0], cov[1], cov[2], cov[1], cov[3], cov[4], cov[2], cov[4], cov[5]);
+    // glm is column-major: W's rows as columns of its transpose.
+    const glm::mat3 wt(w[0], 0.0F, 0.0F, w[1], w[2], 0.0F, w[3], w[4], w[5]);
+    const glm::mat3 wm = glm::transpose(wt);
+    const glm::mat3 r = wm * sigma * glm::transpose(wm);
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            EXPECT_NEAR(r[i][j], i == j ? 1.0F : 0.0F, 1e-5F) << i << j;
+        }
+    }
+    // The largest eigenvalue by power iteration: the bound at or above it.
+    glm::vec3 v(1.0F, 1.0F, 1.0F);
+    for (int k = 0; k < 200; ++k) {
+        v = glm::normalize(sigma * v);
+    }
+    const float lambda = glm::dot(v, sigma * v);
+    EXPECT_GE(bound * bound, lambda - 1e-4F);
+    EXPECT_LT(bound * bound, 2.0F * lambda);
+    const std::array<float, 6> bad{1.0F, 2.0F, 0.0F, 1.0F, 0.0F, 1.0F};
+    EXPECT_FALSE(whitening(bad, w, bound));
+}
+
+// A particle's covariance grows by 2 K I with time since its sample, not
+// while frozen; a puff becomes sigma half its radius and its mass.
+TEST(ParticleGaussian, ItGrowsByItsDiffusivity) {
+    const LocalTime t = LocalTime{} + 100s;
+    Particle p;
+    p.covariance = {1.0F, 0.2F, 0.0F, 1.0F, 0.0F, 0.5F};
+    p.diffusivity = 0.25F;
+    p.received = t;
+    const std::array<float, 6> later = particle_covariance_at(p, t + 2s);
+    EXPECT_FLOAT_EQ(later[0], 2.0F);  // + 2 x 0.25 x 2
+    EXPECT_FLOAT_EQ(later[1], 0.2F);
+    EXPECT_FLOAT_EQ(later[5], 1.5F);
+    EXPECT_FLOAT_EQ(particle_covariance_at(p, t - 1s)[0], 1.0F);
+    p.frozen = true;
+    EXPECT_FLOAT_EQ(particle_covariance_at(p, t + 2s)[0], 1.0F);
+    Particle q;
+    set_puff(q, 2.0F, 0.01F);
+    EXPECT_FLOAT_EQ(q.covariance[0], 1.0F);
+    EXPECT_FLOAT_EQ(q.covariance[3], 1.0F);
+    EXPECT_FLOAT_EQ(q.covariance[1], 0.0F);
+    EXPECT_NEAR(q.mass_kg, 0.01F * 4.18879F * 8.0F, 1e-6F);
+}
+
 }  // namespace
 }  // namespace fovea
 
@@ -219,12 +289,13 @@ TEST(ParticleErosion, TheGainGivesTheMassBack) {
     }
     // An empty histogram: nothing to weigh, no gain.
     EXPECT_EQ(erosion_gain(std::array<std::uint32_t, 256>{}, 0.6F, 0.6F), 1.0F);
-    // With the field everywhere 1 (n = 1), nothing is eroded but the outer
-    // quarter of s's ramp (4 s, saturated): a gain of a few percent.
+    // With the field everywhere 1 (n = 1, so t = 0), only where the Gaussian
+    // is under a quarter of its peak (4 s saturates above it) is it trimmed,
+    // to 4 w^2: over 3 sigma, the integral of w over that of w min(1, 4 w),
+    // each weighted r^2 dr, is 1.27119 (computed apart, 200 000 shells).
     std::array<std::uint32_t, 256> white{};
     white[255] = 1;
-    EXPECT_GT(erosion_gain(white, 0.6F, 0.8F), 1.0F);
-    EXPECT_LT(erosion_gain(white, 0.6F, 0.8F), 1.1F);
+    EXPECT_NEAR(erosion_gain(white, 0.6F, 0.8F), 1.27119F, 2e-3F);
 }
 
 // The volume's box (D-052): it covers the particles; its voxel is a power

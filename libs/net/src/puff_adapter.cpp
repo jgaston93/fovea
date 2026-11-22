@@ -1,6 +1,7 @@
 #include "fovea/net/puff_adapter.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <numbers>
@@ -27,6 +28,42 @@ bool finite_puff(const puff::Puff& p) noexcept {
            std::isfinite(p.v_east) && std::isfinite(p.v_north) && std::isfinite(p.v_up) &&
            std::isfinite(p.radius) && std::isfinite(p.bulk_density) && p.radius >= 0.0F &&
            p.bulk_density >= 0.0F;
+}
+
+// A cluster record as the stream's rules take it (0.2): every field finite,
+// its diffusivity and extinction not negative, its covariance positive
+// definite (its Cholesky factor exists and its determinant is above 1e-12 m^6).
+bool valid_cluster(const puff::Cluster& c) noexcept {
+    const std::array<float, 14> f{c.east, c.north, c.up,          c.v_east,    c.v_north,
+                                  c.v_up, c.c_ee,  c.c_en,        c.c_eu,      c.c_nn,
+                                  c.c_nu, c.c_uu,  c.diffusivity, c.extinction};
+    for (const float v : f) {
+        if (!std::isfinite(v)) {
+            return false;
+        }
+    }
+    if (c.diffusivity < 0.0F || c.extinction < 0.0F) {
+        return false;
+    }
+    const auto ee = static_cast<double>(c.c_ee);
+    const auto en = static_cast<double>(c.c_en);
+    const auto eu = static_cast<double>(c.c_eu);
+    const auto nn = static_cast<double>(c.c_nn);
+    const auto nu = static_cast<double>(c.c_nu);
+    const auto uu = static_cast<double>(c.c_uu);
+    if (!(ee > 0.0)) {
+        return false;
+    }
+    const double l11 = ee;
+    const double l21 = en / std::sqrt(l11);
+    const double l31 = eu / std::sqrt(l11);
+    const double d22 = nn - l21 * l21;
+    if (!(d22 > 0.0)) {
+        return false;
+    }
+    const double l32 = (nu - l31 * l21) / std::sqrt(d22);
+    const double d33 = uu - l31 * l31 - l32 * l32;
+    return d33 > 0.0 && l11 * d22 * d33 > 1e-12;
 }
 
 }  // namespace
@@ -232,11 +269,24 @@ void PuffAdapter::apply_puffs(std::uint32_t source, std::span<const std::uint8_t
         t + std::chrono::duration_cast<Clock::duration>(std::chrono::microseconds(h.hold_us));
     const bool frozen = (h.flags & puff::kFlagFrozen) != 0;
     Source& src = sources_.at(source);
+    const bool clusters = h.type == static_cast<std::uint8_t>(puff::Type::clusters);
     for (std::size_t i = 0; i < h.count; ++i) {
-        const puff::Puff r = puff::read_puff(d, h, i);
-        if (!finite_puff(r)) {
-            stats_.rejected_records.fetch_add(1, std::memory_order_relaxed);
-            continue;
+        // A puff or a cluster (D-053): one id space, either replacing the other.
+        puff::Puff r{};
+        puff::Cluster c{};
+        if (clusters) {
+            c = puff::read_cluster(d, h, i);
+            r.id = c.id;
+            if (!valid_cluster(c)) {
+                stats_.rejected_records.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+        } else {
+            r = puff::read_puff(d, h, i);
+            if (!finite_puff(r)) {
+                stats_.rejected_records.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
         }
         std::size_t at = find(source, r.id);
         if (at != npos) {
@@ -259,10 +309,18 @@ void PuffAdapter::apply_puffs(std::uint32_t source, std::span<const std::uint8_t
         }
         Held& e = held_[at];
         e.sim_time_ns = h.sim_time_ns;
-        e.p.position = Vec3(r.east, r.north, r.up);
-        e.p.velocity = Vec3(r.v_east, r.v_north, r.v_up);
-        e.p.radius = r.radius;
-        e.p.bulk_density = r.bulk_density;
+        if (clusters) {
+            e.p.position = Vec3(c.east, c.north, c.up);
+            e.p.velocity = Vec3(c.v_east, c.v_north, c.v_up);
+            e.p.covariance = {c.c_ee, c.c_en, c.c_eu, c.c_nn, c.c_nu, c.c_uu};
+            e.p.diffusivity = c.diffusivity;
+            e.p.extinction_m2 = c.extinction;
+            e.p.mass_kg = 0.0F;
+        } else {
+            e.p.position = Vec3(r.east, r.north, r.up);
+            e.p.velocity = Vec3(r.v_east, r.v_north, r.v_up);
+            set_puff(e.p, r.radius, r.bulk_density);
+        }
         e.p.received = t;
         e.p.fade_from = fade_from;
         e.p.origin = slot;
