@@ -21,8 +21,8 @@ namespace fovea {
 
 // How the particles look ([particles] in the config). The extinction and
 // the phase function's g are mineral dust's, calculated by Mie theory from
-// measured size distributions; the albedo is a chosen colour, to be tuned by
-// eye against video (D-040).
+// measured size distributions; the albedo is desert dust's, measured
+// (D-054; a chosen colour before, D-040).
 struct ParticleLook {
     // Mass extinction coefficient: optical depth per kg/m^2 of particles
     // along a ray. A particle's extinction per metre is its bulk density
@@ -32,14 +32,20 @@ struct ParticleLook {
     // al., Atmos. Chem. Phys. 18, 17225-17257, 2018,
     // doi:10.5194/acp-18-17225-2018, section 2.6 and table 6).
     float extinction_m2_per_kg = 320.0F;
-    // The light a particle scatters, as a fraction of what falls on it, in
-    // linear sRGB. Chosen: dust's single-scattering albedo is about 0.95 at
-    // 550 nm (Ryder et al., above, calculated the same way), and a thick
-    // cloud's tan
-    // comes from many scatterings compounding its small spectral
-    // differences, which the multiple-scattering approximation doesn't
-    // model (particles.slang); so the colour is set here and tuned by eye.
-    std::array<float, 3> albedo{0.62F, 0.52F, 0.40F};
+    // The light a particle scatters, as a fraction of what falls on it (its
+    // single-scattering albedo), in linear sRGB (D-054): desert dust's, as
+    // AERONET retrieves it over North Africa and Arabia (Kim et al., "Dust
+    // optical properties over North Africa and Arabian Peninsula derived from
+    // the AERONET dataset", Atmos. Chem. Phys. 11, 10733-10741, 2011,
+    // doi:10.5194/acp-11-10733-2011, CC BY 3.0): 0.944 at 550 nm (section 3,
+    // the 14 sites' annual mean), rising from about 0.915 at 440 nm to about
+    // 0.97 at 675 nm (figure 3, read from the plots; iron oxides absorb the
+    // blue). Interpolated to the primaries' dominant wavelengths, about 612,
+    // 549 and 465 nm (an assumption). A thick cloud's tan is these compounded
+    // over many scatterings, which the volume's diffusion does; the puffs'
+    // octaves (D-040) don't compound them, so drawn as puffs a cloud is
+    // paler. Coarser dust absorbs more (Ryder et al., above, section 1).
+    std::array<float, 3> albedo{0.957F, 0.944F, 0.922F};
     // The Cornette-Shanks phase function's g (the sky's Mie phase): 0
     // scatters evenly, toward 1 mostly forward (dust glows looking toward
     // the sun). Its g isn't the asymmetry parameter (the mean cosine); 0.68
@@ -76,6 +82,9 @@ struct ParticleQuality {
     std::uint32_t volume_size = 128;
     std::uint32_t volume_light_size = 64;
     float volume_max_m = 256.0F;
+    // Multiple scattering in the volume as diffusion (D-054): red-black
+    // sweeps of its solve each frame, from the last frame's answer.
+    std::uint32_t volume_scatter_sweeps = 16;
 };
 
 // Mirrors Particle in shaders/particles.slang (std430).
@@ -175,8 +184,14 @@ struct GpuVolumeSpace {
     float inv_reference =
         1.0F;  // 1 / the particles' mean peak extinction coefficient [m] (the erosion's scale)
     std::array<float, 2> unused1{};
+    // The box the diffuse light was last solved in (D-054), from this
+    // frame's anchor, and its voxel (0: none, start afresh).
+    std::array<float, 3> previous_corner{};
+    float previous_voxel = 0.0F;
+    std::array<float, 3> ground_albedo{};  // the atmosphere's
+    float unused2 = 0.0F;
 };
-static_assert(sizeof(GpuVolumeSpace) == 48, "must match VolumeSpace in particles.slang");
+static_assert(sizeof(GpuVolumeSpace) == 80, "must match VolumeSpace in particles.slang");
 
 // The box over particles with these centres (from the anchor, ECEF axes)
 // and radii: a cube of `size` voxels, each a power of two of metres, the

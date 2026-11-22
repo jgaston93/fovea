@@ -43,6 +43,8 @@
 #include "shaders/kCsTransmittance.hpp"
 #include "shaders/kCsVolumeConvert.hpp"
 #include "shaders/kCsVolumeInject.hpp"
+#include "shaders/kCsVolumeScatterRelax.hpp"
+#include "shaders/kCsVolumeScatterSetup.hpp"
 #include "shaders/kCsVolumeSun.hpp"
 #include "shaders/kFsLights.hpp"
 #include "shaders/kFsModel.hpp"
@@ -1159,6 +1161,10 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
         frame_bindings[b].descriptorCount = 1;
         frame_bindings[b].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     }
+    // The lighting and each view's light are read by the particle volume's
+    // diffusion too, a compute pass (D-054).
+    frame_bindings[0].stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
+    frame_bindings[1].stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
     VkDescriptorSetLayoutCreateInfo frame_lci{};
     frame_lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     frame_lci.bindingCount = static_cast<std::uint32_t>(frame_bindings.size());
@@ -1394,7 +1400,7 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
             for (VkShaderModule s :
                  {m.vs_particles, m.fs_particles, m.vs_light, m.fs_light, m.vs_composite,
                   m.fs_composite, m.cs_volume_inject, m.cs_volume_convert, m.cs_volume_sun,
-                  m.vs_volume, m.fs_volume}) {
+                  m.cs_volume_scatter_setup, m.cs_volume_scatter_relax, m.vs_volume, m.fs_volume}) {
                 vkDestroyShaderModule(device.device, s, nullptr);
             }
         };
@@ -1414,6 +1420,8 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
                 m.cs_volume_inject = make_module(kCsVolumeInject);
                 m.cs_volume_convert = make_module(kCsVolumeConvert);
                 m.cs_volume_sun = make_module(kCsVolumeSun);
+                m.cs_volume_scatter_setup = make_module(kCsVolumeScatterSetup);  // D-054
+                m.cs_volume_scatter_relax = make_module(kCsVolumeScatterRelax);
                 m.vs_volume = make_module(kVsVolume);
                 m.fs_volume = make_module(kFsVolume);
             }
@@ -1427,6 +1435,11 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
         free_modules();
         for (std::size_t i = 0; i < hdr.size(); ++i) {
             particles->set_depth(static_cast<std::uint32_t>(i), hdr[i].depth_view);
+        }
+        if (sky_tables) {  // the ground the volume's diffuse light bounces from (D-054)
+            const auto& a = sky_tables->atmosphere().ground_albedo;
+            particles->set_ground_albedo({static_cast<float>(a[0]), static_cast<float>(a[1]),
+                                          static_cast<float>(a[2])});
         }
     }
 }

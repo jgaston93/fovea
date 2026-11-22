@@ -163,7 +163,7 @@ capacity = 200000            # the most particles kept (200000 if left out)
 fade_s = 0.25                # fade in when new, and out when no longer refreshed
 # How they look (D-040 has the sources):
 extinction_m2_per_kg = 320.0 # optical depth per kg/m^2 along a ray: mineral dust's (Mie, from measured sizes)
-albedo = { r = 0.62, g = 0.52, b = 0.40 }  # the light scattered, linear sRGB: a chosen tan, tune by eye
+albedo = { r = 0.957, g = 0.944, b = 0.922 }  # the light scattered, linear sRGB: desert dust's, measured (D-054); the volume's tan comes from it compounding
 forward_scattering = 0.68    # Cornette-Shanks g: 0 even, toward 1 forward; the same dust's asymmetry
 # Detail (D-043; chosen, tune by eye): one field of noise shared by all the particles
 detail = 0.6                 # 0 to 1: how much it varies their density, mass kept on average (0: smooth Gaussians, no cost)

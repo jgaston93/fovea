@@ -11,6 +11,7 @@
 
 #include <vk_mem_alloc.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -38,6 +39,8 @@ public:
         VkShaderModule cs_volume_inject = VK_NULL_HANDLE;
         VkShaderModule cs_volume_convert = VK_NULL_HANDLE;
         VkShaderModule cs_volume_sun = VK_NULL_HANDLE;
+        VkShaderModule cs_volume_scatter_setup = VK_NULL_HANDLE;  // D-054
+        VkShaderModule cs_volume_scatter_relax = VK_NULL_HANDLE;
         VkShaderModule vs_volume = VK_NULL_HANDLE;
         VkShaderModule fs_volume = VK_NULL_HANDLE;
     };
@@ -51,6 +54,10 @@ public:
     // The resolved depth view `output` reads, in SHADER_READ_ONLY_OPTIMAL
     // when drawn (its target made or remade, with no frame in flight).
     void set_depth(std::uint32_t output, VkImageView depth);
+
+    // The ground's albedo the volume's diffuse light takes as bouncing up
+    // into the dust (D-054): the atmosphere's, linear RGB.
+    void set_ground_albedo(const std::array<float, 3>& albedo) { ground_albedo_ = albedo; }
 
     // Packs a frame into `slot` (pack_particles), relative to `anchor`
     // (ECEF), and sorts it for each view along its half vector with the
@@ -153,9 +160,22 @@ private:
     VkPipeline volume_convert_ = VK_NULL_HANDLE;
     VkPipeline volume_sun_pass_ = VK_NULL_HANDLE;
     VkPipeline volume_march_ = VK_NULL_HANDLE;
+    // Multiple scattering as diffusion (D-054), over the sun's grid: the
+    // extinction there, the diffuse radiance (RGBA16F, kept from frame to
+    // frame), last frame's copy to start from; the passes; the box it was
+    // last solved in (ECEF, doubles), and whether it has been.
+    Image volume_extinction_;
+    Image volume_scatter_;
+    Image volume_scatter_previous_;
+    VkPipeline volume_scatter_setup_ = VK_NULL_HANDLE;
+    VkPipeline volume_scatter_relax_ = VK_NULL_HANDLE;
+    mutable DVec3 scatter_corner_{0.0};
+    mutable double scatter_voxel_ = 0.0;
+    mutable bool scatter_ready_ = false;
+    std::array<float, 3> ground_albedo_{0.3F, 0.3F, 0.3F};
     Image make_volume_target(std::uint32_t size, VkFormat format) const;
-    void record_volume(VkCommandBuffer cmd, std::uint32_t slot,
-                       std::uint32_t lighting_offset) const;
+    void record_volume(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t lighting_offset,
+                       const ParticleLook& look) const;
 };
 
 }  // namespace fovea

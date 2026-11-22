@@ -33,8 +33,20 @@ using namespace std::chrono_literals;
 constexpr std::uint32_t kW = 160;
 constexpr std::uint32_t kH = 90;
 
+// The look these tests draw with: the default but for D-040's tan albedo.
+// They find the dust by its colour against the scene (cover() sums the red
+// and blue differences), and dust's measured albedo (D-054) is nearly
+// neutral, close to the sky's and the runway's colour; a distinct tan keeps
+// what they measure (where the dust is, how much, its outline) well
+// conditioned. The D-054 tests set the albedo they mean.
+ParticleLook test_look() {
+    ParticleLook tan;
+    tan.albedo = {0.62F, 0.52F, 0.40F};
+    return tan;
+}
+
 std::unique_ptr<Renderer> make_renderer(std::size_t capacity, const ParticleQuality& quality = {},
-                                        const ParticleLook& look = {}) {
+                                        const ParticleLook& look = test_look()) {
     RendererOptions options;
     options.particle_capacity = capacity;
     options.particle_quality = quality;
@@ -337,7 +349,7 @@ DetailShots detail_shots(const ParticleLook& detailed_look, float density, bool&
 // The detail varies the dust's density: inside the puff, its cover changes
 // from pixel to pixel far more than a smooth sphere's does.
 TEST(ParticlesRender, DetailBreaksUpAPuff) {
-    ParticleLook look;
+    ParticleLook look = test_look();
     look.detail = 0.8F;
     look.detail_size = 1.0F;
     bool vulkan = false;
@@ -374,7 +386,7 @@ TEST(ParticlesRender, DetailBreaksUpAPuff) {
 // detail as without (measured on lavapipe: 1.5 % less). Without the base's
 // normalisation it's 24 % less, without the detail's 42 %.
 TEST(ParticlesRender, DetailKeepsTheMass) {
-    ParticleLook look;
+    ParticleLook look = test_look();
     look.detail = 0.8F;
     look.detail_size = 1.0F;
     bool vulkan = false;
@@ -400,7 +412,7 @@ TEST(ParticlesRender, DetailKeepsTheMass) {
 // enough that its cover goes nearly as its optical depth, its cover summed
 // over the disc about the same eroded as not.
 TEST(ParticlesRender, ErosionKeepsTheMass) {
-    ParticleLook look;
+    ParticleLook look = test_look();
     look.detail = 0.6F;
     look.detail_size = 1.0F;
     look.erosion = 0.6F;
@@ -429,7 +441,7 @@ TEST(ParticlesRender, ErosionKeepsTheMass) {
 // along a ring at 85 % of its disc's radius varies far more eroded than
 // with the detail alone (which leaves the outline a circle).
 TEST(ParticlesRender, ErosionBreaksTheOutline) {
-    ParticleLook detail_only;
+    ParticleLook detail_only = test_look();
     detail_only.detail = 0.6F;
     detail_only.detail_size = 1.0F;
     ParticleLook eroding = detail_only;
@@ -507,7 +519,7 @@ TEST(ParticlesRender, ErosionBreaksTheOutline) {
 // The swirl drifts in time (D-043): the same puff a few seconds on looks
 // different with swirl, the same without.
 TEST(ParticlesRender, TheSwirlDriftsInTime) {
-    ParticleLook still;
+    ParticleLook still = test_look();
     still.swirl = 0.0F;
     still.detail_size = 1.0F;
     ParticleLook swirling = still;
@@ -708,7 +720,7 @@ TEST(ParticlesVolume, APuffDrawsAsTheSamePuff) {
     const LocalTime t = now();
     ParticleFrame f = frame_at_eye(view, 10);
     add(f, t, Vec3(0.0F, 30.0F, 2.0F), 8.0F, 5e-5F);
-    ParticleLook look;
+    ParticleLook look = test_look();
     look.detail = 0.0F;  // the grid alone
     std::vector<std::uint8_t> puffs;
     std::vector<std::uint8_t> volume;
@@ -774,7 +786,7 @@ CoverStats cover_stats(const std::vector<int>& c) {
 TEST(ParticlesVolume, PuffsLandWhereThePuffsDo) {
     const SceneView view = eye_view();
     const LocalTime t = now();
-    ParticleLook look;
+    ParticleLook look = test_look();
     look.detail = 0.0F;
     ParticleQuality q;
     q.volume = true;
@@ -811,13 +823,13 @@ TEST(ParticlesVolume, PuffsLandWhereThePuffsDo) {
 }
 
 // A puff one or two voxels across keeps its dust as it moves through the
-// grid (summed at the voxels' centres alone it swung about 2x, and moving
-// dust flickered): a far puff makes the voxels 2 m, and a 2.4 m puff steps
+// grid, without flicker (summed at the voxels' centres alone it swung about
+// 2x, and moving dust flickered): a far puff makes the voxels 2 m, and a 2.4 m puff steps
 // across one diagonally.
 TEST(ParticlesVolume, AMovingPuffKeepsItsDust) {
     const SceneView view = eye_view();
     const LocalTime t = now();
-    ParticleLook look;
+    ParticleLook look = test_look();
     look.detail = 0.0F;
     ParticleQuality q;
     q.volume = true;
@@ -843,9 +855,35 @@ TEST(ParticlesVolume, AMovingPuffKeepsItsDust) {
         EXPECT_EQ(r->validation_messages(), 0U);
     }
     const auto [lo, hi] = std::minmax_element(totals.begin(), totals.end());
-    std::printf("a moving puff's cover: %.0f to %.0f\n", *lo, *hi);
+    // Flicker is the steps' scatter about their trend: a straight line
+    // fitted through them. The trend is the puff rising past the eye's
+    // height, from in front of the ground to in front of the sky (cover is a
+    // colour difference from the empty scene): 2871 rising steadily to 3312
+    // on lavapipe since D-054 (dust's light no longer the octaves'); 3148
+    // to 3298 before it.
+    const auto count = static_cast<double>(totals.size());
+    double mx = 0.0;
+    double my = 0.0;
+    for (std::size_t k = 0; k < totals.size(); ++k) {
+        mx += static_cast<double>(k) / count;
+        my += totals[k] / count;
+    }
+    double sxy = 0.0;
+    double sxx = 0.0;
+    for (std::size_t k = 0; k < totals.size(); ++k) {
+        sxy += (static_cast<double>(k) - mx) * (totals[k] - my);
+        sxx += (static_cast<double>(k) - mx) * (static_cast<double>(k) - mx);
+    }
+    double scatter = 0.0;
+    for (std::size_t k = 0; k < totals.size(); ++k) {
+        const double fit = my + sxy / sxx * (static_cast<double>(k) - mx);
+        scatter = std::max(scatter, std::abs(totals[k] - fit) / my);
+    }
+    std::printf("a moving puff's cover: %.0f to %.0f, %.1f %% off its trend at most\n", *lo, *hi,
+                100.0 * scatter);
     ASSERT_GT(*lo, 500.0);
-    EXPECT_LT(*hi / *lo, 1.12);
+    EXPECT_LT(scatter, 0.03);
+    EXPECT_LT(*hi / *lo, 1.2);
 }
 
 // The volume's erosion keeps a thin cloud's dust (judged against the
@@ -859,7 +897,7 @@ TEST(ParticlesVolume, ErosionKeepsTheMass) {
     q.volume = true;
     q.volume_size = 96;
     q.volume_light_size = 32;
-    ParticleLook plain;
+    ParticleLook plain = test_look();
     plain.detail = 0.6F;
     plain.detail_size = 1.0F;
     ParticleLook eroding = plain;
@@ -901,7 +939,7 @@ TEST(ParticlesVolume, ErosionBreaksTheCloudsEdge) {
     q.volume = true;
     q.volume_size = 96;
     q.volume_light_size = 32;
-    ParticleLook detail_only;
+    ParticleLook detail_only = test_look();
     detail_only.detail = 0.6F;
     detail_only.detail_size = 0.5F;
     ParticleLook eroding = detail_only;
@@ -987,7 +1025,7 @@ TEST(ParticlesGaussian, AStretchedClusterLooksStretched) {
         p.first_seen = t - 10s;
         p.fade_from = t + 10s;
     }
-    ParticleLook look;
+    ParticleLook look = test_look();
     look.detail = 0.0F;
     ParticleQuality vq;
     vq.volume = true;
@@ -1071,7 +1109,7 @@ TEST(ParticlesGaussian, ATiltedClusterLeans) {
         p.first_seen = t - 10s;
         p.fade_from = t + 10s;
     }
-    ParticleLook look;
+    ParticleLook look = test_look();
     look.detail = 0.0F;
     ParticleQuality vq;
     vq.volume = true;
@@ -1132,11 +1170,14 @@ TEST(ParticlesGaussian, ATiltedClusterLeans) {
     EXPECT_NEAR(volume, -0.882, 0.07);
 }
 
-// The light pass's Gaussian, quantitatively (D-053): a caster over a
-// receiver darkens it by its optical depth toward the sun; the puffs'
-// renderer (the light buffer's closed form) and the volume (its own sun
-// march over the voxels) are independent, and must agree on how much.
-TEST(ParticlesGaussian, BothRenderersShadowAlike) {
+// A shadow still darkens the dust in both renderers (D-053, D-054): a
+// caster over a receiver, toward the noon sun. They no longer agree on how
+// much: the puffs' light is the sun's through Wrenninge's octaves and a sky
+// term; the volume's diffuse light holds the sky's and the ground's (D-054),
+// which no shadow takes, so its shadow is shallower. Measured on lavapipe:
+// shadowed over lit 0.883 (puffs) and 0.977 (volume); without the sun's
+// transmittance in the volume's march (a mutation) the volume's is 1.
+TEST(ParticlesGaussian, AShadowDarkensTheDustInBothRenderers) {
     const SceneView view = eye_view();
     const LocalTime t = now();
     const auto cluster = [&](ParticleFrame& f, Vec3 at, float sigma, float extinction) {
@@ -1155,15 +1196,15 @@ TEST(ParticlesGaussian, BothRenderersShadowAlike) {
     // Over it, toward the noon sun: optical depth through its middle
     // extinction / (2 pi sigma^2) = 3.
     cluster(shadowed, Vec3(0.0F, 40.0F, 23.0F), 3.0F, 170.0F);
-    ParticleLook look;
+    ParticleLook look = test_look();
     look.detail = 0.0F;
     ParticleQuality vq;
     vq.volume = true;
     vq.volume_size = 96;
     vq.volume_light_size = 48;
-    const auto ratio = [&](Renderer& r, const char* a, const char* b) {
-        const auto lit = draw(r, view, &alone, t, a);
-        const auto dark = draw(r, view, &shadowed, t, b);
+    const auto ratio = [&](Renderer& r) {
+        const auto lit = draw(r, view, &alone, t, nullptr);
+        const auto dark = draw(r, view, &shadowed, t, nullptr);
         const Rgb x = mean(lit, kW / 2 - 4, kH / 2 - 6, kW / 2 + 4, kH / 2 + 2);
         const Rgb y = mean(dark, kW / 2 - 4, kH / 2 - 6, kW / 2 + 4, kH / 2 + 2);
         return (y.r + y.g + y.b) / (x.r + x.g + x.b);
@@ -1176,25 +1217,131 @@ TEST(ParticlesGaussian, BothRenderersShadowAlike) {
             GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
         }
         a->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
-        puffs = ratio(*a, "gaussian-lit-puffs.png", "gaussian-shadowed-puffs.png");
+        puffs = ratio(*a);
         EXPECT_EQ(a->validation_messages(), 0U);
     }
     {
         auto b = make_renderer(10, vq, look);
         b->set_sky(sky_bodies(julian_date(2026, 3, 20, 12.0 * 3600.0)));
-        volume = ratio(*b, "gaussian-lit-volume.png", "gaussian-shadowed-volume.png");
+        volume = ratio(*b);
         EXPECT_EQ(b->validation_messages(), 0U);
     }
     std::printf("shadowed over lit: puffs %.3f, volume %.3f\n", puffs, volume);
-    // Measured on lavapipe: 0.893 and 0.927, darkenings of 0.107 and 0.073
-    // (the sky's light, unshadowed, keeps most of the brightness). The
-    // puffs' is about 1.5 times the volume's: its light buffer is finer than
-    // the volume's 48^3 sun volume, marched a voxel at a time (open, D-053).
-    // With the light pass's optical depth quartered (a mutation), 0.956:
-    // 0.6 times the volume's darkening, outside the bar.
-    const double darkening = (1.0 - puffs) / (1.0 - volume);
-    EXPECT_GT(darkening, 0.8);
-    EXPECT_LT(darkening, 1.8);
+    EXPECT_LT(puffs, 0.95);
+    EXPECT_LT(volume, 0.99);
+    EXPECT_GT(volume, puffs);  // the diffuse light no shadow takes
+}
+
+// Multiple scattering as diffusion (D-054). The same dust drawn as a volume
+// with the diffusion's sweeps and without (0 sweeps leave the diffuse light
+// where it starts, the sky's and the ground's: single scattering alone),
+// each settled over several frames, its brightness measured in the middle.
+struct ScatterShots {
+    Rgb with, without, empty;
+    bool vulkan = true;
+};
+ScatterShots scatter_shots(float extinction, float sigma, std::array<float, 3> albedo,
+                           int frames = 24, Vec3 at = Vec3(0.0F, 80.0F, 20.0F)) {
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleFrame f = frame_at_eye(view, 10);
+    Particle& p = f.particles.at(f.count++);
+    p.position = at;
+    const float s2 = sigma * sigma;
+    p.covariance = {s2, 0.0F, 0.0F, s2, 0.0F, s2};
+    p.extinction_m2 = extinction;
+    p.received = t;
+    p.first_seen = t - 10s;
+    p.fade_from = t + 10s;
+    ParticleLook look = test_look();
+    look.detail = 0.0F;
+    look.albedo = albedo;
+    ScatterShots out;
+    for (const std::uint32_t sweeps : {16U, 0U}) {
+        ParticleQuality q;
+        q.volume = true;
+        q.volume_size = 64;
+        q.volume_light_size = 32;
+        q.volume_scatter_sweeps = sweeps;
+        auto r = make_renderer(10, q, look);
+        if (r == nullptr) {
+            out.vulkan = false;
+            return out;
+        }
+        // The sun behind the eye (the scene is at 0 N, 0 E, looking north;
+        // at noon on 21 December the sun is 66 degrees up in the south):
+        // the face seen is the face lit.
+        r->set_sky(sky_bodies(julian_date(2026, 12, 21, 12.0 * 3600.0)));
+        std::vector<std::uint8_t> img;
+        for (int k = 0; k < frames; ++k) {
+            img = draw(*r, view, &f, t, nullptr);
+        }
+        (sweeps > 0 ? out.with : out.without) =
+            mean(img, kW / 2 - 4, kH / 2 - 4, kW / 2 + 4, kH / 2 + 4);
+        if (sweeps == 0) {
+            out.empty = mean(draw(*r, view, nullptr, t, nullptr), kW / 2 - 4, kH / 2 - 4,
+                             kW / 2 + 4, kH / 2 + 4);
+        }
+        EXPECT_EQ(r->validation_messages(), 0U);
+    }
+    return out;
+}
+double sum(const Rgb& c) {
+    return c.r + c.g + c.b;
+}
+
+// A brownout-sized cloud (sigma 15 m, 0.3 per metre at its middle; 4 m
+// voxels) around the eye, as brownout is: with the diffusion the dust about
+// the eye is brighter, for the light scattered many times in it, when it
+// absorbs little each time (dust's albedo); darker when it absorbs half (it
+// then holds less than the light arriving from outside). Compounding: single
+// scattering would only scale the light by the albedo. And warmer, the blue
+// absorbed most each time. Thin dust (0.003 per metre) holds none (D-054's
+// weight). The same equations solved on the CPU (the design's check, not
+// kept) put the diffuse light 4 to 14 m from its middle at 1.4 to 1.55 times
+// the light arriving from outside for dust's albedo, 0.2 to 0.6 for 0.5;
+// seen from outside, the light at its edge, where the eye sees in, only up
+// to 1.2 and 0.93 (the diffusion matters most inside). Measured on
+// lavapipe: printed.
+TEST(ParticlesScatter, DustAboutTheEyeIsBrighterForTheLightScatteredInIt) {
+    constexpr float kExtinction = 0.3F * 15.749609945722419F * 15.0F * 15.0F * 15.0F;
+    const Vec3 around(0.0F, 6.0F, 4.0F);  // the eye 2 m up, 6 m from its middle
+    const ScatterShots dust = scatter_shots(kExtinction, 15.0F, {0.957F, 0.944F, 0.922F}, 24, around);
+    if (!dust.vulkan) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const ScatterShots dark = scatter_shots(kExtinction, 15.0F, {0.5F, 0.5F, 0.5F}, 24, around);
+    const ScatterShots thin =
+        scatter_shots(0.01F * kExtinction, 15.0F, {0.957F, 0.944F, 0.922F}, 24, around);
+    const double gain = sum(dust.with) - sum(dust.without);
+    const double dark_gain = sum(dark.with) - sum(dark.without);
+    const double thin_gain = sum(thin.with) - sum(thin.without);
+    std::printf("diffusion's gain (sum of levels): dust %.1f, albedo 0.5 %.1f, thin %.2f; "
+                "the cloud %.0f with, %.0f without, the scene %.0f; red less blue %.1f with, "
+                "%.1f without\n",
+                gain, dark_gain, thin_gain, sum(dust.with), sum(dust.without), sum(dust.empty),
+                dust.with.r - dust.with.b, dust.without.r - dust.without.b);
+    EXPECT_GT(gain, 5.0);
+    EXPECT_LT(dark_gain, -5.0);
+    EXPECT_LT(std::abs(thin_gain), 1.0);
+    EXPECT_GT(dust.with.r - dust.with.b, dust.without.r - dust.without.b);
+}
+
+// The diffuse light settles: sweeps each frame from the last frame's answer
+// converge, the frame after the next unchanged; and it starts from the
+// light arriving from outside, not from black (its first frame already near).
+TEST(ParticlesScatter, TheDiffuseLightSettles) {
+    constexpr float kExtinction = 0.3F * 15.749609945722419F * 15.0F * 15.0F * 15.0F;
+    const ScatterShots late = scatter_shots(kExtinction, 15.0F, {0.957F, 0.944F, 0.922F}, 40);
+    if (!late.vulkan) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const ScatterShots later = scatter_shots(kExtinction, 15.0F, {0.957F, 0.944F, 0.922F}, 41);
+    const ScatterShots first = scatter_shots(kExtinction, 15.0F, {0.957F, 0.944F, 0.922F}, 1);
+    std::printf("settling: frame 1 %.1f, 40 %.1f, 41 %.1f\n", sum(first.with), sum(late.with),
+                sum(later.with));
+    EXPECT_NEAR(sum(later.with), sum(late.with), 1.0);
+    EXPECT_GT(sum(first.with), sum(first.without) - 3.0);
 }
 
 }  // namespace
