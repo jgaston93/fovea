@@ -99,6 +99,10 @@ fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" cs
                  kCsVolumeConvert)
 fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" cs_volume_sun compute
                  kCsVolumeSun)
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" cs_volume_scatter_setup
+                 compute kCsVolumeScatterSetup)
+fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" cs_volume_scatter_relax
+                 compute kCsVolumeScatterRelax)
 fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" vs_volume vertex
                  kVsVolume)
 fovea_add_shader(fovea_render "${PROJECT_SOURCE_DIR}/shaders/particles.slang" fs_volume fragment

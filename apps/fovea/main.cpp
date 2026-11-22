@@ -364,6 +364,11 @@ fovea::RendererOptions renderer_options(const fovea::DisplayConfig& config) {
         r.particle_look.extinction_m2_per_kg = static_cast<float>(p.extinction_m2_per_kg);
         r.particle_look.albedo = {static_cast<float>(p.albedo[0]), static_cast<float>(p.albedo[1]),
                                   static_cast<float>(p.albedo[2])};
+        if (p.ground_albedo) {
+            r.particle_look.ground_albedo = {static_cast<float>((*p.ground_albedo)[0]),
+                                             static_cast<float>((*p.ground_albedo)[1]),
+                                             static_cast<float>((*p.ground_albedo)[2])};
+        }
         r.particle_look.forward_scattering = static_cast<float>(p.forward_scattering);
         r.particle_look.detail = static_cast<float>(p.detail);
         r.particle_look.detail_size = static_cast<float>(p.detail_size);

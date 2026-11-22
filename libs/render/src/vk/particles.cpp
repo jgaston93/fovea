@@ -330,8 +330,8 @@ ParticlesGpu::Image ParticlesGpu::make_volume_target(std::uint32_t size, VkForma
     ici.arrayLayers = 1;
     ici.samples = VK_SAMPLE_COUNT_1_BIT;
     ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ici.usage =
-        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     VmaAllocationCreateInfo aci{};
     aci.usage = VMA_MEMORY_USAGE_AUTO;
     check(vmaCreateImage(gpu_.allocator, &ici, &aci, &i.image, &i.memory, nullptr),
@@ -477,6 +477,7 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
         fail("no capacity, slots, outputs, slices or light buffer");
     }
     const auto outputs = static_cast<std::uint32_t>(extents.size());
+    volume_spaces_.resize(slots);
     try {
         light_format_ = light_format_for(gpu_.physical);
         for (const VkExtent2D e : extents) {
@@ -561,7 +562,7 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
         lci.pBindings = buffer_bindings.data();
         check(vkCreateDescriptorSetLayout(gpu_.device, &lci, nullptr, &buffers_layout_),
               "vkCreateDescriptorSetLayout (particles)");
-        const std::array<VkDescriptorSetLayoutBinding, 9> view_bindings{
+        const std::array<VkDescriptorSetLayoutBinding, 10> view_bindings{
             VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
                                          VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
             VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
@@ -579,6 +580,8 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
             VkDescriptorSetLayoutBinding{8, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
                                          VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
             VkDescriptorSetLayoutBinding{9, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
+                                         VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{10, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
                                          VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
         lci.bindingCount = static_cast<std::uint32_t>(view_bindings.size());
         lci.pBindings = view_bindings.data();
@@ -594,12 +597,23 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
         volume_accumulate_ = make_volume_target(vsize, VK_FORMAT_R32_UINT);
         volume_density_ = make_volume_target(vsize, volume_format);
         volume_sun_ = make_volume_target(lsize, volume_format);
-        const std::array<VkDescriptorSetLayoutBinding, 3> volume_bindings{
+        // D-054: the diffuse light, RGBA16F (storage, sampling and filtering
+        // it are all required of every Vulkan device).
+        volume_extinction_ = make_volume_target(lsize, volume_format);
+        volume_scatter_ = make_volume_target(lsize, VK_FORMAT_R16G16B16A16_SFLOAT);
+        volume_scatter_previous_ = make_volume_target(lsize, VK_FORMAT_R16G16B16A16_SFLOAT);
+        const std::array<VkDescriptorSetLayoutBinding, 6> volume_bindings{
             VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
                                          VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
             VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
                                          VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
             VkDescriptorSetLayoutBinding{2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
+                                         VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
+                                         VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
+                                         VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{5, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
                                          VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
         lci.bindingCount = static_cast<std::uint32_t>(volume_bindings.size());
         lci.pBindings = volume_bindings.data();
@@ -608,9 +622,9 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
 
         const std::array<VkDescriptorPoolSize, 4> sizes{
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5 * slots},
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 7 * outputs},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 8 * outputs + 1},
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 2 * outputs},
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3}};
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 5}};
         VkDescriptorPoolCreateInfo pci{};
         pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         pci.maxSets = slots + outputs + 1;
@@ -671,7 +685,9 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
                                                     VK_IMAGE_LAYOUT_GENERAL};
             const VkDescriptorImageInfo volume_sun_info{VK_NULL_HANDLE, volume_sun_.view,
                                                         VK_IMAGE_LAYOUT_GENERAL};
-            std::array<VkWriteDescriptorSet, 8> writes{};
+            const VkDescriptorImageInfo scatter_info{VK_NULL_HANDLE, volume_scatter_.view,
+                                                     VK_IMAGE_LAYOUT_GENERAL};
+            std::array<VkWriteDescriptorSet, 9> writes{};
             for (VkWriteDescriptorSet& w : writes) {
                 w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 w.dstSet = view_sets_.at(o);
@@ -701,6 +717,9 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
             writes[7].dstBinding = 9;
             writes[7].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
             writes[7].pImageInfo = &volume_sun_info;
+            writes[8].dstBinding = 10;
+            writes[8].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            writes[8].pImageInfo = &scatter_info;
             vkUpdateDescriptorSets(gpu_.device, static_cast<std::uint32_t>(writes.size()),
                                    writes.data(), 0, nullptr);
         }
@@ -713,19 +732,26 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
             ai.pSetLayouts = &volume_layout_;
             check(vkAllocateDescriptorSets(gpu_.device, &ai, &volume_set_),
                   "vkAllocateDescriptorSets (particles' volume)");
-            const std::array<VkDescriptorImageInfo, 3> infos{
+            const std::array<VkDescriptorImageInfo, 6> infos{
                 VkDescriptorImageInfo{VK_NULL_HANDLE, volume_accumulate_.view,
                                       VK_IMAGE_LAYOUT_GENERAL},
                 VkDescriptorImageInfo{VK_NULL_HANDLE, volume_density_.view,
                                       VK_IMAGE_LAYOUT_GENERAL},
-                VkDescriptorImageInfo{VK_NULL_HANDLE, volume_sun_.view, VK_IMAGE_LAYOUT_GENERAL}};
-            std::array<VkWriteDescriptorSet, 3> writes{};
+                VkDescriptorImageInfo{VK_NULL_HANDLE, volume_sun_.view, VK_IMAGE_LAYOUT_GENERAL},
+                VkDescriptorImageInfo{VK_NULL_HANDLE, volume_extinction_.view,
+                                      VK_IMAGE_LAYOUT_GENERAL},
+                VkDescriptorImageInfo{VK_NULL_HANDLE, volume_scatter_.view,
+                                      VK_IMAGE_LAYOUT_GENERAL},
+                VkDescriptorImageInfo{VK_NULL_HANDLE, volume_scatter_previous_.view,
+                                      VK_IMAGE_LAYOUT_GENERAL}};
+            std::array<VkWriteDescriptorSet, 6> writes{};
             for (std::uint32_t b = 0; b < writes.size(); ++b) {
                 writes.at(b).sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 writes.at(b).dstSet = volume_set_;
                 writes.at(b).dstBinding = b;
                 writes.at(b).descriptorCount = 1;
-                writes.at(b).descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                writes.at(b).descriptorType =
+                    b == 5 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
                 writes.at(b).pImageInfo = &infos.at(b);
             }
             vkUpdateDescriptorSets(gpu_.device, static_cast<std::uint32_t>(writes.size()),
@@ -757,6 +783,10 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
             volume_inject_ = make_compute(gpu_.device, layout_, modules.cs_volume_inject);
             volume_convert_ = make_compute(gpu_.device, layout_, modules.cs_volume_convert);
             volume_sun_pass_ = make_compute(gpu_.device, layout_, modules.cs_volume_sun);
+            volume_scatter_setup_ =
+                make_compute(gpu_.device, layout_, modules.cs_volume_scatter_setup);
+            volume_scatter_relax_ =
+                make_compute(gpu_.device, layout_, modules.cs_volume_scatter_relax);
             // Onto a cleared particle image: over is a copy.
             volume_march_ = make_pipeline(gpu_.device, layout_, modules.vs_volume,
                                           modules.fs_volume, kParticleImageFormat, Blend::over);
@@ -775,8 +805,9 @@ void ParticlesGpu::release() {
     if (gpu_.device == VK_NULL_HANDLE) {
         return;
     }
-    for (VkPipeline p : {over_, under_, light_pipeline_, composite_, volume_inject_,
-                         volume_convert_, volume_sun_pass_, volume_march_}) {
+    for (VkPipeline p :
+         {over_, under_, light_pipeline_, composite_, volume_inject_, volume_convert_,
+          volume_sun_pass_, volume_march_, volume_scatter_setup_, volume_scatter_relax_}) {
         vkDestroyPipeline(gpu_.device, p, nullptr);
     }
     vkDestroyPipelineLayout(gpu_.device, layout_, nullptr);
@@ -790,6 +821,9 @@ void ParticlesGpu::release() {
     destroy_image(volume_accumulate_);
     destroy_image(volume_density_);
     destroy_image(volume_sun_);
+    destroy_image(volume_extinction_);
+    destroy_image(volume_scatter_);
+    destroy_image(volume_scatter_previous_);
     vkDestroyDescriptorSetLayout(gpu_.device, volume_layout_, nullptr);
     for (Image& i : particle_images_) {
         destroy_image(i);
@@ -852,8 +886,12 @@ std::size_t ParticlesGpu::pack(std::uint32_t slot, const ParticleFrame& frame, L
         vs = volume_space(centres, packed, quality_.volume_size, quality_.volume_light_size,
                           quality_.volume_max_m, anchor);
         vs.particles = static_cast<std::uint32_t>(n);
+        // D-054: the look's ground, or the atmosphere's; the previous box is
+        // set when the volume's built.
+        vs.ground_albedo = look.ground_albedo[0] >= 0.0F ? look.ground_albedo : ground_albedo_;
     }
     std::memcpy(base + kVolumeSpaceAt, &vs, sizeof(vs));
+    volume_spaces_.at(slot) = vs;
     volume_pending_[slot] = quality_.volume && n > 0 ? 1 : 0;
     const std::size_t outputs = view_sets_.size();
     auto* order = static_cast<std::uint32_t*>(s.order_mapped);
@@ -913,7 +951,7 @@ void ParticlesGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t
     // composited as the puffs are.
     if (quality_.volume) {
         if (volume_pending_[slot] != 0) {
-            record_volume(cmd, slot, lighting_offset);
+            record_volume(cmd, slot, lighting_offset, look);
             volume_pending_[slot] = 0;
         }
         const std::array<VkImageMemoryBarrier2, 1> to_image{
@@ -999,7 +1037,7 @@ void ParticlesGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t
 // point, converted to extinction, the optical depth toward the sun marched;
 // then sampled by every view's march. Every image in GENERAL.
 void ParticlesGpu::record_volume(VkCommandBuffer cmd, std::uint32_t slot,
-                                 std::uint32_t lighting_offset) const {
+                                 std::uint32_t lighting_offset, const ParticleLook& look) const {
     constexpr VkPipelineStageFlags2 kCompute = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     constexpr VkPipelineStageFlags2 kTransfer = VK_PIPELINE_STAGE_2_CLEAR_BIT;
     constexpr VkAccessFlags2 kStorageRw =
@@ -1050,10 +1088,84 @@ void ParticlesGpu::record_volume(VkCommandBuffer cmd, std::uint32_t slot,
     barriers(cmd, converted);
     bind(volume_sun_pass_);
     vkCmdDispatch(cmd, (light + 3) / 4, (light + 3) / 4, (light + 3) / 4);
-    const std::array<VkImageMemoryBarrier2, 2> ready{
+
+    // Multiple scattering as diffusion (D-054): last frame's answer copied
+    // aside, then the extinction over the sun's grid and the start, from
+    // that answer where the boxes overlap (the box it was solved in written
+    // into this slot's volume space now, as it's built); then the sweeps.
+    {
+        auto* base = static_cast<std::byte*>(slots_[slot].mapped);
+        GpuVolumeSpace& vs = volume_spaces_.at(slot);
+        const DVec3 corner = anchors_[slot] + DVec3(vs.corner[0], vs.corner[1], vs.corner[2]);
+        if (scatter_ready_) {
+            const DVec3 previous = scatter_corner_ - anchors_[slot];
+            vs.previous_corner = {static_cast<float>(previous.x), static_cast<float>(previous.y),
+                                  static_cast<float>(previous.z)};
+            vs.previous_voxel = static_cast<float>(scatter_voxel_);
+        } else {
+            vs.previous_voxel = 0.0F;
+        }
+        std::memcpy(base + kVolumeSpaceAt, &vs, sizeof(vs));
+        (void)vmaFlushAllocation(gpu_.allocator, slots_[slot].memory, kVolumeSpaceAt, sizeof(vs));
+        scatter_corner_ = corner;
+        scatter_voxel_ = static_cast<double>(vs.voxel);
+    }
+    const VkImageLayout kept = scatter_ready_ ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
+    scatter_ready_ = true;
+    constexpr VkPipelineStageFlags2 kCopy = VK_PIPELINE_STAGE_2_COPY_BIT;
+    const std::array<VkImageMemoryBarrier2, 4> to_copy{
+        image_barrier(volume_sun_.image, kCompute, kStorageRw, kCompute, kStorageRw,
+                      VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL),
+        image_barrier(volume_scatter_.image, kFragmentStage | kCompute, kSampled | kStorageRw,
+                      kCopy, VK_ACCESS_2_TRANSFER_READ_BIT, kept, VK_IMAGE_LAYOUT_GENERAL),
+        image_barrier(volume_scatter_previous_.image, kCompute, kSampled, kCopy,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                      VK_IMAGE_LAYOUT_GENERAL),
+        image_barrier(volume_extinction_.image, kCompute, kStorageRw, kCompute, kStorageRw,
+                      VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL)};
+    barriers(cmd, to_copy);
+    VkImageCopy copy{};
+    copy.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copy.dstSubresource = copy.srcSubresource;
+    copy.extent = {light, light, light};
+    vkCmdCopyImage(cmd, volume_scatter_.image, VK_IMAGE_LAYOUT_GENERAL,
+                   volume_scatter_previous_.image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+    const std::array<VkImageMemoryBarrier2, 2> copied{
+        image_barrier(volume_scatter_.image, kCopy, VK_ACCESS_2_TRANSFER_READ_BIT, kCompute,
+                      kStorageRw, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL),
+        image_barrier(volume_scatter_previous_.image, kCopy, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                      kCompute, kSampled, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL)};
+    barriers(cmd, copied);
+    ParticlePush push;
+    push.albedo = look.albedo;
+    push.forward_scattering = look.forward_scattering;
+    const auto groups = (light + 3) / 4;
+    bind(volume_scatter_setup_);
+    vkCmdPushConstants(cmd, layout_, kAllStages, 0, sizeof(push), &push);
+    vkCmdDispatch(cmd, groups, groups, groups);
+    const std::array<VkImageMemoryBarrier2, 2> started{
+        image_barrier(volume_scatter_.image, kCompute, kStorageRw, kCompute, kStorageRw,
+                      VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL),
+        image_barrier(volume_extinction_.image, kCompute, kStorageRw, kCompute, kStorageRw,
+                      VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL)};
+    barriers(cmd, started);
+    bind(volume_scatter_relax_);
+    const std::array<VkImageMemoryBarrier2, 1> swept{
+        image_barrier(volume_scatter_.image, kCompute, kStorageRw, kCompute, kStorageRw,
+                      VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL)};
+    for (std::uint32_t sweep = 0; sweep < 2 * quality_.volume_scatter_sweeps; ++sweep) {
+        push.order_base = sweep & 1U;  // red, then black
+        vkCmdPushConstants(cmd, layout_, kAllStages, 0, sizeof(push), &push);
+        vkCmdDispatch(cmd, groups, groups, groups);
+        barriers(cmd, swept);
+    }
+
+    const std::array<VkImageMemoryBarrier2, 3> ready{
         image_barrier(volume_density_.image, kCompute, kStorageRw, kFragmentStage, kSampled,
                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL),
         image_barrier(volume_sun_.image, kCompute, kStorageRw, kFragmentStage, kSampled,
+                      VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL),
+        image_barrier(volume_scatter_.image, kCompute, kStorageRw, kFragmentStage, kSampled,
                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL)};
     barriers(cmd, ready);
 }

@@ -86,6 +86,12 @@ struct VolumeSpace {
     float unused0;
     float inv_reference;  // 1 / the particles' mean peak extinction coefficient [m]: the erosion's scale
     float2 unused;
+    // The box the diffuse light was last solved in (D-054), from this
+    // frame's anchor, and its voxel (0: none, start afresh).
+    float3 previous_corner;
+    float previous_voxel;
+    float3 ground_albedo;  // the atmosphere's (the light the ground sends up into the dust)
+    float unused2;
 };
 [[vk::binding(4, 0)]] StructuredBuffer<VolumeSpace> volume_space;
 // The view's resolved depth (reverse-Z, infinite far plane), read by pixel.
@@ -104,10 +110,18 @@ struct VolumeSpace {
 // depth toward the sun, both over the box, sampled filtered.
 [[vk::binding(8, 2)]] Texture3D<float> volume_density;
 [[vk::binding(9, 2)]] Texture3D<float> volume_sun_depth;
+// The diffuse radiance multiple scattering leaves in the dust (D-054), over
+// the sun's grid, linear RGB, before exposure.
+[[vk::binding(10, 2)]] Texture3D<float4> volume_scatter;
 // Written by the volume's compute passes (set 3).
 [[vk::binding(0, 3)]] RWTexture3D<uint> volume_accumulate;
 [[vk::binding(1, 3)]] RWTexture3D<float> volume_density_out;
 [[vk::binding(2, 3)]] RWTexture3D<float> volume_sun_out;
+// D-054: the extinction over the sun's grid, the diffuse radiance solved
+// there, and last frame's (to start from).
+[[vk::binding(3, 3)]] RWTexture3D<float> volume_extinction_out;
+[[vk::binding(4, 3)]] [[vk::image_format("rgba16f")]] RWTexture3D<float4> volume_scatter_out;
+[[vk::binding(5, 3)]] Texture3D<float4> volume_scatter_previous;
 
 // Mirrors ParticlePush in particles.cpp.
 struct ParticlePush {
@@ -653,8 +667,12 @@ void cs_volume_convert(uint3 id: SV_DispatchThreadID) {
 }
 
 // The optical depth from each voxel of the sun's volume toward the sun, to
-// the box's edge, marched a voxel of the density at a time (nearest: the
-// density volume is being read as an image here).
+// the box's edge, marched a voxel of the density at a time, the density
+// read trilinearly (by hand: it's being read as an image here). Read at the
+// nearest voxel instead (built first), a small puff's depth jumped as it
+// crossed voxels; with the sun's light taken by its full transmittance
+// (D-054, not the octaves' fractions of the depth) its light flickered:
+// a moving puff's cover swung 15 %, 4.8 % before.
 [shader("compute")]
 [numthreads(4, 4, 4)]
 void cs_volume_sun(uint3 id: SV_DispatchThreadID) {
@@ -669,13 +687,187 @@ void cs_volume_sun(uint3 id: SV_DispatchThreadID) {
     const int n = int(v.size);
     for (int k = 0; k < 4 * n; ++k) {
         at += toward_sun * v.voxel;
-        const int3 cell = int3(floor((at - v.corner) * v.inv_voxel));
-        if (any(cell < 0) || any(cell >= n)) {
+        const float3 cells = (at - v.corner) * v.inv_voxel - 0.5;
+        if (any(cells < -0.5) || any(cells > float(n) - 0.5)) {
             break;
         }
-        depth += volume_density_out[uint3(cell)] * v.voxel;
+        const float3 base = floor(cells);
+        const float3 f = cells - base;
+        float sigma = 0.0;
+        for (int c = 0; c < 8; ++c) {
+            const int3 o = int3(c & 1, (c >> 1) & 1, (c >> 2) & 1);
+            const int3 cell = clamp(int3(base) + o, int3(0), int3(n - 1));
+            const float3 w3 = select(o != 0, f, 1.0 - f);
+            sigma += w3.x * w3.y * w3.z * volume_density_out[uint3(cell)];
+        }
+        depth += sigma * v.voxel;
     }
     volume_sun_out[id] = depth;
+}
+
+// Multiple scattering in the dust as diffusion (D-054), after Stam
+// ("Multiple scattering as a diffusion process", Eurographics Rendering
+// Workshop 1995, section 3, equations 3 to 8): the light scattered inside the
+// dust, I_d = I0 + I1 . s, its first two angular terms; I0, the average
+// diffuse radiance, solves
+//   div(D grad I0) - sigma_a I0 + q = 0,  D = 1 / (3 sigma_tr),
+//   sigma_tr = sigma_a + sigma_s (1 - g),
+// g the phase function's mean cosine. (Stam's equation 4 drops the 1/3 that
+// the streaming term's moment gives, the integral of s (s . grad)(I1 . s)
+// over the sphere being 4 pi / 3 div I1, so his kappa is 1 / sigma_tr; derived
+// again here, D is the usual 1 / (3 sigma_tr).) The source is the sun's
+// first scattering, sigma_s Q0 with Q0 = E T / (4 pi) (E the sun's
+// irradiance, T its transmittance), and the divergence of its forward part,
+// -div(sigma_s g Q0 s / sigma_tr) (s the sunlight's direction), which along
+// the beam (dQ0/ds = -sigma_t Q0) adds sigma_s g sigma_t Q0 / sigma_tr:
+// q = sigma_s Q0 (1 + g sigma_t / sigma_tr). (Stam's section 5.1 source has
+// mu-bar = 3 g where this has g: the same missing 1/3.) Solved on the sun's
+// grid by red-black over-relaxation, a few sweeps a frame from last frame's
+// answer (his section 4.1 relaxes; multigrid is his speed-up, not needed
+// yet). Where the dust is thin the diffusion doesn't hold (valid for a mean
+// free path under a quarter of the medium's size, his section 3, citing
+// Siegel and Howell): there I0 is the diffuse light arriving from outside,
+// the sky's and the ground's, I_in; at the dust's edge Marshak's condition,
+// no diffuse light coming in beyond I_in (his equation 7, its source term
+// left out; with I1 = -grad I0 / sigma_tr the inward flux of I0 + I1 . s set
+// to I_in's): I0 + 2 D dI0/dn = I_in, n outward. Between, by how much dust
+// a voxel holds: its weight w goes smoothly from 0 to 1 as the optical depth
+// across kScatterLength of its dust goes from kScatterFrom to kScatterFull,
+// its I0
+// from I_in to the diffusion's, and each face from Marshak's to the
+// neighbour's coupling by the neighbour's w. A hard edge between the two (a
+// threshold, built first) flipped voxels as a small puff moved, and its
+// light jumped: flicker. Chosen against photographs of a brownout cloud
+// (D-054): from 0.1 and 0.5 (built first) to 0.01 and 0.05 the sunlit dust
+// went from 0.64 to 0.85 of a bright runway's brightness, and warmer: the
+// sunlight scattered in the cloud's outer, thinner dust, the light seen from
+// outside, is in the diffusion rather than left to the sky's.
+// Over a fixed length, not the voxel's: the box's voxel doubles as the
+// cloud outgrows it, and thin dust would jump from the sky's light to the
+// diffusion's in a frame (the review's). 4 m, the voxel they were chosen at.
+static const float kScatterFrom = 0.01;
+static const float kScatterFull = 0.05;
+static const float kScatterLength = 4.0;
+static const float kOverRelax = 1.6;
+
+// Cornette and Shanks' phase function's mean cosine (its asymmetry) for its
+// parameter g: 3 g (4 + g^2) / (5 (2 + g^2)). At 0.68 it gives 0.74, as
+// ParticleLook::forward_scattering's numerical integral did.
+float mean_cosine(float g) {
+    const float g2 = g * g;
+    return 3.0 * g * (4.0 + g2) / (5.0 * (2.0 + g2));
+}
+
+// The diffuse radiance arriving from outside the dust: the sky's, from the
+// upper half of the sphere, and the ground's, lit by the sun and the sky,
+// from the lower; each averaged over the whole sphere.
+float3 diffuse_inflow(ViewSky sky) {
+    const float sun_up = max(-lighting.sun_local.z, 0.0);
+    const float3 ground = volume_space[0].ground_albedo *
+                          (sky.sun_irradiance * sun_up + sky.sky_irradiance) * kInvPi;
+    return 0.5 * (sky.sky_irradiance * kInvPi + ground);
+}
+
+float3 scatter_at(Texture3D<float4> image, float3 at_cells, int n, float3 outside) {
+    // Trilinear, a corner outside the grid taking `outside`.
+    const float3 base = floor(at_cells);
+    const float3 f = at_cells - base;
+    float3 sum = float3(0.0);
+    for (int k = 0; k < 8; ++k) {
+        const int3 c = int3(base) + int3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+        const float3 w3 = select(int3(k & 1, (k >> 1) & 1, (k >> 2) & 1) != 0, f, 1.0 - f);
+        const float w = w3.x * w3.y * w3.z;
+        const bool in = all(c >= 0) && all(c < n);
+        sum += w * (in ? image.Load(int4(c, 0)).rgb : outside);
+    }
+    return sum;
+}
+
+// The extinction averaged over each of the sun's voxels, and the diffuse
+// light started from last frame's answer where the boxes overlap.
+[shader("compute")]
+[numthreads(4, 4, 4)]
+void cs_volume_scatter_setup(uint3 id: SV_DispatchThreadID) {
+    const VolumeSpace v = volume_space[0];
+    const uint n = v.light_size;
+    if (any(id >= n)) {
+        return;
+    }
+    const uint3 first = (id * v.size) / n;
+    const uint3 last = max(((id + 1) * v.size + n - 1) / n, first + 1);
+    float sum = 0.0;
+    for (uint z = first.z; z < last.z; ++z) {
+        for (uint y = first.y; y < last.y; ++y) {
+            for (uint x = first.x; x < last.x; ++x) {
+                sum += volume_density_out[uint3(x, y, z)];
+            }
+        }
+    }
+    const uint3 span = last - first;
+    volume_extinction_out[id] = sum / float(span.x * span.y * span.z);
+    const ViewSky sky = view_sky[lighting.view];
+    const float3 inflow = diffuse_inflow(sky);
+    float3 start = inflow;
+    if (v.previous_voxel > 0.0) {
+        const float cell = float(v.size) * v.voxel / float(n);
+        const float previous_cell = float(v.size) * v.previous_voxel / float(n);
+        const float3 at = v.corner + (float3(id) + 0.5) * cell;
+        start = scatter_at(volume_scatter_previous, (at - v.previous_corner) / previous_cell - 0.5,
+                           int(n), inflow);
+    }
+    volume_scatter_out[id] = float4(start, 0.0);
+}
+
+// One colour of the red-black sweep (push.order_base: 0 or 1).
+[shader("compute")]
+[numthreads(4, 4, 4)]
+void cs_volume_scatter_relax(uint3 id: SV_DispatchThreadID) {
+    const VolumeSpace v = volume_space[0];
+    const int n = int(v.light_size);
+    if (any(id >= uint(n)) || ((id.x + id.y + id.z) & 1u) != push.order_base) {
+        return;
+    }
+    const float h = float(v.size) * v.voxel / float(n);
+    const ViewSky sky = view_sky[lighting.view];
+    const float3 inflow = diffuse_inflow(sky);
+    const float sigma = volume_extinction_out[id];
+    const float weight = smoothstep(kScatterFrom, kScatterFull, sigma * kScatterLength);
+    if (weight <= 0.0) {
+        volume_scatter_out[id] = float4(inflow, 0.0);
+        return;
+    }
+    const float3 albedo = push.albedo;
+    const float g = mean_cosine(push.forward_scattering);
+    const float3 absorb = sigma * (1.0 - albedo);
+    const float3 transport = absorb + sigma * albedo * (1.0 - g);
+    const float3 d = 1.0 / (3.0 * transport);
+    const float3 q0 = sky.sun_irradiance * exp(-volume_sun_out[id]) * (0.25 * kInvPi);
+    const float3 source = sigma * albedo * q0 * (1.0 + g * sigma / transport);
+    float3 weights = float3(0.0);
+    float3 sum = float3(0.0);
+    for (int k = 0; k < 6; ++k) {
+        int3 c = int3(id);
+        c[k >> 1] += (k & 1) != 0 ? 1 : -1;
+        const bool in = all(c >= 0) && all(c < n);
+        const float other = in ? volume_extinction_out[uint3(c)] : 0.0;
+        const float other_weight = smoothstep(kScatterFrom, kScatterFull, other * kScatterLength);
+        // Marshak's condition at the face, half a voxel out: the face's
+        // I_s = (I_in + (4 D / h) I0) / (1 + 4 D / h), so the flux is
+        // 2 D (I_in - I0) / (h (h + 4 D)) per unit volume.
+        const float3 edge = (1.0 - other_weight) * 2.0 * d / (h * (h + 4.0 * d));
+        weights += edge;
+        sum += edge * inflow;
+        if (other_weight > 0.0) {
+            const float3 other_d =
+                1.0 / (3.0 * (other * (1.0 - albedo) + other * albedo * (1.0 - g)));
+            const float3 w = other_weight * 2.0 * d * other_d / ((d + other_d) * h * h);
+            weights += w;  // the harmonic mean of the two D's
+            sum += w * volume_scatter_out[uint3(c)].rgb;
+        }
+    }
+    const float3 old = volume_scatter_out[id].rgb;
+    const float3 solved = lerp(inflow, (sum + source) / (weights + absorb), weight);
+    volume_scatter_out[id] = float4(max(old + kOverRelax * (solved - old), float3(0.0)), 0.0);
 }
 
 struct VolumeVertex {
@@ -810,11 +1002,15 @@ float4 fs_volume(VolumeVertex i) : SV_Target {
                 sigma *= saturate((s - t) / max(1.0 - t, 1e-3) * 4.0) * light_space[0].erosion_gain;
             }
         }
+        // The sun's and moon's light scattered once (the moon's unshadowed:
+        // the sun's volume is the sun's), and the diffuse light multiple
+        // scattering leaves here (D-054), which holds the sky's and the
+        // ground's too.
         const float sun_depth = volume_sun_depth.SampleLevel(light_sampler, uvw, 0.0);
         const float3 light =
-            sky.sun_irradiance * multiple_scattering_phase(g, dot(dir, lighting.sun), sun_depth) +
-            sky.moon_irradiance * multiple_scattering_phase(g, dot(dir, lighting.moon), 0.0) +
-            sky.sky_irradiance * (0.5 * kInvPi * kOctaveEnergy);
+            sky.sun_irradiance * mie_phase(g, dot(dir, lighting.sun)) * exp(-sun_depth) +
+            sky.moon_irradiance * mie_phase(g, dot(dir, lighting.moon)) +
+            volume_scatter.SampleLevel(light_sampler, uvw, 0.0).rgb;
         // Hillaire 2016, equation 17: the step's scattering integrated
         // against its own extinction (the light scattered per metre is
         // sigma x albedo x light; over sigma, albedo x light).

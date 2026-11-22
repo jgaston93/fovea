@@ -564,6 +564,7 @@ fade_s = 0.5
 port = 9000
 extinction_m2_per_kg = 250.0
 albedo = { r = 0.7, g = 0.6, b = 0.5 }
+ground_albedo = { r = 0.45, g = 0.33, b = 0.22 }
 forward_scattering = 0.4
 detail = 0.0
 detail_size = 1.5
@@ -575,6 +576,9 @@ swirl = 2.0
     EXPECT_DOUBLE_EQ(look.config->particles->swirl, 2.0);
     EXPECT_DOUBLE_EQ(look.config->particles->extinction_m2_per_kg, 250.0);
     EXPECT_DOUBLE_EQ(look.config->particles->albedo[2], 0.5);
+    ASSERT_TRUE(look.config->particles->ground_albedo.has_value());
+    EXPECT_DOUBLE_EQ((*look.config->particles->ground_albedo)[0], 0.45);
+    EXPECT_FALSE(d.config->particles->ground_albedo.has_value());  // the atmosphere's
     EXPECT_DOUBLE_EQ(look.config->particles->forward_scattering, 0.4);
     EXPECT_TRUE(d.config->particles->self_shadowing);
     EXPECT_EQ(d.config->particles->slices, 32U);
@@ -607,6 +611,8 @@ TEST(Config, ParticlesSectionIsChecked) {
                      "particles.extinction_m2_per_kg");
     expect_one_error(parse(head + "port = 9000\nalbedo = { r = 1.2, g = 0.5, b = 0.5 }\n"), 9,
                      "particles.albedo");
+    expect_one_error(parse(head + "port = 9000\nground_albedo = { r = 0.4, g = -0.1, b = 0.2 }\n"),
+                     9, "particles.ground_albedo");
     expect_one_error(parse(head + "port = 9000\nforward_scattering = 1.0\n"), 9,
                      "particles.forward_scattering");
     expect_one_error(parse(head + "port = 9000\ndetail = 1.5\n"), 9, "particles.detail");

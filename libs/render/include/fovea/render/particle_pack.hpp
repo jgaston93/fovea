@@ -21,8 +21,8 @@ namespace fovea {
 
 // How the particles look ([particles] in the config). The extinction and
 // the phase function's g are mineral dust's, calculated by Mie theory from
-// measured size distributions; the albedo is a chosen colour, to be tuned by
-// eye against video (D-040).
+// measured size distributions; the albedo is desert dust's, measured
+// (D-054; a chosen colour before, D-040).
 struct ParticleLook {
     // Mass extinction coefficient: optical depth per kg/m^2 of particles
     // along a ray. A particle's extinction per metre is its bulk density
@@ -32,14 +32,30 @@ struct ParticleLook {
     // al., Atmos. Chem. Phys. 18, 17225-17257, 2018,
     // doi:10.5194/acp-18-17225-2018, section 2.6 and table 6).
     float extinction_m2_per_kg = 320.0F;
-    // The light a particle scatters, as a fraction of what falls on it, in
-    // linear sRGB. Chosen: dust's single-scattering albedo is about 0.95 at
-    // 550 nm (Ryder et al., above, calculated the same way), and a thick
-    // cloud's tan
-    // comes from many scatterings compounding its small spectral
-    // differences, which the multiple-scattering approximation doesn't
-    // model (particles.slang); so the colour is set here and tuned by eye.
-    std::array<float, 3> albedo{0.62F, 0.52F, 0.40F};
+    // The light a particle scatters, as a fraction of what falls on it (its
+    // single-scattering albedo), in linear sRGB (D-054): mineral dust's, as
+    // measured on dust raised in a chamber from 19 soils worldwide (Di Biagio
+    // et al., "Complex refractive indices and single-scattering albedo of
+    // global dust aerosols in the shortwave spectrum and relationship to size
+    // and iron content", Atmos. Chem. Phys. 19, 15503-15531, 2019,
+    // doi:10.5194/acp-19-15503-2019, CC BY 4.0; its corrigendum, 2023,
+    // changes table 6 alone): their mean, table 5, 0.91, 0.93, 0.96 and 0.96
+    // at 470, 520, 590 and 660 nm, interpolated to the primaries' dominant
+    // wavelengths, about 612, 549 and 465 nm (an assumption). Iron oxides
+    // absorb the blue, so a soil's dust is as coloured as its iron: from
+    // 0.94 to 0.70 at 370 nm across the samples (table 5); a site sets its
+    // own soil's. A thick cloud's tan is these compounded over many
+    // scatterings, and the light from the ground beneath (ground_albedo),
+    // which the volume's diffusion does; the puffs' octaves (D-040) don't
+    // compound them, so drawn as puffs a cloud is paler.
+    std::array<float, 3> albedo{0.96F, 0.942F, 0.91F};
+    // The ground's albedo the dust is lit from below by (the volume's
+    // diffusion, D-054), linear sRGB; negative: the atmosphere's. A dust
+    // cloud rises from its ground, whose colour it takes on: with a desert's
+    // tan (0.45, 0.33, 0.22) instead of the atmosphere's grey 0.3, sunlit
+    // dust's red over blue went from 1.03 to 1.42 (photographs of a brownout
+    // cloud over desert: 1.6 to 1.7).
+    std::array<float, 3> ground_albedo{-1.0F, -1.0F, -1.0F};
     // The Cornette-Shanks phase function's g (the sky's Mie phase): 0
     // scatters evenly, toward 1 mostly forward (dust glows looking toward
     // the sun). Its g isn't the asymmetry parameter (the mean cosine); 0.68
@@ -76,6 +92,9 @@ struct ParticleQuality {
     std::uint32_t volume_size = 128;
     std::uint32_t volume_light_size = 64;
     float volume_max_m = 256.0F;
+    // Multiple scattering in the volume as diffusion (D-054): red-black
+    // sweeps of its solve each frame, from the last frame's answer.
+    std::uint32_t volume_scatter_sweeps = 16;
 };
 
 // Mirrors Particle in shaders/particles.slang (std430).
@@ -175,8 +194,14 @@ struct GpuVolumeSpace {
     float inv_reference =
         1.0F;  // 1 / the particles' mean peak extinction coefficient [m] (the erosion's scale)
     std::array<float, 2> unused1{};
+    // The box the diffuse light was last solved in (D-054), from this
+    // frame's anchor, and its voxel (0: none, start afresh).
+    std::array<float, 3> previous_corner{};
+    float previous_voxel = 0.0F;
+    std::array<float, 3> ground_albedo{};  // the atmosphere's
+    float unused2 = 0.0F;
 };
-static_assert(sizeof(GpuVolumeSpace) == 48, "must match VolumeSpace in particles.slang");
+static_assert(sizeof(GpuVolumeSpace) == 80, "must match VolumeSpace in particles.slang");
 
 // The box over particles with these centres (from the anchor, ECEF axes)
 // and radii: a cube of `size` voxels, each a power of two of metres, the

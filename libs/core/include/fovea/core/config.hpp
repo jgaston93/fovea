@@ -115,11 +115,14 @@ struct ParticlesConfig {
     // How they look (D-040; the defaults' sources in ParticleLook,
     // particle_pack.hpp): optical depth per kg/m^2 of particles along a ray
     // (mineral dust's, by Mie theory from measured sizes); the light they
-    // scatter as a fraction of what falls on them, in linear sRGB (a chosen
-    // colour, to tune by eye); and the Cornette-Shanks phase's g (0 even,
-    // toward 1 forward; the same dust's asymmetry).
+    // scatter as a fraction of what falls on them, in linear sRGB (mineral
+    // dust's single-scattering albedo, measured: D-054); the ground's they're
+    // lit from below by (the volume's; unset: the atmosphere's); and the
+    // Cornette-Shanks phase's g (0 even, toward 1 forward; the same dust's
+    // asymmetry).
     double extinction_m2_per_kg = 320.0;
-    std::array<double, 3> albedo{0.62, 0.52, 0.40};
+    std::array<double, 3> albedo{0.96, 0.942, 0.91};
+    std::optional<std::array<double, 3>> ground_albedo;
     double forward_scattering = 0.68;
     // Detail in the particles (D-043; chosen, to tune by eye): how much one
     // field of cellular noise, shared by them all, varies their density (0:

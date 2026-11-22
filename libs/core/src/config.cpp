@@ -320,8 +320,8 @@ std::optional<std::array<double, N>> number_fields(Parser& p, const toml::node& 
 void parse_particles(Parser& p, const toml::table& t, ParticlesConfig& out) {
     p.check_keys(t,
                  {"port", "listen_address", "capacity", "fade_s", "extinction_m2_per_kg", "albedo",
-                  "forward_scattering", "detail", "detail_size", "swirl", "erosion",
-                  "self_shadowing", "slices", "light_buffer", "resolution", "renderer"},
+                  "ground_albedo", "forward_scattering", "detail", "detail_size", "swirl",
+                  "erosion", "self_shadowing", "slices", "light_buffer", "resolution", "renderer"},
                  "particles");
     if (const auto* n = t.get("self_shadowing")) {
         if (const auto* b = n->as_boolean()) {
@@ -391,6 +391,14 @@ void parse_particles(Parser& p, const toml::table& t, ParticlesConfig& out) {
                 check_range(p, *n, "particles.albedo", (*v)[i], 0.0, 1.0, false);
             }
             out.albedo = *v;
+        }
+    }
+    if (const auto* n = t.get("ground_albedo")) {
+        if (auto v = number_fields<3>(p, *n, "particles.ground_albedo", {"r", "g", "b"})) {
+            for (std::size_t i = 0; i < 3; ++i) {
+                check_range(p, *n, "particles.ground_albedo", (*v)[i], 0.0, 1.0, false);
+            }
+            out.ground_albedo = *v;
         }
     }
     if (const auto* n = t.get("forward_scattering")) {
