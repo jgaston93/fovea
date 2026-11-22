@@ -33,19 +33,29 @@ struct ParticleLook {
     // doi:10.5194/acp-18-17225-2018, section 2.6 and table 6).
     float extinction_m2_per_kg = 320.0F;
     // The light a particle scatters, as a fraction of what falls on it (its
-    // single-scattering albedo), in linear sRGB (D-054): desert dust's, as
-    // AERONET retrieves it over North Africa and Arabia (Kim et al., "Dust
-    // optical properties over North Africa and Arabian Peninsula derived from
-    // the AERONET dataset", Atmos. Chem. Phys. 11, 10733-10741, 2011,
-    // doi:10.5194/acp-11-10733-2011, CC BY 3.0): 0.944 at 550 nm (section 3,
-    // the 14 sites' annual mean), rising from about 0.915 at 440 nm to about
-    // 0.97 at 675 nm (figure 3, read from the plots; iron oxides absorb the
-    // blue). Interpolated to the primaries' dominant wavelengths, about 612,
-    // 549 and 465 nm (an assumption). A thick cloud's tan is these compounded
-    // over many scatterings, which the volume's diffusion does; the puffs'
-    // octaves (D-040) don't compound them, so drawn as puffs a cloud is
-    // paler. Coarser dust absorbs more (Ryder et al., above, section 1).
-    std::array<float, 3> albedo{0.957F, 0.944F, 0.922F};
+    // single-scattering albedo), in linear sRGB (D-054): mineral dust's, as
+    // measured on dust raised in a chamber from 19 soils worldwide (Di Biagio
+    // et al., "Complex refractive indices and single-scattering albedo of
+    // global dust aerosols in the shortwave spectrum and relationship to size
+    // and iron content", Atmos. Chem. Phys. 19, 15503-15531, 2019,
+    // doi:10.5194/acp-19-15503-2019, CC BY 4.0; its corrigendum, 2023,
+    // changes table 6 alone): their mean, table 5, 0.91, 0.93, 0.96 and 0.96
+    // at 470, 520, 590 and 660 nm, interpolated to the primaries' dominant
+    // wavelengths, about 612, 549 and 465 nm (an assumption). Iron oxides
+    // absorb the blue, so a soil's dust is as coloured as its iron: from
+    // 0.94 to 0.70 at 370 nm across the samples (table 5); a site sets its
+    // own soil's. A thick cloud's tan is these compounded over many
+    // scatterings, and the light from the ground beneath (ground_albedo),
+    // which the volume's diffusion does; the puffs' octaves (D-040) don't
+    // compound them, so drawn as puffs a cloud is paler.
+    std::array<float, 3> albedo{0.96F, 0.942F, 0.91F};
+    // The ground's albedo the dust is lit from below by (the volume's
+    // diffusion, D-054), linear sRGB; negative: the atmosphere's. A dust
+    // cloud rises from its ground, whose colour it takes on: with a desert's
+    // tan (0.45, 0.33, 0.22) instead of the atmosphere's grey 0.3, sunlit
+    // dust's red over blue went from 1.03 to 1.42 (photographs of a brownout
+    // cloud over desert: 1.6 to 1.7).
+    std::array<float, 3> ground_albedo{-1.0F, -1.0F, -1.0F};
     // The Cornette-Shanks phase function's g (the sky's Mie phase): 0
     // scatters evenly, toward 1 mostly forward (dust glows looking toward
     // the sun). Its g isn't the asymmetry parameter (the mean cosine); 0.68

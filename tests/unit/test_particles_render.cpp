@@ -1241,7 +1241,8 @@ struct ScatterShots {
     bool vulkan = true;
 };
 ScatterShots scatter_shots(float extinction, float sigma, std::array<float, 3> albedo,
-                           int frames = 24, Vec3 at = Vec3(0.0F, 80.0F, 20.0F)) {
+                           int frames = 24, Vec3 at = Vec3(0.0F, 80.0F, 20.0F),
+                           std::array<float, 3> ground = {-1.0F, -1.0F, -1.0F}) {
     const SceneView view = eye_view();
     const LocalTime t = now();
     ParticleFrame f = frame_at_eye(view, 10);
@@ -1256,6 +1257,7 @@ ScatterShots scatter_shots(float extinction, float sigma, std::array<float, 3> a
     ParticleLook look = test_look();
     look.detail = 0.0F;
     look.albedo = albedo;
+    look.ground_albedo = ground;
     ScatterShots out;
     for (const std::uint32_t sweeps : {16U, 0U}) {
         ParticleQuality q;
@@ -1306,7 +1308,8 @@ double sum(const Rgb& c) {
 TEST(ParticlesScatter, DustAboutTheEyeIsBrighterForTheLightScatteredInIt) {
     constexpr float kExtinction = 0.3F * 15.749609945722419F * 15.0F * 15.0F * 15.0F;
     const Vec3 around(0.0F, 6.0F, 4.0F);  // the eye 2 m up, 6 m from its middle
-    const ScatterShots dust = scatter_shots(kExtinction, 15.0F, {0.957F, 0.944F, 0.922F}, 24, around);
+    const ScatterShots dust =
+        scatter_shots(kExtinction, 15.0F, {0.957F, 0.944F, 0.922F}, 24, around);
     if (!dust.vulkan) {
         GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
     }
@@ -1316,15 +1319,35 @@ TEST(ParticlesScatter, DustAboutTheEyeIsBrighterForTheLightScatteredInIt) {
     const double gain = sum(dust.with) - sum(dust.without);
     const double dark_gain = sum(dark.with) - sum(dark.without);
     const double thin_gain = sum(thin.with) - sum(thin.without);
-    std::printf("diffusion's gain (sum of levels): dust %.1f, albedo 0.5 %.1f, thin %.2f; "
-                "the cloud %.0f with, %.0f without, the scene %.0f; red less blue %.1f with, "
-                "%.1f without\n",
-                gain, dark_gain, thin_gain, sum(dust.with), sum(dust.without), sum(dust.empty),
-                dust.with.r - dust.with.b, dust.without.r - dust.without.b);
+    std::printf(
+        "diffusion's gain (sum of levels): dust %.1f, albedo 0.5 %.1f, thin %.2f; "
+        "the cloud %.0f with, %.0f without, the scene %.0f; red less blue %.1f with, "
+        "%.1f without\n",
+        gain, dark_gain, thin_gain, sum(dust.with), sum(dust.without), sum(dust.empty),
+        dust.with.r - dust.with.b, dust.without.r - dust.without.b);
     EXPECT_GT(gain, 5.0);
     EXPECT_LT(dark_gain, -5.0);
     EXPECT_LT(std::abs(thin_gain), 1.0);
     EXPECT_GT(dust.with.r - dust.with.b, dust.without.r - dust.without.b);
+}
+
+// The ground lights the dust from below (D-054): a desert's tan instead of
+// the atmosphere's grey warms the dust about the eye, and brightens it (a
+// tan of 0.45, 0.33, 0.22 reflects more than 0.3 in red and green).
+TEST(ParticlesScatter, TheGroundColoursTheDust) {
+    constexpr float kExtinction = 0.3F * 15.749609945722419F * 15.0F * 15.0F * 15.0F;
+    const Vec3 around(0.0F, 6.0F, 4.0F);
+    const std::array<float, 3> dust{0.96F, 0.942F, 0.91F};
+    const ScatterShots grey = scatter_shots(kExtinction, 15.0F, dust, 24, around);
+    if (!grey.vulkan) {
+        GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
+    }
+    const ScatterShots tan =
+        scatter_shots(kExtinction, 15.0F, dust, 24, around, {0.45F, 0.33F, 0.22F});
+    std::printf("red less blue about the eye: grey ground %.1f, tan %.1f\n",
+                grey.with.r - grey.with.b, tan.with.r - tan.with.b);
+    EXPECT_GT(tan.with.r - tan.with.b, grey.with.r - grey.with.b + 10.0);
+    EXPECT_GT(tan.with.r, grey.with.r);
 }
 
 // The diffuse light settles: sweeps each frame from the last frame's answer

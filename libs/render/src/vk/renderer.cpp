@@ -1438,8 +1438,8 @@ void Renderer::Impl::create_scene_resources(std::span<const VkExtent2D> render_e
         }
         if (sky_tables) {  // the ground the volume's diffuse light bounces from (D-054)
             const auto& a = sky_tables->atmosphere().ground_albedo;
-            particles->set_ground_albedo({static_cast<float>(a[0]), static_cast<float>(a[1]),
-                                          static_cast<float>(a[2])});
+            particles->set_ground_albedo(
+                {static_cast<float>(a[0]), static_cast<float>(a[1]), static_cast<float>(a[2])});
         }
     }
 }

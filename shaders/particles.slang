@@ -732,13 +732,17 @@ void cs_volume_sun(uint3 id: SV_DispatchThreadID) {
 // left out; with I1 = -grad I0 / sigma_tr the inward flux of I0 + I1 . s set
 // to I_in's): I0 + 2 D dI0/dn = I_in, n outward. Between, by how much dust
 // a voxel holds: its weight w goes smoothly from 0 to 1 as its optical depth
-// across goes from kScatterFrom to kScatterFull (an assumption), its I0
+// across goes from kScatterFrom to kScatterFull, its I0
 // from I_in to the diffusion's, and each face from Marshak's to the
 // neighbour's coupling by the neighbour's w. A hard edge between the two (a
 // threshold, built first) flipped voxels as a small puff moved, and its
-// light jumped: flicker.
-static const float kScatterFrom = 0.1;
-static const float kScatterFull = 0.5;
+// light jumped: flicker. Chosen against photographs of a brownout cloud
+// (D-054): from 0.1 and 0.5 (built first) to 0.01 and 0.05 the sunlit dust
+// went from 0.64 to 0.85 of a bright runway's brightness, and warmer: the
+// sunlight scattered in the cloud's outer, thinner dust, the light seen from
+// outside, is in the diffusion rather than left to the sky's.
+static const float kScatterFrom = 0.01;
+static const float kScatterFull = 0.05;
 static const float kOverRelax = 1.6;
 
 // Cornette and Shanks' phase function's mean cosine (its asymmetry) for its

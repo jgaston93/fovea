@@ -749,8 +749,8 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
                 writes.at(b).dstSet = volume_set_;
                 writes.at(b).dstBinding = b;
                 writes.at(b).descriptorCount = 1;
-                writes.at(b).descriptorType = b == 5 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
-                                                     : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                writes.at(b).descriptorType =
+                    b == 5 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
                 writes.at(b).pImageInfo = &infos.at(b);
             }
             vkUpdateDescriptorSets(gpu_.device, static_cast<std::uint32_t>(writes.size()),
@@ -804,9 +804,9 @@ void ParticlesGpu::release() {
     if (gpu_.device == VK_NULL_HANDLE) {
         return;
     }
-    for (VkPipeline p : {over_, under_, light_pipeline_, composite_, volume_inject_,
-                         volume_convert_, volume_sun_pass_, volume_march_, volume_scatter_setup_,
-                         volume_scatter_relax_}) {
+    for (VkPipeline p :
+         {over_, under_, light_pipeline_, composite_, volume_inject_, volume_convert_,
+          volume_sun_pass_, volume_march_, volume_scatter_setup_, volume_scatter_relax_}) {
         vkDestroyPipeline(gpu_.device, p, nullptr);
     }
     vkDestroyPipelineLayout(gpu_.device, layout_, nullptr);
@@ -885,7 +885,9 @@ std::size_t ParticlesGpu::pack(std::uint32_t slot, const ParticleFrame& frame, L
         vs = volume_space(centres, packed, quality_.volume_size, quality_.volume_light_size,
                           quality_.volume_max_m, anchor);
         vs.particles = static_cast<std::uint32_t>(n);
-        vs.ground_albedo = ground_albedo_;  // D-054; the previous box is set when it's built
+        // D-054: the look's ground, or the atmosphere's; the previous box is
+        // set when the volume's built.
+        vs.ground_albedo = look.ground_albedo[0] >= 0.0F ? look.ground_albedo : ground_albedo_;
     }
     std::memcpy(base + kVolumeSpaceAt, &vs, sizeof(vs));
     volume_pending_[slot] = quality_.volume && n > 0 ? 1 : 0;
