@@ -169,6 +169,8 @@ private:
     Image volume_scatter_previous_;
     VkPipeline volume_scatter_setup_ = VK_NULL_HANDLE;
     VkPipeline volume_scatter_relax_ = VK_NULL_HANDLE;
+    mutable std::vector<GpuVolumeSpace> volume_spaces_;  // per slot: as packed, kept here to
+                                                         // amend (not read back from the GPU's)
     mutable DVec3 scatter_corner_{0.0};
     mutable double scatter_voxel_ = 0.0;
     mutable bool scatter_ready_ = false;

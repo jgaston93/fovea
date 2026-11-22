@@ -731,8 +731,9 @@ void cs_volume_sun(uint3 id: SV_DispatchThreadID) {
 // no diffuse light coming in beyond I_in (his equation 7, its source term
 // left out; with I1 = -grad I0 / sigma_tr the inward flux of I0 + I1 . s set
 // to I_in's): I0 + 2 D dI0/dn = I_in, n outward. Between, by how much dust
-// a voxel holds: its weight w goes smoothly from 0 to 1 as its optical depth
-// across goes from kScatterFrom to kScatterFull, its I0
+// a voxel holds: its weight w goes smoothly from 0 to 1 as the optical depth
+// across kScatterLength of its dust goes from kScatterFrom to kScatterFull,
+// its I0
 // from I_in to the diffusion's, and each face from Marshak's to the
 // neighbour's coupling by the neighbour's w. A hard edge between the two (a
 // threshold, built first) flipped voxels as a small puff moved, and its
@@ -741,8 +742,12 @@ void cs_volume_sun(uint3 id: SV_DispatchThreadID) {
 // went from 0.64 to 0.85 of a bright runway's brightness, and warmer: the
 // sunlight scattered in the cloud's outer, thinner dust, the light seen from
 // outside, is in the diffusion rather than left to the sky's.
+// Over a fixed length, not the voxel's: the box's voxel doubles as the
+// cloud outgrows it, and thin dust would jump from the sky's light to the
+// diffusion's in a frame (the review's). 4 m, the voxel they were chosen at.
 static const float kScatterFrom = 0.01;
 static const float kScatterFull = 0.05;
+static const float kScatterLength = 4.0;
 static const float kOverRelax = 1.6;
 
 // Cornette and Shanks' phase function's mean cosine (its asymmetry) for its
@@ -826,7 +831,7 @@ void cs_volume_scatter_relax(uint3 id: SV_DispatchThreadID) {
     const ViewSky sky = view_sky[lighting.view];
     const float3 inflow = diffuse_inflow(sky);
     const float sigma = volume_extinction_out[id];
-    const float weight = smoothstep(kScatterFrom, kScatterFull, sigma * h);
+    const float weight = smoothstep(kScatterFrom, kScatterFull, sigma * kScatterLength);
     if (weight <= 0.0) {
         volume_scatter_out[id] = float4(inflow, 0.0);
         return;
@@ -845,7 +850,7 @@ void cs_volume_scatter_relax(uint3 id: SV_DispatchThreadID) {
         c[k >> 1] += (k & 1) != 0 ? 1 : -1;
         const bool in = all(c >= 0) && all(c < n);
         const float other = in ? volume_extinction_out[uint3(c)] : 0.0;
-        const float other_weight = smoothstep(kScatterFrom, kScatterFull, other * h);
+        const float other_weight = smoothstep(kScatterFrom, kScatterFull, other * kScatterLength);
         // Marshak's condition at the face, half a voxel out: the face's
         // I_s = (I_in + (4 D / h) I0) / (1 + 4 D / h), so the flux is
         // 2 D (I_in - I0) / (h (h + 4 D)) per unit volume.

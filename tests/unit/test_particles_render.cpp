@@ -858,7 +858,7 @@ TEST(ParticlesVolume, AMovingPuffKeepsItsDust) {
     // Flicker is the steps' scatter about their trend: a straight line
     // fitted through them. The trend is the puff rising past the eye's
     // height, from in front of the ground to in front of the sky (cover is a
-    // colour difference from the empty scene): 2871 rising steadily to 3312
+    // colour difference from the empty scene): 2867 rising steadily to 3305
     // on lavapipe since D-054 (dust's light no longer the octaves'); 3148
     // to 3298 before it.
     const auto count = static_cast<double>(totals.size());
@@ -1175,7 +1175,7 @@ TEST(ParticlesGaussian, ATiltedClusterLeans) {
 // much: the puffs' light is the sun's through Wrenninge's octaves and a sky
 // term; the volume's diffuse light holds the sky's and the ground's (D-054),
 // which no shadow takes, so its shadow is shallower. Measured on lavapipe:
-// shadowed over lit 0.883 (puffs) and 0.977 (volume); without the sun's
+// shadowed over lit 0.893 (puffs) and 0.971 (volume); without the sun's
 // transmittance in the volume's march (a mutation) the volume's is 1.
 TEST(ParticlesGaussian, AShadowDarkensTheDustInBothRenderers) {
     const SceneView view = eye_view();
@@ -1350,21 +1350,68 @@ TEST(ParticlesScatter, TheGroundColoursTheDust) {
     EXPECT_GT(tan.with.r, grey.with.r);
 }
 
-// The diffuse light settles: sweeps each frame from the last frame's answer
-// converge, the frame after the next unchanged; and it starts from the
-// light arriving from outside, not from black (its first frame already near).
-TEST(ParticlesScatter, TheDiffuseLightSettles) {
+// The diffuse light settles from frame to frame, and the warm start carries
+// it as the box moves: with one sweep a frame (too few to converge in one),
+// the cloud about the eye after 60 frames is as bright as with 16 sweeps a
+// frame, while a speck far off moves the box a few voxels (its corner,
+// snapped to them, follows the particles' bounds); after one frame it isn't
+// yet. Without the warm start (each frame from the light arriving from
+// outside) or with the remap misplaced, one sweep a frame never gets there.
+TEST(ParticlesScatter, TheDiffuseLightSettlesAsTheBoxMoves) {
     constexpr float kExtinction = 0.3F * 15.749609945722419F * 15.0F * 15.0F * 15.0F;
-    const ScatterShots late = scatter_shots(kExtinction, 15.0F, {0.957F, 0.944F, 0.922F}, 40);
-    if (!late.vulkan) {
+    const SceneView view = eye_view();
+    const LocalTime t = now();
+    ParticleLook look = test_look();
+    look.detail = 0.0F;
+    look.albedo = {0.96F, 0.942F, 0.91F};
+    const auto run = [&](std::uint32_t sweeps, int frames, double& first, double& last) {
+        ParticleQuality q;
+        q.volume = true;
+        q.volume_size = 64;
+        q.volume_light_size = 32;
+        q.volume_scatter_sweeps = sweeps;
+        auto r = make_renderer(10, q, look);
+        if (r == nullptr) {
+            return false;
+        }
+        r->set_sky(sky_bodies(julian_date(2026, 12, 21, 12.0 * 3600.0)));
+        for (int k = 0; k < frames; ++k) {
+            ParticleFrame f = frame_at_eye(view, 10);
+            const auto put = [&](Vec3 at, float sigma, float extinction) {
+                Particle& p = f.particles.at(f.count++);
+                p.position = at;
+                p.covariance = {sigma * sigma, 0.0F, 0.0F, sigma * sigma, 0.0F, sigma * sigma};
+                p.extinction_m2 = extinction;
+                p.received = t;
+                p.first_seen = t - 10s;
+                p.fade_from = t + 10s;
+            };
+            put(Vec3(0.0F, 6.0F, 4.0F), 15.0F, kExtinction);
+            // The speck: the bounds' east edge from 45 to 75 m, the box's
+            // middle with it, its 2 m voxels the same throughout.
+            put(Vec3(42.0F + 0.5F * static_cast<float>(k), 6.0F, 4.0F), 0.3F, 1e-4F);
+            const auto img = draw(*r, view, &f, t, nullptr);
+            const double s = sum(mean(img, kW / 2 - 4, kH / 2 - 4, kW / 2 + 4, kH / 2 + 4));
+            if (k == 0) {
+                first = s;
+            }
+            last = s;
+        }
+        EXPECT_EQ(r->validation_messages(), 0U);
+        return true;
+    };
+    double first = 0.0;
+    double slow = 0.0;
+    double ignored = 0.0;
+    double settled = 0.0;
+    if (!run(1, 60, first, slow)) {
         GTEST_SKIP() << "no Vulkan 1.3 driver on this machine";
     }
-    const ScatterShots later = scatter_shots(kExtinction, 15.0F, {0.957F, 0.944F, 0.922F}, 41);
-    const ScatterShots first = scatter_shots(kExtinction, 15.0F, {0.957F, 0.944F, 0.922F}, 1);
-    std::printf("settling: frame 1 %.1f, 40 %.1f, 41 %.1f\n", sum(first.with), sum(late.with),
-                sum(later.with));
-    EXPECT_NEAR(sum(later.with), sum(late.with), 1.0);
-    EXPECT_GT(sum(first.with), sum(first.without) - 3.0);
+    ASSERT_TRUE(run(16, 60, ignored, settled));
+    std::printf("one sweep a frame: frame 1 %.1f, frame 60 %.1f; 16 sweeps: %.1f\n", first, slow,
+                settled);
+    EXPECT_GT(std::abs(first - settled), 6.0);  // one sweep alone isn't there
+    EXPECT_NEAR(slow, settled, 2.0);            // the warm start takes it there
 }
 
 }  // namespace

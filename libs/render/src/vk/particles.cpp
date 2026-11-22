@@ -477,6 +477,7 @@ ParticlesGpu::ParticlesGpu(const GpuContext& gpu, std::size_t capacity, std::uin
         fail("no capacity, slots, outputs, slices or light buffer");
     }
     const auto outputs = static_cast<std::uint32_t>(extents.size());
+    volume_spaces_.resize(slots);
     try {
         light_format_ = light_format_for(gpu_.physical);
         for (const VkExtent2D e : extents) {
@@ -890,6 +891,7 @@ std::size_t ParticlesGpu::pack(std::uint32_t slot, const ParticleFrame& frame, L
         vs.ground_albedo = look.ground_albedo[0] >= 0.0F ? look.ground_albedo : ground_albedo_;
     }
     std::memcpy(base + kVolumeSpaceAt, &vs, sizeof(vs));
+    volume_spaces_.at(slot) = vs;
     volume_pending_[slot] = quality_.volume && n > 0 ? 1 : 0;
     const std::size_t outputs = view_sets_.size();
     auto* order = static_cast<std::uint32_t*>(s.order_mapped);
@@ -1093,8 +1095,7 @@ void ParticlesGpu::record_volume(VkCommandBuffer cmd, std::uint32_t slot,
     // into this slot's volume space now, as it's built); then the sweeps.
     {
         auto* base = static_cast<std::byte*>(slots_[slot].mapped);
-        GpuVolumeSpace vs;
-        std::memcpy(&vs, base + kVolumeSpaceAt, sizeof(vs));
+        GpuVolumeSpace& vs = volume_spaces_.at(slot);
         const DVec3 corner = anchors_[slot] + DVec3(vs.corner[0], vs.corner[1], vs.corner[2]);
         if (scatter_ready_) {
             const DVec3 previous = scatter_corner_ - anchors_[slot];
