@@ -633,7 +633,8 @@ Checked: the same equations solved on the CPU (scratch, not kept) for a brownout
 
 A particle stream's sender may have several readers: a simulator's out-the-window IG, a second IG for other windows, an instructor's view. Sending each a copy multiplies the sender's traffic (a dust simulation's clusters, 64 bytes each, refreshed 20 times a second, reach a few hundred megabits a second for each reader). So `[particles]` takes an optional `group`: a multicast IPv4 address (224.0.1.0 to 239.255.255.255; the local control block 224.0.0.0/24 refused) that Fovea joins, so the sender sends once and every IG that joined reads it.
 
-- With a group, `listen_address` names the interface the group is joined on (left out, the system's choice: the interface its route to the group uses), and the port is bound on every interface: joining needs that on Windows, and a datagram sent to the group arrives addressed to the group, not to an interface's address. Unicast to the port is still taken, so a sender can be pointed at one IG or at the group without changing the IG.
+- With a group, `listen_address` names the interface the group is joined on (left out, the system's choice: the interface its route to the group uses), and the port is bound on every interface: a datagram sent to the group arrives addressed to the group, not to an interface's address. Unicast to the port is still taken, so a sender can be pointed at one IG or at the group without changing the IG; a `listen_address` no longer restricts where unicast is taken from (the start's line says `0.0.0.0`).
+- One reader a machine: the port isn't shared (no `SO_REUSEADDR`), so a second Fovea on the same machine can't read the same group and port.
 - `UdpSocket::join_group` (the one Winsock file, D-014) does it with `IP_ADD_MEMBERSHIP`, the same call on both systems; a join that fails (no multicast route, no such interface) is an error at start, naming it.
 - Without a group, nothing changes.
 
