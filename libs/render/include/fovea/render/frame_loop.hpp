@@ -159,6 +159,7 @@ private:
     Logger* stats_;
     TerrainStats last_terrain_;  // the last frame's, for the next frame's overlay
     LocalTime start_;
+    LocalTime last_shown_;  // the last frame's shown time (D-057's observer step)
     PeriodicSchedule schedule_;
     LocalTime last_start_;
     std::uint64_t frames_ = 0;

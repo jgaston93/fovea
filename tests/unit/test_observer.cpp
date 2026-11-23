@@ -128,6 +128,14 @@ TEST(Observer, ControlsAdvanceOnce) {
     c.request_reset();
     EXPECT_EQ(c.advance(0.0).mode, ObserverMode::orbit);
     EXPECT_NEAR(c.state().azimuth_deg, 90.0, 1e-9);
+    // A reset takes all that came with it: a mode, rates, a nudge.
+    c.request_mode(ObserverMode::tether);
+    c.set_rates({10.0, 0.0, 0.0});
+    c.nudge(5.0, 0.0, 0.0);
+    c.request_reset();
+    EXPECT_EQ(c.advance(0.05).mode, ObserverMode::orbit);
+    EXPECT_NEAR(c.state().azimuth_deg, 90.0, 1e-9);
+    EXPECT_NEAR(c.advance(0.05).azimuth_deg, 90.0, 1e-9);
 }
 
 }  // namespace

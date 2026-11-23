@@ -632,7 +632,6 @@ TEST(Config, ParticlesSectionIsChecked) {
     expect_one_error(parse(head + "port = 9000\ngroup = \"239.1\"\n"), 9, "multicast");
 }
 
-// D-055: a group joined on an interface.
 // D-057: an observer channel, its defaults and checks.
 TEST(Config, ObserverChannels) {
     const auto r = parse(kMinimal +
@@ -660,6 +659,7 @@ TEST(Config, ObserverChannels) {
                      "an observer channel has none");
 }
 
+// D-055: a group joined on an interface.
 TEST(Config, ParticlesJoinAGroup) {
     const auto c = parse(kMinimal +
                          "[particles]\nport = 9000\ngroup = \"239.255.77.2\"\n"

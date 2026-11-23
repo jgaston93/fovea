@@ -135,12 +135,10 @@ struct ViewRig {
 // returns how many eyes were at or below the grid (drawn from just above
 // it). Entities are drawn for `at`, the time the frame will be seen
 // (pose_at). No allocation: for the render thread.
+// `observer_dt_s`: the time since the last frame, the observer's step (D-057).
 std::size_t ride_entities(const ViewRig& rig, const SceneSnapshot& snapshot,
-                          std::span<SceneView> out, LocalTime at);
-
-// The observer's step a frame (D-057): ride_entities runs once a frame on
-// the render thread's fixed 60 Hz clock.
-inline constexpr double kObserverFrameS = 1.0 / 60.0;
+                          std::span<SceneView> out, LocalTime at,
+                          double observer_dt_s = 1.0 / 60.0);
 
 // How far past its newest sample an entity is extrapolated, at most: past
 // this (a host that stopped sending), it holds there.

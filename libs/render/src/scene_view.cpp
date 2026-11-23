@@ -173,13 +173,13 @@ Pose pose_at(const EntityState& e, LocalTime at, bool allowed) {
 }
 
 std::size_t ride_entities(const ViewRig& rig, const SceneSnapshot& snapshot,
-                          std::span<SceneView> out, LocalTime at) {
+                          std::span<SceneView> out, LocalTime at, double observer_dt_s) {
     const Ground g = ground(rig.scene, rig.geoid_height_m);
     const std::size_t n = std::min(rig.views.size(), out.size());
     std::size_t below = 0;
     // The observer's camera, a frame on (D-057): once, for every observer view.
     const ObserverState* observer =
-        rig.observer != nullptr ? &rig.observer->advance(kObserverFrameS) : nullptr;
+        rig.observer != nullptr ? &rig.observer->advance(observer_dt_s) : nullptr;
     for (std::size_t i = 0; i < n; ++i) {
         const ViewDesc& view = rig.views[i];
         Eye eye;

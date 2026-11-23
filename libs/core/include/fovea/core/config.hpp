@@ -34,7 +34,7 @@ struct Frustum {
 };
 
 // An observer's camera (D-057): not at an eye on the entity but watching it
-// from outside, steered by its operator (controls.hpp's ObserverControls).
+// from outside, steered by its operator (observer.hpp's ObserverControls).
 //   orbit:    round the entity at a compass bearing, an elevation and a
 //             distance, not turning with it;
 //   tether:   the same but the bearing from the entity's heading (180: behind

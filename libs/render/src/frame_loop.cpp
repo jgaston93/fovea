@@ -81,7 +81,13 @@ const FrameRecord& FrameLoop::step() {
     const LocalTime shown =
         renderer_.paced_by_display() ? display_clock_.frame_started(started) : started;
     if (options_.rig != nullptr) {
-        summary_.views_below_ground += ride_entities(*options_.rig, scene, rigged_, shown);
+        // The observer steps by the time since the last frame (D-057): a
+        // missed frame's too, at any rate.
+        const double dt_s = last_shown_ == LocalTime{}
+                                ? 1.0 / options_.rate_hz
+                                : std::chrono::duration<double>(shown - last_shown_).count();
+        last_shown_ = shown;
+        summary_.views_below_ground += ride_entities(*options_.rig, scene, rigged_, shown, dt_s);
     }
     renderer_.set_sky(sky_bodies(julian_date_at(scene.environment, shown)));
     renderer_.set_visibility(scene.environment.visibility_m);

@@ -479,10 +479,6 @@ int run_headless(const Options& options, const fovea::DisplayConfig& config) {
 // run: a window closed, or headless a signal. True: stop.
 using WaitFn = std::function<bool(int timeout_ms)>;
 
-// The scene drawn on the render thread at a fixed rate from the latest scene
-// state, with the host's links (CIGI, HAT/HOT, particles) and the stats, on
-// windows or offscreen alike, until the time limit, `wait` says stop, or a
-// thread fails. The exit code.
 // D-057: the observer's camera, if any channel is one (the first's start;
 // one camera a process, every observer channel looking through it).
 std::unique_ptr<fovea::ObserverControls> observer_controls(const fovea::DisplayConfig& config) {
@@ -518,6 +514,10 @@ void steer(fovea::ObserverControls& o, const fovea::ViewInput& in) {
     }
 }
 
+// The scene drawn on the render thread at a fixed rate from the latest scene
+// state, with the host's links (CIGI, HAT/HOT, particles) and the stats, on
+// windows or offscreen alike, until the time limit, `wait` says stop, or a
+// thread fails. The exit code.
 int run_loop(const Options& options, const fovea::DisplayConfig& config, fovea::Renderer& renderer,
              std::span<const fovea::SceneView> views, const fovea::ViewRig& rig,
              const WaitFn& wait) {

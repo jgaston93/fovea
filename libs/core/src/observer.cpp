@@ -104,10 +104,17 @@ void ObserverControls::request_reset() {
 }
 
 const ObserverState& ObserverControls::advance(double dt_s) {
-    if (reset_request_.exchange(false, std::memory_order_relaxed)) {
-        state_ = observer_start(start_);
-    }
+    // A reset takes all: the config's start, whatever else came with it.
+    const bool reset = reset_request_.exchange(false, std::memory_order_relaxed);
     const int mode = mode_request_.exchange(-1, std::memory_order_relaxed);
+    if (reset) {
+        state_ = observer_start(start_);
+        set_rates({});
+        nudge_azimuth_.store(0.0, std::memory_order_relaxed);
+        nudge_elevation_.store(0.0, std::memory_order_relaxed);
+        nudge_log_distance_.store(0.0, std::memory_order_relaxed);
+        return state_;
+    }
     if (mode >= 0 && mode <= static_cast<int>(ObserverMode::top_down)) {
         state_.mode = static_cast<ObserverMode>(mode);
     }
