@@ -2,7 +2,8 @@
 # in the public headers.
 add_library(fovea_platform STATIC
     src/monitors.cpp
-    src/platform.cpp)
+    src/platform.cpp
+    src/space_mouse.cpp)
 add_library(fovea::platform ALIAS fovea_platform)
 target_include_directories(fovea_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(fovea_platform PUBLIC fovea::core PRIVATE SDL3::SDL3-static)
