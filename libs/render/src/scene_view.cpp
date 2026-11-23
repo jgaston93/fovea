@@ -173,15 +173,26 @@ Pose pose_at(const EntityState& e, LocalTime at, bool allowed) {
 }
 
 std::size_t ride_entities(const ViewRig& rig, const SceneSnapshot& snapshot,
-                          std::span<SceneView> out, LocalTime at) {
+                          std::span<SceneView> out, LocalTime at, double observer_dt_s) {
     const Ground g = ground(rig.scene, rig.geoid_height_m);
     const std::size_t n = std::min(rig.views.size(), out.size());
     std::size_t below = 0;
+    // The observer's camera, a frame on (D-057): once, for every observer view.
+    const ObserverState* observer =
+        rig.observer != nullptr ? &rig.observer->advance(observer_dt_s) : nullptr;
     for (std::size_t i = 0; i < n; ++i) {
         const ViewDesc& view = rig.views[i];
         Eye eye;
         if (view.pose.kind == PoseSource::Kind::world) {
             eye = {view.pose.world_ecef, view.pose.world_orientation};
+        } else if (view.pose.kind == PoseSource::Kind::observer) {
+            const EntityState* e = find_entity(snapshot, view.pose.entity);
+            if (observer == nullptr || e == nullptr || !e->active) {
+                continue;  // keeps its last view
+            }
+            const Pose p = pose_at(*e, at, snapshot.smoothing_allowed);
+            const ObserverEye cam = observer_eye(*observer, p.ecef, p.orientation);
+            eye = {cam.ecef, cam.to_ecef * eye_to_body(view.pose)};
         } else if (const EntityState* e = find_entity(snapshot, view.pose.entity);
                    e != nullptr && e->active) {
             const Pose p = pose_at(*e, at, snapshot.smoothing_allowed);

@@ -78,6 +78,22 @@ eye_offset = { x = 0.0, y = 0.0, z = 0.0 }
 view_rotation = { yaw = 60.0, pitch = 0.0, roll = 0.0 }
 frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
 
+# An observer channel (D-057) watches its entity from outside instead of
+# riding it, steered from the keyboard and mouse: the arrows (or a drag
+# with the left button) round and up, Page Up/Down, + and - (or the wheel)
+# in and out, 1 orbit, 2 tether, 3 top down, Home or R back to this start.
+# No eye_offset; view_rotation turns the view from the observer's camera.
+# [[channel]]
+# name = "observer"
+# monitor = 0
+# render_extent = [1920, 1080]
+# frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
+# observer = { mode = "orbit", distance_m = 60.0, azimuth_deg = 180.0, elevation_deg = 20.0 }
+#   mode: orbit (a bearing from north), tether (from the entity's heading),
+#   top_down (straight down, north up); distance_m 5 to 5000; azimuth_deg
+#   -360 to 360 (180: behind in tether, south of it in orbit);
+#   elevation_deg -10 to 89, above the entity's level.
+
 # A host program driving the scene (milestone 2): CIGI 3.3 over UDP. Leave
 # it out and nothing listens. The ports default to the usual CIGI pair
 # (the ICD names none); the host's settings must match.

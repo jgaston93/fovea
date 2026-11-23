@@ -406,6 +406,53 @@ TEST(RideEntities, SmoothingRemovesTheJudderOfDriftingClocks) {
     EXPECT_NEAR(smooth_max, per_frame, 1e-3);
 }
 
+// D-057: an observer view is the world-fixed view at the observer's eye,
+// turned by its view_rotation; with its entity gone it keeps its last view;
+// the controls step once a frame by the time given, however many views.
+TEST(RideEntities, AnObserverViewLooksFromTheObserversEye) {
+    const auto s = test_scene();
+    auto snapshot = std::make_unique<SceneSnapshot>();
+    const EntityState e = entity_at(s, 100.0, -50.0, 40.0, {70.0, 5.0, -10.0});
+    ASSERT_TRUE(snapshot->entities.push_back(e));
+    ObserverConfig oc;
+    oc.mode = ObserverMode::tether;
+    oc.distance_m = 120.0;
+    oc.azimuth_deg = 150.0;
+    oc.elevation_deg = 15.0;
+    ObserverControls controls(oc);
+    ViewDesc observer = test_view({20.0, -5.0, 0.0});
+    observer.pose.kind = PoseSource::Kind::observer;
+    const std::vector<ViewDesc> views{observer, observer};
+    const ViewRig rig{views, s, 0.0, &controls};
+    std::vector<SceneView> out{reference_scene_view(observer, s),
+                               reference_scene_view(observer, s)};
+    controls.set_rates({30.0, 0.0, 0.0});
+    (void)ride_entities(rig, *snapshot, out, LocalTime{}, 0.05);
+    EXPECT_NEAR(controls.state().azimuth_deg, 151.5, 1e-9);  // stepped once (two views), by 0.05 s
+
+    const ObserverEye cam = observer_eye(controls.state(), e.cur.ecef, e.cur.orientation);
+    ViewDesc fixed = test_view();
+    fixed.pose.kind = PoseSource::Kind::world;
+    fixed.pose.world_ecef = cam.ecef;
+    fixed.pose.world_orientation = cam.to_ecef * body_to_ned(observer.pose.rotation);
+    expect_same(out[0], ride(s, fixed, *snapshot), 1e-4F);
+    expect_same(out[1], out[0], 0.0F);
+
+    // Gone: kept.
+    const SceneView before = out[0];
+    snapshot->entities.clear();
+    (void)ride_entities(rig, *snapshot, out, LocalTime{}, 0.5);
+    expect_same(out[0], before, 0.0F);
+
+    // No allocation on the way.
+    ASSERT_TRUE(snapshot->entities.push_back(e));
+    const test::AllocationCounter counter;
+    for (int i = 0; i < 100; ++i) {
+        (void)ride_entities(rig, *snapshot, out, LocalTime{}, 1.0 / 60.0);
+    }
+    EXPECT_EQ(counter.count(), 0U);
+}
+
 TEST(RideEntities, AllocatesNothing) {
     const auto s = test_scene();
     std::vector<ViewDesc> views(3, test_view({10.0, 0.0, 0.0}));

@@ -74,9 +74,29 @@ private:
     std::vector<std::uint32_t> display_ids_;
 };
 
+// The keyboard and mouse, for steering a view (D-057): which navigation keys
+// are held as the batch ends, and what was pressed or moved during it. The
+// app decides what they do.
+struct ViewInput {
+    bool left = false;  // the arrow keys
+    bool right = false;
+    bool up = false;
+    bool down = false;
+    bool page_up = false;
+    bool page_down = false;
+    bool plus = false;    // + or = (unshifted), either keyboard's
+    bool minus = false;   // -, either keyboard's
+    int digit = -1;       // the last digit key pressed, 0 to 9; -1: none
+    bool home = false;    // Home or R pressed
+    double drag_x = 0.0;  // pixels the mouse moved with its left button held
+    double drag_y = 0.0;
+    double wheel = 0.0;  // the wheel's notches, positive away from the user
+};
+
 struct EventSummary {
     bool quit = false;     // window closed, Esc pressed, or the OS asked to quit
     bool exposed = false;  // a window's contents need drawing again
+    ViewInput input;
 };
 
 class Platform {

@@ -710,7 +710,7 @@ void check_view_rotation(Parser& p, const toml::node& node, const std::string& p
 void parse_channel(Parser& p, const toml::table& t, const std::string& path, ChannelConfig& out) {
     p.check_keys(t,
                  {"name", "monitor", "entity", "present_mode", "render_extent", "eye_offset",
-                  "view_rotation", "frustum"},
+                  "view_rotation", "frustum", "observer"},
                  path);
 
     if (const auto* n = p.required(t, "name", path)) {
@@ -781,6 +781,46 @@ void parse_channel(Parser& p, const toml::table& t, const std::string& path, Cha
             out.frustum = {(*v)[0], (*v)[1], (*v)[2], (*v)[3]};
             check_frustum(p, *n, path + ".frustum", out.frustum);
         }
+    }
+    if (const auto* n = t.get("observer")) {
+        const std::string where = path + ".observer";
+        const auto* o = n->as_table();
+        if (o == nullptr) {
+            p.error(n->source(), "'" + where + "' must be a table, like { mode = \"orbit\" }");
+            return;
+        }
+        if (t.get("eye_offset") != nullptr) {
+            p.error(t.get("eye_offset")->source(),
+                    "'" + path + ".eye_offset' is a rider's: an observer channel has none");
+        }
+        p.check_keys(*o, {"mode", "distance_m", "azimuth_deg", "elevation_deg"}, where);
+        ObserverConfig ob;
+        if (const auto* m = o->get("mode")) {
+            if (auto v = p.choice<ObserverMode>(*m, where + ".mode",
+                                                {{"orbit", ObserverMode::orbit},
+                                                 {"tether", ObserverMode::tether},
+                                                 {"top_down", ObserverMode::top_down}})) {
+                ob.mode = *v;
+            }
+        }
+        const auto in_range = [&](const char* key, double lo, double hi, double& out_value) {
+            if (const auto* m = o->get(key)) {
+                const std::string name = where + "." + key;
+                if (auto v = p.number(*m, name)) {
+                    if (*v < lo || *v > hi) {
+                        p.error(m->source(), "'" + name + "' must be between " + format_number(lo) +
+                                                 " and " + format_number(hi));
+                    } else {
+                        out_value = *v;
+                    }
+                }
+            }
+        };
+        in_range("distance_m", kMinObserverDistanceM, kMaxObserverDistanceM, ob.distance_m);
+        in_range("azimuth_deg", -360.0, 360.0, ob.azimuth_deg);
+        in_range("elevation_deg", kMinObserverElevationDeg, kMaxObserverElevationDeg,
+                 ob.elevation_deg);
+        out.observer = ob;
     }
 }
 
