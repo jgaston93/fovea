@@ -100,6 +100,8 @@ struct SceneView {
     DVec3 eye_ecef{0.0};
     Mat4 ecef_to_clip{1.0F};
     float tan_height = 1.0F;
+    // An observer's view (D-057): entities' models are drawn in it (D-059).
+    bool shows_entity_models = false;
 };
 
 // The reference scene for a view with no host: its body level and facing
@@ -130,6 +132,19 @@ struct ViewRig {
     // frame by ride_entities (the render thread); null: none.
     ObserverControls* observer = nullptr;
 };
+
+// An entity's pose for its model (D-059): where it is and its body axes
+// (x forward, y right, z down) to ECEF, at the time the frame is seen.
+struct EntityPose {
+    EntityId entity = 0;
+    DVec3 ecef{0.0};
+    DQuat to_ecef{1.0, 0.0, 0.0, 0.0};
+};
+
+// The poses of the models' entities that are active in `snapshot`, at `at`
+// (pose_at), into `out` (as many as fit); how many. No allocation.
+std::size_t entity_poses(const SceneSnapshot& snapshot, LocalTime at,
+                         std::span<const EntityModelConfig> models, std::span<EntityPose> out);
 
 // Updates out[i] for each of the rig's views (as many as both hold), and
 // returns how many eyes were at or below the grid (drawn from just above
@@ -164,6 +179,9 @@ struct TerrainOptions {
     double pixel_error = 1.0;        // a tile splits where its error shows as more (D-016)
     std::uint32_t max_tiles = 4096;  // resident at once, roots included
     std::size_t budget_bytes = std::size_t{2} << 30;  // their heights and imagery
+    // Models drawn at entities in observer views (D-059), loaded with the
+    // database's; at most kMaxEntityModels.
+    std::vector<EntityModelConfig> entity_models;
 };
 
 // What load_terrain did up front: the roots, and the placements they hold
@@ -171,7 +189,7 @@ struct TerrainOptions {
 struct TerrainLoad {
     std::size_t tiles = 0;
     std::size_t placements = 0;
-    std::size_t models = 0;  // distinct models placed
+    std::size_t models = 0;  // distinct models placed, and entities' (D-059)
     std::size_t lights = 0;  // airport lights (milestone 6 step 8)
     std::size_t bytes = 0;   // heights and imagery uploaded
     double seconds = 0.0;
@@ -294,6 +312,11 @@ public:
     // ParticleState's latest() does until its next latest()); null shows
     // none. Without particle_capacity, ignored. No allocation.
     void set_particles(const ParticleFrame* frame, LocalTime at);
+    // Entities' models (D-059): those load_terrain was given, and where
+    // their entities are for the frames drawn from now on (entity_poses);
+    // an entity not among them isn't drawn. No allocation.
+    std::span<const EntityModelConfig> entity_models() const;
+    void set_entity_poses(std::span<const EntityPose> poses);
 
     // The sky's tables and an output's light, as the last frame left them
     // (milestone 6 step 2). For tests: waits for the GPU, and allocates.

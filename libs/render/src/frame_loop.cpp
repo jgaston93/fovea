@@ -89,6 +89,12 @@ const FrameRecord& FrameLoop::step() {
         last_shown_ = shown;
         summary_.views_below_ground += ride_entities(*options_.rig, scene, rigged_, shown, dt_s);
     }
+    // Entities' models (D-059), where their entities are when this frame is seen.
+    if (const auto models = renderer_.entity_models(); !models.empty()) {
+        std::array<EntityPose, kMaxEntityModels> poses;
+        renderer_.set_entity_poses(
+            std::span(poses.data(), entity_poses(scene, shown, models, poses)));
+    }
     renderer_.set_sky(sky_bodies(julian_date_at(scene.environment, shown)));
     renderer_.set_visibility(scene.environment.visibility_m);
     renderer_.set_weather(scene.environment.layers.span());

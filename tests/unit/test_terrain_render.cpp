@@ -613,6 +613,100 @@ TEST(TerrainRender, ModelsStandWhereTheirPlacementsPutThem) {
     EXPECT_GT(y1 - y0, 3.0 * (x1 - x0));  // north-south, as the heading says
 }
 
+// D-059: an entity's model, drawn where its pose and offset put it, in an
+// observer's view only. A red box 2 m wide, 2 m tall and 10 m long, set 3 m
+// forward along its front (glTF's +z, the entity's nose) so front and back
+// differ; the entity 2 m above the ground heading east, the model's origin
+// 2 m down and 10 m right (south) of it; another entity's pose listed
+// first: from straight above, the box's top lies east-west, where the
+// view's matrix puts its corners. A view that isn't an observer's doesn't
+// draw it.
+TEST(TerrainRender, AnEntitysModelStandsWhereItsPoseAndOffsetPutItInObserverViews) {
+    double lat0 = 0.0;
+    double lon0 = 0.0;
+    Spec s = flat_grey(&lat0, &lon0);
+    const fs::path dir = write_db("entity-model", s);
+    const fs::path file = dir / "entity-box.glb";
+    {
+        const auto glb =
+            box_glb(1.0F, 2.0F, 5.0F, {1.0F, 0.0F, 0.0F, 1.0F}, R"("translation":[0,0,3],)");
+        std::ofstream out(file, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(glb.data()),
+                  static_cast<std::streamsize>(glb.size()));
+    }
+    constexpr std::uint32_t kSize = 256;
+    RENDERER_OR_SKIP(r, kSize, kSize);
+    TerrainOptions options;
+    options.entity_models = {{7, file, DVec3(0.0, 10.0, 2.0)}};
+    const TerrainLoad load = r->load_terrain(open_db(dir), options);
+    EXPECT_EQ(load.models, 1U);
+    EXPECT_TRUE(load.problems.empty()) << load.problems[0];
+    ASSERT_EQ(r->entity_models().size(), 1U);
+    const Geodetic at{lat0, lon0, 122.0};
+    const Geodetic elsewhere{lat0 + 0.0002, lon0, 122.0};  // about 22 m north
+    const std::array<EntityPose, 2> poses{
+        EntityPose{3, geodetic_to_ecef(elsewhere), body_to_ecef(elsewhere, Euler{})},
+        EntityPose{7, geodetic_to_ecef(at), body_to_ecef(at, Euler{90.0, 0.0, 0.0})}};
+    r->set_entity_poses(poses);
+    SceneView v = view_at({lat0, lon0, 120.0}, 120.0, -90.0);
+    v.shows_entity_models = true;
+    settle_models(*r, {v}, 1);
+    EXPECT_EQ(r->terrain_stats().models_loaded, 1U);
+    EXPECT_EQ(r->terrain_stats().placements_drawn, 1U);
+    EXPECT_TRUE(r->terrain_problems().empty()) << r->terrain_problems()[0];
+    EXPECT_EQ(r->validation_messages(), 0U);
+    auto px = r->read_back_rgba(0);
+    // The top's corners: forward (east) 3 m and 5 m either side, right
+    // (south) 10 m and 1 m either side, up 2 m from the ground (120 m).
+    const DVec3 base = geodetic_to_ecef({lat0, lon0, 120.0});
+    const DMat3 ned = ned_to_ecef(lat0, lon0);
+    double x0 = 1e9;
+    double x1 = -1e9;
+    double y0 = 1e9;
+    double y1 = -1e9;
+    for (const double east : {-2.0, 8.0}) {
+        for (const double south : {9.0, 11.0}) {
+            const glm::dvec2 c =
+                project(v, ecef_to_geodetic(base + ned * DVec3(-south, east, -2.0)), kSize, kSize);
+            x0 = std::min(x0, c.x);
+            x1 = std::max(x1, c.x);
+            y0 = std::min(y0, c.y);
+            y1 = std::max(y1, c.y);
+        }
+    }
+    const auto red_bounds = [&](const std::vector<std::uint8_t>& image) {
+        std::array<int, 4> b{static_cast<int>(kSize), -1, static_cast<int>(kSize), -1};
+        for (int y = 0; y < static_cast<int>(kSize); ++y) {
+            for (int x = 0; x < static_cast<int>(kSize); ++x) {
+                if (is_red(image, kSize, x, y)) {
+                    b = {std::min(b[0], x), std::max(b[1], x), std::min(b[2], y),
+                         std::max(b[3], y)};
+                }
+            }
+        }
+        return b;
+    };
+    const auto b = red_bounds(px);
+    ASSERT_GE(b[1], 0) << "no model drawn";
+    EXPECT_NEAR(b[0] + 0.5, x0, 1.0);
+    EXPECT_NEAR(b[1] + 0.5, x1, 1.0);
+    EXPECT_NEAR(b[2] + 0.5, y0, 1.0);
+    EXPECT_NEAR(b[3] + 0.5, y1, 1.0);
+    EXPECT_GT(x1 - x0, 3.0 * (y1 - y0));  // east-west, as the heading says
+
+    // Not an observer's view: not drawn.
+    v.shows_entity_models = false;
+    (void)settle(*r, {v});
+    EXPECT_EQ(r->terrain_stats().placements_drawn, 0U);
+    px = r->read_back_rgba(0);
+    EXPECT_LT(red_bounds(px)[1], 0) << "drawn in a view that isn't an observer's";
+    // Its entity gone: not drawn either.
+    v.shows_entity_models = true;
+    r->set_entity_poses({});
+    (void)settle(*r, {v});
+    EXPECT_EQ(r->terrain_stats().placements_drawn, 0U);
+}
+
 // How much of a pixel's colour is `to` rather than `from`, along the line
 // between them: 0 for `from`, 1 for `to`,
 // in linear light (the output is sRGB-encoded).

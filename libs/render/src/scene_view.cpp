@@ -202,9 +202,27 @@ std::size_t ride_entities(const ViewRig& rig, const SceneSnapshot& snapshot,
         }
         bool under = false;
         out[i] = scene_view(view, rig.scene, g, eye, &under);
+        out[i].shows_entity_models = view.pose.kind == PoseSource::Kind::observer;
         below += under ? 1 : 0;
     }
     return below;
+}
+
+std::size_t entity_poses(const SceneSnapshot& snapshot, LocalTime at,
+                         std::span<const EntityModelConfig> models, std::span<EntityPose> out) {
+    std::size_t n = 0;
+    for (const EntityModelConfig& m : models) {
+        if (n == out.size()) {
+            break;
+        }
+        const EntityState* e = find_entity(snapshot, m.entity);
+        if (e == nullptr || !e->active) {
+            continue;
+        }
+        const Pose p = pose_at(*e, at, snapshot.smoothing_allowed);
+        out[n++] = {m.entity, p.ecef, p.orientation};
+    }
+    return n;
 }
 
 std::vector<ViewDesc> views_from_config(const DisplayConfig& config) {

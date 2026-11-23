@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -630,6 +631,50 @@ TEST(Config, ParticlesSectionIsChecked) {
     expect_one_error(parse(head + "port = 9000\ngroup = \"192.168.1.20\"\n"), 9, "multicast");
     expect_one_error(parse(head + "port = 9000\ngroup = \"224.0.0.251\"\n"), 9, "multicast");
     expect_one_error(parse(head + "port = 9000\ngroup = \"239.1\"\n"), 9, "multicast");
+}
+
+// D-059: entities' models, their keys and checks; a relative file is the
+// config file's.
+TEST(Config, EntityModels) {
+    const std::string terrain = "[terrain]\ndatabase = \"db\"\n";  // lines 7-8
+    const auto r = parse(kMinimal + terrain +
+                         "[[entity_model]]\nentity = 3\nfile = \"m/heli.glb\"\n"
+                         "offset_m = { x = 1.0, y = 0.0, z = 3.3 }\n");
+    ASSERT_TRUE(r.ok()) << r.errors[0].to_string();
+    ASSERT_EQ(r.config->entity_models.size(), 1U);
+    const EntityModelConfig& m = r.config->entity_models[0];
+    EXPECT_EQ(m.entity, 3U);
+    EXPECT_EQ(m.file, std::filesystem::path("m/heli.glb"));
+    EXPECT_EQ(m.offset_m, DVec3(1.0, 0.0, 3.3));
+    const auto d = parse(kMinimal + terrain + "[[entity_model]]\nfile = \"a.glb\"\n");
+    EXPECT_TRUE(parse(kMinimal + terrain + "[[entity_model]]\nfile = \"A.GLB\"\n").ok());
+    ASSERT_TRUE(d.ok()) << d.errors[0].to_string();
+    EXPECT_EQ(d.config->entity_models[0].entity, 0U);
+    EXPECT_EQ(d.config->entity_models[0].offset_m, DVec3(0.0));
+    // [[entity_model]] on line 9, its keys from 10.
+    expect_one_error(parse(kMinimal + terrain + "[[entity_model]]\nfile = \"a.gltf\"\n"), 10,
+                     ".glb");
+    expect_one_error(parse(kMinimal + terrain + "[[entity_model]]\nentity = 0\n"), 9, "file");
+    expect_one_error(parse(kMinimal + terrain + "[[entity_model]]\nfile = \"a.glb\"\nscale = 2\n"),
+                     11, "scale");
+    expect_one_error(parse(kMinimal + "[[entity_model]]\nfile = \"a.glb\"\n"), 7,
+                     "needs [terrain]");
+    std::string nine = kMinimal + terrain;
+    for (int i = 0; i < 9; ++i) {
+        nine += "[[entity_model]]\nfile = \"a.glb\"\n";
+    }
+    EXPECT_FALSE(parse(nine).ok());
+
+    // Read from a file: relative to its directory.
+    const auto dir = std::filesystem::temp_directory_path() / "fovea-config-entity-model";
+    std::filesystem::create_directories(dir);
+    {
+        std::ofstream out(dir / "c.toml");
+        out << kMinimal << terrain << "[[entity_model]]\nfile = \"models/heli.glb\"\n";
+    }
+    const auto f = load_display_config(dir / "c.toml");
+    ASSERT_TRUE(f.ok()) << f.errors[0].to_string();
+    EXPECT_EQ(f.config->entity_models[0].file, dir / "models/heli.glb");
 }
 
 // D-057: an observer channel, its defaults and checks.

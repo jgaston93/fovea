@@ -547,10 +547,11 @@ struct Renderer::Impl {
 
     // Terrain, once loaded (milestone 3 step 5).
     std::unique_ptr<TerrainGpu> terrain;
-    bool bc_textures = false;               // textureCompressionBC enabled
-    float max_anisotropy = 0.0F;            // 0: samplerAnisotropy not enabled
-    float max_point_size = 1.0F;            // 1: largePoints not enabled
-    VkSemaphore timeline = VK_NULL_HANDLE;  // signalled with frame_number + 1 by each frame
+    std::vector<EntityModelConfig> entity_models;  // load_terrain's (D-059)
+    bool bc_textures = false;                      // textureCompressionBC enabled
+    float max_anisotropy = 0.0F;                   // 0: samplerAnisotropy not enabled
+    float max_point_size = 1.0F;                   // 1: largePoints not enabled
+    VkSemaphore timeline = VK_NULL_HANDLE;         // signalled with frame_number + 1 by each frame
 
     // Timing: two timestamps per output per frame in flight.
     VkQueryPool timestamps = VK_NULL_HANDLE;
@@ -2343,6 +2344,16 @@ void Renderer::set_particles(const ParticleFrame* frame, LocalTime at) {
     impl_->particle_time = at;
 }
 
+std::span<const EntityModelConfig> Renderer::entity_models() const {
+    return impl_->entity_models;
+}
+
+void Renderer::set_entity_poses(std::span<const EntityPose> poses) {
+    if (impl_->terrain) {
+        impl_->terrain->set_entity_poses(poses);
+    }
+}
+
 void Renderer::set_weather(std::span<const WeatherLayer> layers) {
     impl_->weather.clear();
     for (const WeatherLayer& l : layers) {
@@ -2401,6 +2412,7 @@ TerrainLoad Renderer::load_terrain(std::unique_ptr<TerrainDatabase> database,
     };
     TerrainLoad report;
     try {
+        m.entity_models = options.entity_models;
         m.terrain = TerrainGpu::load(gpu, std::move(database), options, kFramesInFlight,
                                      m.output_total(), shaders, kHdrFormat, kDepthFormat, report);
     } catch (...) {
