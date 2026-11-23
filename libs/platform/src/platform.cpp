@@ -32,6 +32,25 @@ EventSummary handle(const SDL_Event& e, EventSummary summary) {
             break;
         case SDL_EVENT_KEY_DOWN:
             summary.quit = summary.quit || e.key.key == SDLK_ESCAPE;
+            if (e.key.key >= SDLK_0 && e.key.key <= SDLK_9) {
+                summary.input.digit = static_cast<int>(e.key.key - SDLK_0);
+            } else if (e.key.key >= SDLK_KP_1 && e.key.key <= SDLK_KP_9) {
+                summary.input.digit = static_cast<int>(e.key.key - SDLK_KP_1) + 1;
+            } else if (e.key.key == SDLK_KP_0) {
+                summary.input.digit = 0;
+            } else if (e.key.key == SDLK_HOME || e.key.key == SDLK_R) {
+                summary.input.home = true;
+            }
+            break;
+        case SDL_EVENT_MOUSE_MOTION:
+            if ((e.motion.state & SDL_BUTTON_LMASK) != 0) {
+                summary.input.drag_x += static_cast<double>(e.motion.xrel);
+                summary.input.drag_y += static_cast<double>(e.motion.yrel);
+            }
+            break;
+        case SDL_EVENT_MOUSE_WHEEL:
+            summary.input.wheel += static_cast<double>(e.wheel.y) *
+                                   (e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0 : 1.0);
             break;
         case SDL_EVENT_WINDOW_EXPOSED:
             summary.exposed = true;
@@ -208,6 +227,19 @@ EventSummary Platform::poll_into(EventSummary summary) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         summary = handle(e, summary);
+    }
+    // The navigation keys held now (the focused window's).
+    const bool* k = SDL_GetKeyboardState(nullptr);
+    if (k != nullptr) {
+        ViewInput& in = summary.input;
+        in.left = k[SDL_SCANCODE_LEFT];
+        in.right = k[SDL_SCANCODE_RIGHT];
+        in.up = k[SDL_SCANCODE_UP];
+        in.down = k[SDL_SCANCODE_DOWN];
+        in.page_up = k[SDL_SCANCODE_PAGEUP];
+        in.page_down = k[SDL_SCANCODE_PAGEDOWN];
+        in.plus = k[SDL_SCANCODE_EQUALS] || k[SDL_SCANCODE_KP_PLUS];
+        in.minus = k[SDL_SCANCODE_MINUS] || k[SDL_SCANCODE_KP_MINUS];
     }
     return summary;
 }

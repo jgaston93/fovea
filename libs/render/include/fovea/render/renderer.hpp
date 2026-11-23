@@ -15,6 +15,7 @@
 
 #include "fovea/core/config.hpp"
 #include "fovea/core/math.hpp"
+#include "fovea/core/observer.hpp"
 #include "fovea/core/particles.hpp"
 #include "fovea/core/scene.hpp"
 #include "fovea/platform/platform.hpp"
@@ -125,6 +126,9 @@ struct ViewRig {
     std::span<const ViewDesc> views;  // must outlive the rig's users
     ReferenceScene scene;
     double geoid_height_m = 0.0;
+    // The observer's camera (D-057), for observer views; advanced once a
+    // frame by ride_entities (the render thread); null: none.
+    ObserverControls* observer = nullptr;
 };
 
 // Updates out[i] for each of the rig's views (as many as both hold), and
@@ -133,6 +137,10 @@ struct ViewRig {
 // (pose_at). No allocation: for the render thread.
 std::size_t ride_entities(const ViewRig& rig, const SceneSnapshot& snapshot,
                           std::span<SceneView> out, LocalTime at);
+
+// The observer's step a frame (D-057): ride_entities runs once a frame on
+// the render thread's fixed 60 Hz clock.
+inline constexpr double kObserverFrameS = 1.0 / 60.0;
 
 // How far past its newest sample an entity is extrapolated, at most: past
 // this (a host that stopped sending), it holds there.

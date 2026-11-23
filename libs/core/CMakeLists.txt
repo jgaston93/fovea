@@ -14,6 +14,7 @@ add_library(fovea_core STATIC
     src/ipv4.cpp
     src/stb_implementation.cpp
     src/log.cpp
+    src/observer.cpp
     src/projection.cpp
     src/time.cpp)
 add_library(fovea::core ALIAS fovea_core)

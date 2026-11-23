@@ -33,6 +33,26 @@ struct Frustum {
     double bottom_deg = 0.0;
 };
 
+// An observer's camera (D-057): not at an eye on the entity but watching it
+// from outside, steered by its operator (controls.hpp's ObserverControls).
+//   orbit:    round the entity at a compass bearing, an elevation and a
+//             distance, not turning with it;
+//   tether:   the same but the bearing from the entity's heading (180: behind
+//             it), as a chase camera;
+//   top_down: straight down from `distance_m` above it, north up.
+enum class ObserverMode : std::uint8_t { orbit, tether, top_down };
+
+struct ObserverConfig {
+    ObserverMode mode = ObserverMode::orbit;  // the start's; the operator may switch
+    double distance_m = 60.0;     // from the entity, kMinObserverDistanceM to kMaxObserverDistanceM
+    double azimuth_deg = 180.0;   // orbit: bearing from the entity, true; tether: from its heading
+    double elevation_deg = 20.0;  // above its horizontal, kMinObserverElevationDeg to 89
+};
+inline constexpr double kMinObserverDistanceM = 5.0;
+inline constexpr double kMaxObserverDistanceM = 5000.0;
+inline constexpr double kMinObserverElevationDeg = -10.0;
+inline constexpr double kMaxObserverElevationDeg = 89.0;
+
 struct ChannelConfig {
     std::string name;
     int monitor = 0;  // platform monitor index, >= 0; existence is checked at window creation
@@ -43,6 +63,10 @@ struct ChannelConfig {
     DVec3 eye_offset_m{0.0};   // from the entity's origin, its body axes
     Euler view_rotation;       // view axis relative to the entity's body (attitude.hpp ranges)
     Frustum frustum;
+    // An observer channel (D-057): watching `entity` from the observer's
+    // camera (eye_offset unused; view_rotation relative to the camera's
+    // view, so several monitors can share one camera).
+    std::optional<ObserverConfig> observer;
 };
 
 // The milestone 1 reference scene: a flat ground grid below the eye and a

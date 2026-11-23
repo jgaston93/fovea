@@ -633,6 +633,33 @@ TEST(Config, ParticlesSectionIsChecked) {
 }
 
 // D-055: a group joined on an interface.
+// D-057: an observer channel, its defaults and checks.
+TEST(Config, ObserverChannels) {
+    const auto r = parse(kMinimal +
+                         "observer = { mode = \"tether\", distance_m = 80, "
+                         "azimuth_deg = 200, elevation_deg = 15 }\n");
+    ASSERT_TRUE(r.ok()) << r.errors[0].to_string();
+    const auto& ob = r.config->channels[0].observer;
+    ASSERT_TRUE(ob.has_value());
+    EXPECT_EQ(ob->mode, ObserverMode::tether);
+    EXPECT_DOUBLE_EQ(ob->distance_m, 80.0);
+    EXPECT_DOUBLE_EQ(ob->azimuth_deg, 200.0);
+    EXPECT_DOUBLE_EQ(ob->elevation_deg, 15.0);
+    const auto d = parse(kMinimal + "observer = {}\n");
+    ASSERT_TRUE(d.ok()) << d.errors[0].to_string();
+    EXPECT_EQ(d.config->channels[0].observer->mode, ObserverMode::orbit);
+    EXPECT_FALSE(parse(kMinimal).config->channels[0].observer.has_value());
+    // [[channel]] is line 2; its keys 3-6; the observer line 7.
+    expect_one_error(parse(kMinimal + "observer = { mode = \"chase\" }\n"), 7,
+                     "orbit, tether, top_down");
+    expect_one_error(parse(kMinimal + "observer = { distance_m = 1 }\n"), 7, "distance_m");
+    expect_one_error(parse(kMinimal + "observer = { elevation_deg = 95 }\n"), 7, "elevation_deg");
+    expect_one_error(parse(kMinimal + "observer = { zoom = 2 }\n"), 7, "zoom");
+    expect_one_error(parse(kMinimal + "observer = 3\n"), 7, "must be a table");
+    expect_one_error(parse(kMinimal + "eye_offset = { x = 1, y = 0, z = 0 }\nobserver = {}\n"), 7,
+                     "an observer channel has none");
+}
+
 TEST(Config, ParticlesJoinAGroup) {
     const auto c = parse(kMinimal +
                          "[particles]\nport = 9000\ngroup = \"239.255.77.2\"\n"

@@ -13,6 +13,7 @@ add_executable(fovea_unit_tests
     unit/test_particle_pack.cpp
     unit/test_puff_stream.cpp
     unit/test_config.cpp
+    unit/test_observer.cpp
     unit/test_containers.cpp
     unit/test_celestial.cpp
     unit/test_geodesy.cpp

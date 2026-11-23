@@ -17,11 +17,14 @@ namespace fovea {
 // it (a driver's or pilot's eye, a mounted camera), or fixed in the world
 // (a tower, a survey viewpoint).
 struct PoseSource {
-    enum class Kind : std::uint8_t { entity, world };
+    // entity: riding an entity; world: fixed; observer: watching an entity
+    // from the observer's camera (D-057: ViewRig's ObserverControls).
+    enum class Kind : std::uint8_t { entity, world, observer };
     Kind kind = Kind::entity;
-    EntityId entity = 0;    // kind entity: the entity it rides on
+    EntityId entity = 0;    // kind entity: the entity it rides on; observer: the one it watches
     DVec3 offset_m{0.0};    // kind entity: from the entity's origin, its body axes
-    Euler rotation;         // kind entity: view axis relative to the entity's body
+    Euler rotation;         // kind entity: view axis relative to the entity's body;
+                            // observer: relative to the observer's camera
     DVec3 world_ecef{0.0};  // kind world: the eye's position
     DQuat world_orientation{1.0, 0.0, 0.0, 0.0};  // kind world: eye frame to ECEF
 };

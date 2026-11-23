@@ -44,6 +44,7 @@
 #include "fovea/core/config.hpp"
 #include "fovea/core/image_file.hpp"
 #include "fovea/core/log.hpp"
+#include "fovea/core/observer.hpp"
 #include "fovea/core/scene.hpp"
 #include "fovea/net/cigi_adapter.hpp"
 #include "fovea/net/host_thread.hpp"
@@ -482,6 +483,41 @@ using WaitFn = std::function<bool(int timeout_ms)>;
 // state, with the host's links (CIGI, HAT/HOT, particles) and the stats, on
 // windows or offscreen alike, until the time limit, `wait` says stop, or a
 // thread fails. The exit code.
+// D-057: the observer's camera, if any channel is one (the first's start;
+// one camera a process, every observer channel looking through it).
+std::unique_ptr<fovea::ObserverControls> observer_controls(const fovea::DisplayConfig& config) {
+    for (const fovea::ChannelConfig& c : config.channels) {
+        if (c.observer) {
+            return std::make_unique<fovea::ObserverControls>(*c.observer);
+        }
+    }
+    return nullptr;
+}
+
+// The keyboard and mouse steering it: the arrows round and up, page up and
+// down or + and - in and out, a drag round and up, the wheel in and out;
+// 1, 2, 3 the modes (orbit, tether, top down); Home or R back to the start.
+void steer(fovea::ObserverControls& o, const fovea::ViewInput& in) {
+    constexpr double kTurnDps = 60.0;    // the arrows
+    constexpr double kZoomPerS = 1.0;    // e^1 a second
+    constexpr double kDragDeg = 0.3;     // a pixel's drag
+    constexpr double kWheelLog = -0.15;  // a notch away: nearer
+    const auto axis = [](bool plus, bool minus) {
+        return (plus ? 1.0 : 0.0) - (minus ? 1.0 : 0.0);
+    };
+    o.set_rates({kTurnDps * axis(in.right, in.left), kTurnDps * axis(in.up, in.down),
+                 kZoomPerS * axis(in.page_down || in.minus, in.page_up || in.plus)});
+    if (in.drag_x != 0.0 || in.drag_y != 0.0 || in.wheel != 0.0) {
+        o.nudge(kDragDeg * in.drag_x, kDragDeg * in.drag_y, kWheelLog * in.wheel);
+    }
+    if (in.digit >= 1 && in.digit <= 3) {
+        o.request_mode(static_cast<fovea::ObserverMode>(in.digit - 1));
+    }
+    if (in.home) {
+        o.request_reset();
+    }
+}
+
 int run_loop(const Options& options, const fovea::DisplayConfig& config, fovea::Renderer& renderer,
              std::span<const fovea::SceneView> views, const fovea::ViewRig& rig,
              const WaitFn& wait) {
@@ -742,8 +778,9 @@ int run_headless_host(const Options& options, const fovea::DisplayConfig& config
     }
     const std::vector<fovea::SceneView> views = fovea::reference_scene_views(config);
     const std::vector<fovea::ViewDesc> view_descs = fovea::views_from_config(config);
+    const auto observer = observer_controls(config);
     const fovea::ViewRig rig{view_descs, config.reference_scene,
-                             config.host ? config.host->geoid_height_m : 0.0};
+                             config.host ? config.host->geoid_height_m : 0.0, observer.get()};
     (void)std::signal(SIGINT, request_stop);
     (void)std::signal(SIGTERM, request_stop);
     std::printf("Headless, driven by the host: %s.\n",
@@ -823,8 +860,9 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
     // With a host, the views ride its entities (each channel's entity, at its
     // eye offset and rotation), recomputed every frame.
     const std::vector<fovea::ViewDesc> view_descs = fovea::views_from_config(config);
+    const auto observer = observer_controls(config);
     const fovea::ViewRig rig{view_descs, config.reference_scene,
-                             config.host ? config.host->geoid_height_m : 0.0};
+                             config.host ? config.host->geoid_height_m : 0.0, observer.get()};
     const auto draw = [&] {
         return options.clear ? renderer->draw_clear_frame(clears)
                              : renderer->draw_scene_frame(views);
@@ -862,8 +900,13 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
     (void)std::fflush(stdout);
 
     if (renderer && !options.clear) {
-        return run_loop(options, config, *renderer, views, rig,
-                        [&](int timeout_ms) { return platform.wait_events(timeout_ms).quit; });
+        return run_loop(options, config, *renderer, views, rig, [&](int timeout_ms) {
+            const fovea::EventSummary e = platform.wait_events(timeout_ms);
+            if (observer) {
+                steer(*observer, e.input);
+            }
+            return e.quit;
+        });
     }
     using Clock = std::chrono::steady_clock;
     const auto deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(
