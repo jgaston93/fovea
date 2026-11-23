@@ -57,6 +57,7 @@ The settings format is documented in `apps/fovea-compiler/settings.hpp`.
 
 ```sh
 ./build/release/apps/fovea/fovea --list-monitors                          # monitors, in config index order
+./build/release/apps/fovea/fovea --check config/<file>.toml               # read and check a config, nothing opened (D-056)
 ./build/release/apps/fovea/fovea --overlay config/khsv.toml               # the KHSV database, with a timing overlay
 ./build/release/tools/cigi-test-host/cigi-test-host tools/cigi-test-host/scripts/khsv-approach.toml
 ./build/release/apps/fovea/fovea --headless --frames 600 --dump out config/khsv.toml  # offscreen, a PNG per channel

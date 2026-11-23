@@ -1,0 +1,11 @@
+# A config with one misspelt key: App.CheckRefusesABadConfig and App.CheckNamesTheBadKey (D-056).
+[[channel]]
+name = "only"
+monitor = 0
+render_extent = [1024, 768]
+frustum = { left = -30.0, right = 30.0, top = 22.0, bottom = -22.0 }
+
+# A misspelt key (App.CheckRefusesABadConfig, D-056)
+[particles]
+port = 47102
+groups = "239.255.77.2"
