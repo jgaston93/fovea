@@ -52,6 +52,7 @@
 #include "fovea/net/puff_adapter.hpp"
 #include "fovea/platform/monitors.hpp"
 #include "fovea/platform/platform.hpp"
+#include "fovea/platform/space_mouse.hpp"
 #include "fovea/render/frame_loop.hpp"
 #include "fovea/render/renderer.hpp"
 #include "fovea/render/view.hpp"
@@ -493,7 +494,10 @@ std::unique_ptr<fovea::ObserverControls> observer_controls(const fovea::DisplayC
 // The keyboard and mouse steering it: the arrows round and up, page up and
 // down or + and - in and out, a drag round and up, the wheel in and out;
 // 1, 2, 3 the modes (orbit, tether, top down); Home or R back to the start.
-void steer(fovea::ObserverControls& o, const fovea::ViewInput& in) {
+// A 3D mouse's rates add to the keys' (D-058); its first button the next
+// mode, its second the start.
+void steer(fovea::ObserverControls& o, const fovea::ViewInput& in,
+           const fovea::SpaceMouseState& space) {
     constexpr double kTurnDps = 60.0;    // the arrows
     constexpr double kZoomPerS = 1.0;    // e^1 a second
     constexpr double kDragDeg = 0.3;     // a pixel's drag
@@ -501,8 +505,21 @@ void steer(fovea::ObserverControls& o, const fovea::ViewInput& in) {
     const auto axis = [](bool plus, bool minus) {
         return (plus ? 1.0 : 0.0) - (minus ? 1.0 : 0.0);
     };
-    o.set_rates({kTurnDps * axis(in.right, in.left), kTurnDps * axis(in.up, in.down),
-                 kZoomPerS * axis(in.page_down || in.minus, in.page_up || in.plus)});
+    fovea::ObserverRates rates{kTurnDps * axis(in.right, in.left), kTurnDps * axis(in.up, in.down),
+                               kZoomPerS * axis(in.page_down || in.minus, in.page_up || in.plus)};
+    if (space.connected) {
+        const fovea::ObserverRates r = fovea::observer_rates_6dof(space.axes);
+        rates.azimuth_dps += r.azimuth_dps;
+        rates.elevation_dps += r.elevation_dps;
+        rates.zoom_per_s += r.zoom_per_s;
+        if ((space.pressed & 1U) != 0) {
+            o.request_next_mode();
+        }
+        if ((space.pressed & 2U) != 0) {
+            o.request_reset();
+        }
+    }
+    o.set_rates(rates);
     if (in.drag_x != 0.0 || in.drag_y != 0.0 || in.wheel != 0.0) {
         o.nudge(kDragDeg * in.drag_x, kDragDeg * in.drag_y, kWheelLog * in.wheel);
     }
@@ -900,10 +917,23 @@ int run_windows(const Options& options, const fovea::DisplayConfig& config) {
     (void)std::fflush(stdout);
 
     if (renderer && !options.clear) {
+        // A 3D mouse for the observer (D-058): read on each wake, every
+        // 10 ms while one is there, so its motion isn't late.
+        std::unique_ptr<fovea::SpaceMouse> space;
+        if (observer) {
+            space = std::make_unique<fovea::SpaceMouse>();
+        }
         return run_loop(options, config, *renderer, views, rig, [&](int timeout_ms) {
-            const fovea::EventSummary e = platform.wait_events(timeout_ms);
+            const fovea::SpaceMouseState before = space ? space->poll() : fovea::SpaceMouseState{};
+            int wait_ms = timeout_ms;
+            if (before.connected) {
+                wait_ms = timeout_ms < 0 ? 10 : std::min(timeout_ms, 10);
+            }
+            const fovea::EventSummary e = platform.wait_events(wait_ms);
             if (observer) {
-                steer(*observer, e.input);
+                fovea::SpaceMouseState s = space ? space->poll() : fovea::SpaceMouseState{};
+                s.pressed |= before.pressed;
+                steer(*observer, e.input, s);
             }
             return e.quit;
         });

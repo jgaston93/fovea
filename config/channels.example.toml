@@ -82,6 +82,10 @@ frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
 # riding it, steered from the keyboard and mouse: the arrows (or a drag
 # with the left button) round and up, Page Up/Down, + and - (or the wheel)
 # in and out, 1 orbit, 2 tether, 3 top down, Home or R back to this start.
+# A 3D mouse (D-058), if one is plugged in: twist the cap to go round, tilt
+# it toward you to look from higher, pull it toward you to come nearer; its
+# first button the next mode, its second back to this start. On Linux Fovea
+# needs read access to its hidraw node (a udev rule, D-058).
 # No eye_offset; view_rotation turns the view from the observer's camera.
 # [[channel]]
 # name = "observer"

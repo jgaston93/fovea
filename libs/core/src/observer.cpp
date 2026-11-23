@@ -30,6 +30,29 @@ ObserverState observer_start(const ObserverConfig& config) {
     return s;
 }
 
+namespace {
+double shaped(double v) {
+    if (!std::isfinite(v)) {
+        return 0.0;
+    }
+    const double m = std::clamp(std::abs(v), 0.0, 1.0);
+    if (m <= kSpaceMouseDeadZone) {
+        return 0.0;
+    }
+    const double t = (m - kSpaceMouseDeadZone) / (1.0 - kSpaceMouseDeadZone);
+    return std::copysign(t * t, v);
+}
+}  // namespace
+
+ObserverRates observer_rates_6dof(const std::array<double, 6>& axes) {
+    // axes: x, y, z, rx, ry, rz. Twisted clockwise (+rz, about down) turns
+    // the entity clockwise: the camera's bearing goes down. Tilted toward
+    // the user (+rx, about right: the top toward the user): higher. Pulled
+    // toward the user (+y): nearer.
+    return {-kSpaceMouseAzimuthDps * shaped(axes[5]), kSpaceMouseElevationDps * shaped(axes[3]),
+            -kSpaceMouseZoomPerS * shaped(axes[1])};
+}
+
 ObserverState observer_step(ObserverState s, const ObserverRates& rates, double dt_s,
                             double nudge_azimuth_deg, double nudge_elevation_deg,
                             double nudge_log_distance) {
@@ -99,6 +122,15 @@ void ObserverControls::request_mode(ObserverMode mode) {
     mode_request_.store(static_cast<int>(mode), std::memory_order_relaxed);
 }
 
+namespace {
+constexpr int kNextMode = -2;
+constexpr int kNoMode = -1;
+}  // namespace
+
+void ObserverControls::request_next_mode() {
+    mode_request_.store(kNextMode, std::memory_order_relaxed);
+}
+
 void ObserverControls::request_reset() {
     reset_request_.store(true, std::memory_order_relaxed);
 }
@@ -106,7 +138,7 @@ void ObserverControls::request_reset() {
 const ObserverState& ObserverControls::advance(double dt_s) {
     // A reset takes all: the config's start, whatever else came with it.
     const bool reset = reset_request_.exchange(false, std::memory_order_relaxed);
-    const int mode = mode_request_.exchange(-1, std::memory_order_relaxed);
+    const int mode = mode_request_.exchange(kNoMode, std::memory_order_relaxed);
     if (reset) {
         state_ = observer_start(start_);
         set_rates({});
@@ -117,6 +149,9 @@ const ObserverState& ObserverControls::advance(double dt_s) {
     }
     if (mode >= 0 && mode <= static_cast<int>(ObserverMode::top_down)) {
         state_.mode = static_cast<ObserverMode>(mode);
+    } else if (mode == kNextMode) {
+        state_.mode = static_cast<ObserverMode>((static_cast<int>(state_.mode) + 1) %
+                                                (static_cast<int>(ObserverMode::top_down) + 1));
     }
     const ObserverRates rates{azimuth_dps_.load(std::memory_order_relaxed),
                               elevation_dps_.load(std::memory_order_relaxed),

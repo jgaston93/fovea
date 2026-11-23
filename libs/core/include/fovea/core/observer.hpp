@@ -11,6 +11,7 @@
 // nudges, lock-free; the render thread advances the state once a frame. No
 // allocation on either side.
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 
@@ -36,6 +37,19 @@ struct ObserverRates {
     double elevation_dps = 0.0;
     double zoom_per_s = 0.0;
 };
+
+// A 3D mouse's axes as rates (D-058): HID's x right, y toward the user,
+// z down, and rx, ry, rz right-handed about them, each -1 to 1. The cap moves
+// the entity as if it were held: twisted clockwise, the entity turns
+// clockwise (the camera round the other way); its top tilted toward the user,
+// more of the entity's top is seen (higher); pulled toward the user, nearer.
+// The rest (x, z, ry) do nothing. A dead zone, then a square law for fine
+// control near the middle.
+inline constexpr double kSpaceMouseDeadZone = 0.08;
+inline constexpr double kSpaceMouseAzimuthDps = 90.0;
+inline constexpr double kSpaceMouseElevationDps = 60.0;
+inline constexpr double kSpaceMouseZoomPerS = 1.5;
+ObserverRates observer_rates_6dof(const std::array<double, 6>& axes);
 
 // The state after `dt_s` of these rates plus one-off nudges (degrees, and
 // the distance's log): the azimuth wrapped to [0, 360), the elevation and
@@ -66,7 +80,8 @@ public:
     void set_rates(const ObserverRates& rates);
     void nudge(double azimuth_deg, double elevation_deg, double log_distance);
     void request_mode(ObserverMode mode);
-    void request_reset();  // back to the config's start
+    void request_next_mode();  // orbit, tether, top_down, orbit, ...
+    void request_reset();      // back to the config's start
 
     // Render thread: the state after `dt_s` (clamped to 0.1 s, so a stall
     // doesn't fling the camera).
