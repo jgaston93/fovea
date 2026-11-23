@@ -149,6 +149,19 @@ UdpSocket::UdpSocket(std::uint16_t port, std::uint32_t address) {
     local_port_ = ntohs(bound.sin_port);
 }
 
+// Not const, though no member changes: the socket's state does.
+void UdpSocket::join_group(  // NOLINT(readability-make-member-function-const)
+    std::uint32_t group, std::uint32_t interface_address) {
+    ip_mreq m{};
+    m.imr_multiaddr.s_addr = htonl(group);
+    m.imr_interface.s_addr = htonl(interface_address);
+    const auto s = static_cast<Native>(handle_);
+    if (::setsockopt(s, IPPROTO_IP, IP_ADD_MEMBERSHIP, reinterpret_cast<const char*>(&m),
+                     sizeof(m)) != 0) {
+        fail("joining the multicast group", last_error());
+    }
+}
+
 std::size_t UdpSocket::receive_buffer_bytes() const {
     int size = 0;
     socklen_t length = sizeof(size);

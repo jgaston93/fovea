@@ -22,8 +22,11 @@
 namespace fovea {
 
 struct PuffAdapterOptions {
-    std::uint16_t port = 0;       // 0: any free port (tests)
-    std::uint32_t address = 0;    // the local address to listen on; 0: every interface
+    std::uint16_t port = 0;     // 0: any free port (tests)
+    std::uint32_t address = 0;  // the local address to listen on; 0: every interface
+    // A multicast group to join (D-055; 0: none): then `address` is the
+    // interface it's joined on, and the port is bound on every interface.
+    std::uint32_t group = 0;
     double geoid_height_m = 0.0;  // the geoid above WGS-84, added to origins' MSL heights (D-035)
     std::chrono::duration<float> fade{0.25F};      // a particle's fade in and out
     std::chrono::milliseconds publish_period{16};  // at most this often (about 60 Hz)

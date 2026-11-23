@@ -69,7 +69,12 @@ bool valid_cluster(const puff::Cluster& c) noexcept {
 }  // namespace
 
 PuffAdapter::PuffAdapter(const PuffAdapterOptions& options, ParticleState& state)
-    : options_(options), state_(state), socket_(options.port, options.address) {
+    : options_(options),
+      state_(state),
+      socket_(options.port, options.group != 0 ? 0 : options.address) {
+    if (options.group != 0) {
+        socket_.join_group(options.group, options.address);
+    }
     held_.resize(state.capacity());
     index_.resize(std::bit_ceil(std::max<std::size_t>(16, state.capacity() * 2)));
 }

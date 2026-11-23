@@ -626,6 +626,24 @@ TEST(Config, ParticlesSectionIsChecked) {
                      "particles.light_buffer");
     expect_one_error(parse(head + "port = 9000\nresolution = \"quarter\"\n"), 9, "full, half");
     expect_one_error(parse(head + "port = 9000\nrenderer = \"voxels\"\n"), 9, "puffs, volume");
+    // D-055: a group is multicast, and not the local control block.
+    expect_one_error(parse(head + "port = 9000\ngroup = \"192.168.1.20\"\n"), 9, "multicast");
+    expect_one_error(parse(head + "port = 9000\ngroup = \"224.0.0.251\"\n"), 9, "multicast");
+    expect_one_error(parse(head + "port = 9000\ngroup = \"239.1\"\n"), 9, "multicast");
+}
+
+// D-055: a group joined on an interface.
+TEST(Config, ParticlesJoinAGroup) {
+    const auto c = parse(kMinimal +
+                         "[particles]\nport = 9000\ngroup = \"239.255.77.2\"\n"
+                         "listen_address = \"192.168.77.10\"\n");
+    ASSERT_TRUE(c.ok()) << c.errors[0].to_string();
+    ASSERT_TRUE(c.config->particles.has_value());
+    EXPECT_EQ(c.config->particles->group, 0xEFFF4D02U);
+    EXPECT_EQ(c.config->particles->listen_address, 0xC0A84D0AU);
+    const auto none = parse(kMinimal + "[particles]\nport = 9000\n");
+    ASSERT_TRUE(none.ok()) << none.errors[0].to_string();
+    EXPECT_FALSE(none.config->particles->group.has_value());
 }
 
 }  // namespace

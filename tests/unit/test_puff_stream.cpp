@@ -6,7 +6,9 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <numbers>
+#include <stdexcept>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -621,6 +623,43 @@ TEST(PuffAdapter, ReceivesOverUdp) {
         adapter.poll();
     }
     EXPECT_EQ(state.latest().count, 1U);
+}
+
+// D-055: joined to a multicast group, the adapter takes what's sent to the
+// group (looped back to this machine), and unicast to its port still. Skipped
+// where the machine has no multicast route (the join fails).
+TEST(PuffAdapter, ReceivesAMulticastGroup) {
+    constexpr std::uint32_t kGroup = 0xEFFF4D63U;  // 239.255.77.99: administratively scoped
+    ParticleState state(10);
+    PuffAdapterOptions o;
+    o.group = kGroup;
+    o.wait_ms = 50;
+    o.publish_period = 0ms;
+    std::unique_ptr<PuffAdapter> adapter;
+    try {
+        adapter = std::make_unique<PuffAdapter>(o, state);
+    } catch (const std::runtime_error& e) {
+        GTEST_SKIP() << "no multicast here: " << e.what();
+    }
+    UdpSocket sender(0, 0);
+    const auto origin = origin_datagram(header());
+    const std::array<puff::Puff, 1> one{puff_at(3, 1.0F)};
+    const auto puffs = puff_datagram(header(), one);
+    if (!sender.send_to(origin, {kGroup, adapter->port()})) {
+        GTEST_SKIP() << "no multicast route to send on";
+    }
+    ASSERT_TRUE(sender.send_to(puffs, {kGroup, adapter->port()}));
+    for (int i = 0; i < 40 && state.latest().count == 0; ++i) {
+        adapter->poll();
+    }
+    EXPECT_EQ(state.latest().count, 1U);
+    // Unicast to the port is still taken (bound on every interface).
+    const std::array<puff::Puff, 1> two{puff_at(4, 1.0F)};
+    ASSERT_TRUE(sender.send_to(puff_datagram(header(), two), {kLoopback, adapter->port()}));
+    for (int i = 0; i < 40 && state.latest().count < 2; ++i) {
+        adapter->poll();
+    }
+    EXPECT_EQ(state.latest().count, 2U);
 }
 
 }  // namespace

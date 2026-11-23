@@ -158,7 +158,8 @@ Drawn as puffs by default, or as a volume ([D-052](decisions.md)): the puffs add
 ```toml
 [particles]
 port = 47102                 # required
-listen_address = "127.0.0.1" # optional: listen on one address only
+listen_address = "127.0.0.1" # optional: listen on one address only (with group: the interface it's joined on)
+group = "239.255.77.2"       # optional (D-055): join this multicast group, so several IGs read one sender's stream
 capacity = 200000            # the most particles kept (200000 if left out)
 fade_s = 0.25                # fade in when new, and out when no longer refreshed
 # How they look (D-040 has the sources):
