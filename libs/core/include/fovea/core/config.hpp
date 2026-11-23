@@ -197,7 +197,7 @@ struct EnvironmentConfig {
 inline constexpr std::size_t kMaxEntityModels = 8;
 struct EntityModelConfig {
     std::uint32_t entity = 0;  // the scene entity it's drawn at
-    // A glTF binary (.glb, D-023: metres, +Y up, +Z its front); a relative
+    // A glTF binary (.glb, read by libs/models: metres, +Y up, +Z its front); a relative
     // path is relative to the config file (load_display_config resolves it).
     std::filesystem::path file;
     // Where the model's origin goes, from the entity's position, in its

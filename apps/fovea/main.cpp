@@ -349,9 +349,13 @@ bool load_terrain(fovea::Renderer& renderer, const fovea::DisplayConfig& config)
     std::printf("Terrain: %s, %zu root tiles (%.2f GB) in %.1f s; the rest paged\n",
                 t.database.string().c_str(), load.tiles, static_cast<double>(load.bytes) / 1e9,
                 load.seconds);
+    const std::size_t entity_models = config.entity_models.size();
     if (load.placements > 0) {
         std::printf("  %zu placements of %zu models, loaded as they're paged in\n", load.placements,
-                    load.models);
+                    load.models - std::min(load.models, entity_models));
+    }
+    if (entity_models > 0 && load.models >= entity_models) {
+        std::printf("  %zu entity model(s), for observer views (D-059)\n", entity_models);
     }
     if (load.lights > 0) {
         std::printf("  %zu airport lights\n", load.lights);

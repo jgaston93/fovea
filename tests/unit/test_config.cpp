@@ -647,6 +647,7 @@ TEST(Config, EntityModels) {
     EXPECT_EQ(m.file, std::filesystem::path("m/heli.glb"));
     EXPECT_EQ(m.offset_m, DVec3(1.0, 0.0, 3.3));
     const auto d = parse(kMinimal + terrain + "[[entity_model]]\nfile = \"a.glb\"\n");
+    EXPECT_TRUE(parse(kMinimal + terrain + "[[entity_model]]\nfile = \"A.GLB\"\n").ok());
     ASSERT_TRUE(d.ok()) << d.errors[0].to_string();
     EXPECT_EQ(d.config->entity_models[0].entity, 0U);
     EXPECT_EQ(d.config->entity_models[0].offset_m, DVec3(0.0));

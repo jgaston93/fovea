@@ -176,8 +176,9 @@ ModelGpu::ModelGpu(const GpuContext& gpu, std::filesystem::path database_dir,
     for (const EntityModelConfig& em : entity_models) {
         attached_.push_back({static_cast<std::uint32_t>(models_.size()), em.entity, em.offset_m});
         models_.push_back({});
-        models_.back().name =
-            em.file.filename().string() + " (entity " + std::to_string(em.entity) + ")";
+        // Named by its entity: path::string() can throw on Windows for a
+        // name outside the code page, and would lose every model with it.
+        models_.back().name = "entity " + std::to_string(em.entity) + "'s model";
         models_.back().file = em.file;
     }
     placed_.reserve(placements.size());
@@ -687,12 +688,14 @@ std::uint32_t ModelGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uin
     auto* commands = static_cast<VkDrawIndexedIndirectCommand*>(commands_.mapped) + base;
     std::uint32_t n = 0;
     std::uint32_t placements = 0;
-    // The database's placements, then (in an observer's view) the entities'.
+    // In an observer's view, the entities' models, then the database's placements.
     std::array<Placed, kMaxEntityModels> entities;
     const std::size_t attached =
         view.shows_entity_models ? place_entities(entities) : std::size_t{0};
-    for (std::size_t k = 0; k < placed_.size() + attached; ++k) {
-        const Placed& p = k < placed_.size() ? placed_[k] : entities[k - placed_.size()];
+    // The entities first: past kMaxModelDraws, a database's placements are
+    // dropped before the aircraft an observer's view is for.
+    for (std::size_t k = 0; k < attached + placed_.size(); ++k) {
+        const Placed& p = k < attached ? entities[k] : placed_[k - attached];
         const Entry& e = models_[p.model];
         if (!e.ready) {
             continue;
@@ -766,8 +769,10 @@ void ModelGpu::record_shadow(VkCommandBuffer cmd, std::uint32_t slot, std::uint3
     std::array<Placed, kMaxEntityModels> entities;
     const std::size_t attached =
         view.shows_entity_models ? place_entities(entities) : std::size_t{0};
-    for (std::size_t k = 0; k < placed_.size() + attached; ++k) {
-        const Placed& p = k < placed_.size() ? placed_[k] : entities[k - placed_.size()];
+    // The entities first: past kMaxModelDraws, a database's placements are
+    // dropped before the aircraft an observer's view is for.
+    for (std::size_t k = 0; k < attached + placed_.size(); ++k) {
+        const Placed& p = k < attached ? entities[k] : placed_[k - attached];
         const Entry& e = models_[p.model];
         if (!e.ready) {
             continue;

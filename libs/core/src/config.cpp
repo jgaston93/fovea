@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <charconv>
 #include <cmath>
 #include <fstream>
@@ -896,7 +897,11 @@ ConfigResult parse_display_config(std::string_view text, std::string_view source
                 }
                 if (const auto* n = p.required(t, "file", path)) {
                     if (auto v = p.string(*n, path + ".file")) {
-                        if (v->size() < 4 || v->substr(v->size() - 4) != ".glb") {
+                        std::string ext = v->size() < 4 ? "" : v->substr(v->size() - 4);
+                        for (char& ch : ext) {
+                            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                        }
+                        if (ext != ".glb") {
                             p.error(n->source(), "'" + path + ".file' must name a .glb file");
                         }
                         std::u8string utf8;  // UTF-8, as [terrain] database is read
