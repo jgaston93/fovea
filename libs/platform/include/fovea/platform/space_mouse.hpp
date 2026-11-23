@@ -36,6 +36,10 @@ bool is_space_mouse(unsigned short vendor_id, unsigned short usage_page, unsigne
 struct SpaceMouseRaw {
     std::array<int, 6> axes{};
     std::uint32_t buttons = 0;
+    // A report 2 seen: rotation comes apart, so a long report 1 is padding
+    // after the translation (Windows reads every report at the device's
+    // longest report's length, zero-filled).
+    bool rotation_apart = false;
 };
 
 // One input report (its ID first) into `raw`. False, and `raw` unchanged:
@@ -49,11 +53,23 @@ struct SpaceMouseState {
     std::uint32_t pressed = 0;     // gone down since the last poll
 };
 
-SpaceMouseState space_mouse_state(const SpaceMouseRaw& raw, std::uint32_t previous_buttons);
+// The reports since the last take, as a state: the axes and buttons as the
+// last left them; `pressed`, each button that went down in any of them (so
+// a press and release between two takes still counts).
+class SpaceMouseReports {
+public:
+    void apply(std::span<const std::uint8_t> report);
+    SpaceMouseState take();
+
+private:
+    SpaceMouseRaw raw_;
+    std::uint32_t pressed_ = 0;
+};
 
 // The first 3D mouse found, read without blocking. None found (or it can't
 // be opened, on Linux without read access to its hidraw node): looked for
-// again every 2 s; unplugged: its axes back to 0 and looked for again.
+// again when SDL sees a device come or go (at most every 2 s), and every
+// 30 s whatever it sees; unplugged: its axes back to 0 and looked for again.
 // Main thread.
 class SpaceMouse {
 public:

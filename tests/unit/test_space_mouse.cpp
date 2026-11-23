@@ -77,10 +77,12 @@ TEST(SpaceMouse, OthersAndShortOnesLeaveItAlone) {
 }
 
 TEST(SpaceMouse, StateScalesAndFindsPresses) {
-    SpaceMouseRaw raw;
-    raw.axes = {175, -350, 700, 0, -1000, 35};
-    raw.buttons = 0b011;
-    const SpaceMouseState s = space_mouse_state(raw, 0b010);
+    SpaceMouseReports r;
+    r.apply(report(1, {175, -350, 700, 0, -1000, 35}));
+    r.apply({{3, 0b010}});
+    (void)r.take();
+    r.apply({{3, 0b011}});
+    const SpaceMouseState s = r.take();
     EXPECT_TRUE(s.connected);
     EXPECT_DOUBLE_EQ(s.axes[0], 0.5);
     EXPECT_DOUBLE_EQ(s.axes[1], -1.0);
@@ -88,7 +90,27 @@ TEST(SpaceMouse, StateScalesAndFindsPresses) {
     EXPECT_DOUBLE_EQ(s.axes[4], -1.0);
     EXPECT_DOUBLE_EQ(s.axes[5], 0.1);
     EXPECT_EQ(s.buttons, 0b011U);
-    EXPECT_EQ(s.pressed, 0b001U);  // only the one that went down
+    EXPECT_EQ(s.pressed, 0b001U);     // only the one that went down
+    EXPECT_EQ(r.take().pressed, 0U);  // taken once
+}
+
+// A press and release between two takes still counts.
+TEST(SpaceMouse, AQuickPressCounts) {
+    SpaceMouseReports r;
+    r.apply({{3, 0b01}});
+    r.apply({{3, 0b00}});
+    const SpaceMouseState s = r.take();
+    EXPECT_EQ(s.buttons, 0U);
+    EXPECT_EQ(s.pressed, 0b01U);
+}
+
+// Windows reads every report at the longest one's length, zeros after: once
+// rotation has come in report 2, a long report 1 is translation and padding.
+TEST(SpaceMouse, APaddedTranslationLeavesTheRotation) {
+    SpaceMouseRaw raw;
+    EXPECT_TRUE(apply_space_mouse_report(report(2, {100, 200, 300}), raw));
+    EXPECT_TRUE(apply_space_mouse_report(report(1, {1, 2, 3, 0, 0, 0}), raw));  // 13 bytes
+    EXPECT_EQ(raw.axes, (std::array<int, 6>{1, 2, 3, 100, 200, 300}));
 }
 
 // The cap as if holding the entity: twisted clockwise the camera's bearing

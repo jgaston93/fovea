@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cwchar>
 
+#include <SDL3/SDL_error.h>
 #include <SDL3/SDL_hidapi.h>
 
 namespace fovea {
@@ -46,7 +47,7 @@ bool apply_space_mouse_report(std::span<const std::uint8_t> report, SpaceMouseRa
             for (std::size_t i = 0; i < 3; ++i) {
                 raw.axes[i] = le16(report, 1 + 2 * i);
             }
-            if (report.size() >= 13) {
+            if (report.size() >= 13 && !raw.rotation_apart) {
                 for (std::size_t i = 0; i < 3; ++i) {
                     raw.axes[3 + i] = le16(report, 7 + 2 * i);
                 }
@@ -59,6 +60,7 @@ bool apply_space_mouse_report(std::span<const std::uint8_t> report, SpaceMouseRa
             for (std::size_t i = 0; i < 3; ++i) {
                 raw.axes[3 + i] = le16(report, 1 + 2 * i);
             }
+            raw.rotation_apart = true;
             return true;
         case 3: {  // buttons: as many bytes of the mask as came, up to four
             if (report.size() < 2) {
@@ -77,30 +79,49 @@ bool apply_space_mouse_report(std::span<const std::uint8_t> report, SpaceMouseRa
     }
 }
 
-SpaceMouseState space_mouse_state(const SpaceMouseRaw& raw, std::uint32_t previous_buttons) {
+void SpaceMouseReports::apply(std::span<const std::uint8_t> report) {
+    const std::uint32_t before = raw_.buttons;
+    if (apply_space_mouse_report(report, raw_)) {
+        pressed_ |= raw_.buttons & ~before;
+    }
+}
+
+SpaceMouseState SpaceMouseReports::take() {
     SpaceMouseState s;
     s.connected = true;
     for (std::size_t i = 0; i < 6; ++i) {
-        s.axes[i] = std::clamp(static_cast<double>(raw.axes[i]) / kSpaceMouseFullScale, -1.0, 1.0);
+        s.axes[i] = std::clamp(static_cast<double>(raw_.axes[i]) / kSpaceMouseFullScale, -1.0, 1.0);
     }
-    s.buttons = raw.buttons;
-    s.pressed = raw.buttons & ~previous_buttons;
+    s.buttons = raw_.buttons;
+    s.pressed = pressed_;
+    pressed_ = 0;
     return s;
 }
 
 struct SpaceMouse::Impl {
     SDL_hid_device* device = nullptr;
-    SpaceMouseRaw raw;
-    std::uint32_t last_buttons = 0;
-    std::chrono::steady_clock::time_point next_look;
+    SpaceMouseReports reports;
+    std::chrono::steady_clock::time_point next_look;    // at most every 2 s
+    std::chrono::steady_clock::time_point next_anyway;  // and every 30 s
+    Uint32 changes = 0;
+    bool looked = false;
     bool told_none = false;
 
+    // Enumerating opens every HID device on Windows: only when SDL has seen
+    // one come or go, or now and then in case it missed one.
     void look() {
         const auto now = std::chrono::steady_clock::now();
         if (now < next_look) {
             return;
         }
+        const Uint32 c = SDL_hid_device_change_count();
+        if (looked && c == changes && now < next_anyway) {
+            return;
+        }
+        looked = true;
+        changes = c;
         next_look = now + std::chrono::seconds(2);
+        next_anyway = now + std::chrono::seconds(30);
         SDL_hid_device_info* all = SDL_hid_enumerate(0, 0);
         bool found_but_closed = false;
         for (const SDL_hid_device_info* d = all; d != nullptr; d = d->next) {
@@ -113,8 +134,7 @@ struct SpaceMouse::Impl {
                 continue;
             }
             (void)SDL_hid_set_nonblocking(device, 1);
-            raw = {};
-            last_buttons = 0;
+            reports = {};
             std::printf("3D mouse: %s (%04x:%04x)\n", narrow(d->product_string).c_str(),
                         unsigned{d->vendor_id}, unsigned{d->product_id});
             (void)std::fflush(stdout);
@@ -133,6 +153,11 @@ struct SpaceMouse::Impl {
 };
 
 SpaceMouse::SpaceMouse() : impl_(std::make_unique<Impl>()) {
+    if (SDL_hid_init() != 0) {
+        // On Linux, libudev not found: nothing to enumerate with.
+        std::printf("3D mouse: HID unavailable: %s\n", SDL_GetError());
+        (void)std::fflush(stdout);
+    }
     impl_->look();
 }
 
@@ -160,15 +185,14 @@ SpaceMouseState SpaceMouse::poll() {
             (void)SDL_hid_close(m.device);
             m.device = nullptr;
             m.next_look = {};
+            m.looked = false;
             std::printf("3D mouse: lost\n");
             (void)std::fflush(stdout);
             return {};
         }
-        (void)apply_space_mouse_report(std::span(buf.data(), static_cast<std::size_t>(n)), m.raw);
+        m.reports.apply(std::span(buf.data(), static_cast<std::size_t>(n)));
     }
-    const SpaceMouseState s = space_mouse_state(m.raw, m.last_buttons);
-    m.last_buttons = m.raw.buttons;
-    return s;
+    return m.reports.take();
 }
 
 }  // namespace fovea
