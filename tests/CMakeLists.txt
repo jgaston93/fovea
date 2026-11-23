@@ -134,6 +134,13 @@ add_test(NAME App.CheckAcceptsAGoodConfig
 set_tests_properties(App.CheckAcceptsAGoodConfig PROPERTIES
     ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver;VK_ICD_FILENAMES=/nonexistent;VK_DRIVER_FILES=/nonexistent"
     TIMEOUT 20 PASS_REGULAR_EXPRESSION "channels.example.toml is good: 3 channel\\(s\\)")
+# ... with a host and a database (config/khsv.toml; its database isn't in a
+# fresh checkout): neither opened.
+add_test(NAME App.CheckOpensNoDatabaseOrSocket
+    COMMAND fovea --check ${PROJECT_SOURCE_DIR}/config/khsv.toml)
+set_tests_properties(App.CheckOpensNoDatabaseOrSocket PROPERTIES
+    ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver;VK_ICD_FILENAMES=/nonexistent;VK_DRIVER_FILES=/nonexistent"
+    TIMEOUT 20 PASS_REGULAR_EXPRESSION "khsv.toml is good: [0-9]+ channel\\(s\\), a host")
 add_test(NAME App.CheckRefusesABadConfig
     COMMAND fovea --check ${CMAKE_CURRENT_SOURCE_DIR}/data/check-bad.toml)
 set_tests_properties(App.CheckRefusesABadConfig PROPERTIES

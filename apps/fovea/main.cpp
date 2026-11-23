@@ -11,6 +11,9 @@
 //       instead; --identify: fill them with those colours in software (no
 //       GPU needed)
 //   fovea --list-monitors     print the monitors and exit
+//   fovea --check <config.toml>
+//       read and check the config, nothing opened (D-056): exit 0 if good,
+//       1 with its errors
 //
 //   fovea --headless [--frames N] [--dump DIR] [--clear] <config.toml>
 //       render every channel offscreen (no display needed), N frames, and
