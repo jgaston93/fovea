@@ -13,6 +13,11 @@
 // Placements come from the root tiles for now (always resident: KHSV's are
 // at level 12, its roots); finer levels, paged with their tiles, are for
 // when an area needs them.
+//
+// Entities' models (D-059) are loaded the same way, from their own files,
+// and drawn where the render thread last put their entities
+// (set_entity_poses), in observer views only (SceneView::shows_entity_models)
+// and their shadow maps.
 
 #include <volk.h>
 
@@ -60,8 +65,9 @@ class ModelGpu {
 public:
     // Throws std::runtime_error.
     ModelGpu(const GpuContext& gpu, std::filesystem::path database_dir,
-             std::span<const Placement> placements, std::uint32_t slots, std::uint32_t outputs,
-             const ModelShaders& shaders, VkFormat colour, VkFormat depth);
+             std::span<const Placement> placements,
+             std::span<const EntityModelConfig> entity_models, std::uint32_t slots,
+             std::uint32_t outputs, const ModelShaders& shaders, VkFormat colour, VkFormat depth);
     ~ModelGpu();  // the GPU must be idle, the paging thread stopped
     ModelGpu(const ModelGpu&) = delete;
     ModelGpu& operator=(const ModelGpu&) = delete;
@@ -82,6 +88,10 @@ public:
     // Render thread: a model staged and handed over (its uploads go with
     // this frame's).
     void arrived(std::uint32_t m);
+
+    // Render thread: where the entities are for the frames drawn from now
+    // on (D-059). No allocation.
+    void set_entity_poses(std::span<const EntityPose> poses);
 
     // Draws one view's placements whose models have arrived, inside the
     // rendering pass, lit as the terrain is. No allocation. Returns the placements drawn, and
@@ -118,6 +128,7 @@ private:
     // thread after it.
     struct Entry {
         std::string name;
+        std::filesystem::path file;  // where it's read from
         std::int32_t vertex_offset = 0;
         std::vector<Primitive> primitives;
         DVec3 centre{0.0};  // a sphere around it, in its own frame
@@ -130,6 +141,15 @@ private:
         DVec3 origin_ecef{0.0};  // its ground line's point
         DMat3 rotation{1.0};     // its frame (glTF's) to ECEF
     };
+    struct Attached {  // an entity's model (D-059)
+        std::uint32_t model = 0;
+        EntityId entity = 0;
+        DVec3 offset_m{0.0};  // its origin from the entity's, body axes
+    };
+
+    // The entities' models placed where their poses say, appended to
+    // `out` (no allocation: `out` has room for kMaxEntityModels).
+    std::size_t place_entities(std::span<Placed> out) const;
 
     Buffer make_buffer(VkDeviceSize size, VkBufferUsageFlags usage, bool host) const;
     void destroy(Buffer& b) const;
@@ -141,6 +161,9 @@ private:
     std::uint32_t outputs_ = 1;
     std::vector<Entry> models_;
     std::vector<Placed> placed_;
+    std::vector<Attached> attached_;
+    std::array<EntityPose, kMaxEntityModels> poses_{};
+    std::size_t pose_count_ = 0;
     std::uint32_t loaded_ = 0;
 
     // The paging thread's: where the next model's data goes.

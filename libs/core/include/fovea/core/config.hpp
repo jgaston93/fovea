@@ -192,6 +192,19 @@ struct EnvironmentConfig {
     FixedArray<WeatherLayer, kMaxWeatherLayers> layers;
 };
 
+// [[entity_model]] (D-059): a model drawn at an entity, in observer views
+// (D-057), as the database's models are drawn. Needs [terrain].
+inline constexpr std::size_t kMaxEntityModels = 8;
+struct EntityModelConfig {
+    std::uint32_t entity = 0;  // the scene entity it's drawn at
+    // A glTF binary (.glb, D-023: metres, +Y up, +Z its front); a relative
+    // path is relative to the config file (load_display_config resolves it).
+    std::filesystem::path file;
+    // Where the model's origin goes, from the entity's position, in its
+    // body axes (x forward, y right, z down), metres.
+    DVec3 offset_m{0.0};
+};
+
 struct DisplayConfig {
     PresenterKind presenter = PresenterKind::multi_swapchain;
     double target_hz = 60.0;
@@ -205,6 +218,7 @@ struct DisplayConfig {
     std::optional<HostConfig> host;
     std::optional<TerrainConfig> terrain;
     std::optional<ParticlesConfig> particles;
+    std::vector<EntityModelConfig> entity_models;
 };
 
 // One problem in a config file. Line and column are 1-based; 0 when the

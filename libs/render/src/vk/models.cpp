@@ -104,6 +104,10 @@ DMat3 placement_rotation(const Placement& p) {
     return DMat3(glm::cross(up, front), up, front);
 }
 
+// glTF's axes (x left, y up, z the model's front) to body axes (x forward,
+// y right, z down): columns, glTF's x, y and z in body axes.
+const DMat3 kGltfToBody(DVec3(0.0, -1.0, 0.0), DVec3(0.0, 0.0, -1.0), DVec3(1.0, 0.0, 0.0));
+
 }  // namespace
 
 ModelGpu::Buffer ModelGpu::make_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
@@ -144,7 +148,8 @@ void ModelGpu::destroy(Image& i) const {
 }
 
 ModelGpu::ModelGpu(const GpuContext& gpu, std::filesystem::path database_dir,
-                   std::span<const Placement> placements, std::uint32_t slots,
+                   std::span<const Placement> placements,
+                   std::span<const EntityModelConfig> entity_models, std::uint32_t slots,
                    std::uint32_t outputs, const ModelShaders& shaders, VkFormat colour,
                    VkFormat depth)
     : gpu_(gpu), dir_(std::move(database_dir)), outputs_(std::max(outputs, 1U)) {
@@ -161,6 +166,19 @@ ModelGpu::ModelGpu(const GpuContext& gpu, std::filesystem::path database_dir,
         i = static_cast<std::uint32_t>(models_.size());
         models_.push_back({});
         models_.back().name = name;
+        models_.back().file = valid_model_name(name) ? dir_ / model_path(name) : "";
+    }
+    // Entities' models (D-059), after the database's, each its own entry.
+    if (entity_models.size() > kMaxEntityModels) {
+        fail("models: " + std::to_string(entity_models.size()) + " entity models, more than " +
+             std::to_string(kMaxEntityModels));
+    }
+    for (const EntityModelConfig& em : entity_models) {
+        attached_.push_back({static_cast<std::uint32_t>(models_.size()), em.entity, em.offset_m});
+        models_.push_back({});
+        models_.back().name =
+            em.file.filename().string() + " (entity " + std::to_string(em.entity) + ")";
+        models_.back().file = em.file;
     }
     placed_.reserve(placements.size());
     for (const Placement& p : placements) {
@@ -171,9 +189,7 @@ ModelGpu::ModelGpu(const GpuContext& gpu, std::filesystem::path database_dir,
     VkDeviceSize files = 0;
     for (const Entry& e : models_) {
         std::error_code ec;
-        const auto size = valid_model_name(e.name)
-                              ? std::filesystem::file_size(dir_ / model_path(e.name), ec)
-                              : 0;
+        const auto size = e.file.empty() ? 0 : std::filesystem::file_size(e.file, ec);
         files += ec ? 0 : size;
     }
     vertex_capacity_ = std::clamp(files * 2, kMinModelBufferBytes, kMaxModelBufferBytes);
@@ -429,11 +445,11 @@ void ModelGpu::release() {
 
 std::optional<Model> ModelGpu::prepare(std::uint32_t m, std::string& problem) {
     const std::string& name = models_[m].name;
-    if (!valid_model_name(name)) {
+    if (models_[m].file.empty()) {
         problem = "model '" + name + "': not a valid name";
         return std::nullopt;
     }
-    ModelResult r = read_model_file(dir_ / model_path(name));
+    ModelResult r = read_model_file(models_[m].file);
     if (!r.model) {
         problem = "model '" + name + "': " + r.error;
         return std::nullopt;
@@ -638,6 +654,27 @@ void ModelGpu::arrived(std::uint32_t m) {
     ++loaded_;
 }
 
+void ModelGpu::set_entity_poses(std::span<const EntityPose> poses) {
+    pose_count_ = std::min(poses.size(), poses_.size());
+    std::copy_n(poses.begin(), pose_count_, poses_.begin());
+}
+
+std::size_t ModelGpu::place_entities(std::span<Placed> out) const {
+    std::size_t n = 0;
+    for (const Attached& a : attached_) {
+        for (std::size_t i = 0; i < pose_count_ && n < out.size(); ++i) {
+            const EntityPose& p = poses_[i];
+            if (p.entity != a.entity) {
+                continue;
+            }
+            const DMat3 body = glm::mat3_cast(p.to_ecef);
+            out[n++] = {a.model, p.ecef + body * a.offset_m, body * kGltfToBody};
+            break;
+        }
+    }
+    return n;
+}
+
 std::uint32_t ModelGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uint32_t output,
                                const SceneView& view, std::uint32_t lighting_offset,
                                std::uint32_t& dropped) {
@@ -650,7 +687,12 @@ std::uint32_t ModelGpu::record(VkCommandBuffer cmd, std::uint32_t slot, std::uin
     auto* commands = static_cast<VkDrawIndexedIndirectCommand*>(commands_.mapped) + base;
     std::uint32_t n = 0;
     std::uint32_t placements = 0;
-    for (const Placed& p : placed_) {
+    // The database's placements, then (in an observer's view) the entities'.
+    std::array<Placed, kMaxEntityModels> entities;
+    const std::size_t attached =
+        view.shows_entity_models ? place_entities(entities) : std::size_t{0};
+    for (std::size_t k = 0; k < placed_.size() + attached; ++k) {
+        const Placed& p = k < placed_.size() ? placed_[k] : entities[k - placed_.size()];
         const Entry& e = models_[p.model];
         if (!e.ready) {
             continue;
@@ -721,7 +763,11 @@ void ModelGpu::record_shadow(VkCommandBuffer cmd, std::uint32_t slot, std::uint3
     const double sy = glm::length(DVec3(m[0][1], m[1][1], m[2][1]));
     const double sz = glm::length(DVec3(m[0][2], m[1][2], m[2][2]));
     std::uint32_t n = 0;
-    for (const Placed& p : placed_) {
+    std::array<Placed, kMaxEntityModels> entities;
+    const std::size_t attached =
+        view.shows_entity_models ? place_entities(entities) : std::size_t{0};
+    for (std::size_t k = 0; k < placed_.size() + attached; ++k) {
+        const Placed& p = k < placed_.size() ? placed_[k] : entities[k - placed_.size()];
         const Entry& e = models_[p.model];
         if (!e.ready) {
             continue;

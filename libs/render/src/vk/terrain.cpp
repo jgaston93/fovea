@@ -1206,12 +1206,13 @@ std::unique_ptr<TerrainGpu> TerrainGpu::load(const GpuContext& gpu,
             placements.push_back(std::move(pl));
         }
     }
-    if (!placements.empty()) {
+    if (!placements.empty() || !options.entity_models.empty()) {
         report.placements = placements.size();
         // Models are optional: the terrain draws without them.
         try {
-            t->models_ = std::make_unique<ModelGpu>(gpu, t->db_->dir(), placements, slots,
-                                                    t->outputs_, shaders.models, colour, depth);
+            t->models_ =
+                std::make_unique<ModelGpu>(gpu, t->db_->dir(), placements, options.entity_models,
+                                           slots, t->outputs_, shaders.models, colour, depth);
             report.models = t->models_->model_count();
         } catch (const std::exception& e) {
             report.problems.push_back(std::string("models: ") + e.what() + " (none drawn)");
@@ -1555,6 +1556,12 @@ void TerrainGpu::draw_tiles(VkCommandBuffer cmd, std::uint32_t slot, std::uint32
                        sizeof(push), &push);
     // The records' region: first instance is where this view's start.
     vkCmdDrawIndexed(cmd, index_count_, drawn, 0, 0, base);
+}
+
+void TerrainGpu::set_entity_poses(std::span<const EntityPose> poses) {
+    if (models_) {
+        models_->set_entity_poses(poses);
+    }
 }
 
 }  // namespace fovea

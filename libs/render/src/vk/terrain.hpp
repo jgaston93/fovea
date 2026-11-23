@@ -103,6 +103,8 @@ public:
 
     // This frame's numbers so far (reset by begin_frame).
     const TerrainStats& stats() const { return stats_; }
+    // Render thread: where entities' models go (D-059). No allocation.
+    void set_entity_poses(std::span<const EntityPose> poses);
     // Why paged tiles couldn't be used, so far (any thread; allocates).
     std::vector<std::string> problems() const;
 

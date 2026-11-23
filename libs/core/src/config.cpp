@@ -841,10 +841,10 @@ ConfigResult parse_display_config(std::string_view text, std::string_view source
     }
 
     DisplayConfig config;
-    p.check_keys(
-        root,
-        {"display", "channel", "reference_scene", "environment", "host", "terrain", "particles"},
-        "");
+    p.check_keys(root,
+                 {"display", "channel", "reference_scene", "environment", "host", "terrain",
+                  "particles", "entity_model"},
+                 "");
     if (const auto* n = root.get("environment")) {
         if (const auto* t = p.table(*n, "environment")) {
             parse_environment(p, *t, config.environment);
@@ -873,6 +873,52 @@ ConfigResult parse_display_config(std::string_view text, std::string_view source
     if (const auto* n = root.get("display")) {
         if (const auto* t = p.table(*n, "display")) {
             parse_display(p, *t, config);
+        }
+    }
+
+    if (const toml::node* models = root.get("entity_model")) {
+        const toml::array* a = models->as_array();
+        if (a == nullptr || !a->is_array_of_tables() || a->empty()) {
+            p.error(models->source(),
+                    "'entity_model' must be a list of tables: write each as [[entity_model]]");
+        } else if (a->size() > kMaxEntityModels) {
+            p.error(models->source(),
+                    "at most " + std::to_string(kMaxEntityModels) + " [[entity_model]] tables");
+        } else {
+            for (std::size_t i = 0; i < a->size(); ++i) {
+                const auto& t = *a->get(i)->as_table();
+                const std::string path = "entity_model[" + std::to_string(i) + "]";
+                p.check_keys(t, {"entity", "file", "offset_m"}, path);
+                EntityModelConfig m;
+                if (const auto* n = t.get("entity")) {
+                    m.entity = static_cast<std::uint32_t>(
+                        p.integer(*n, path + ".entity", 0, 65535).value_or(0));
+                }
+                if (const auto* n = p.required(t, "file", path)) {
+                    if (auto v = p.string(*n, path + ".file")) {
+                        if (v->size() < 4 || v->substr(v->size() - 4) != ".glb") {
+                            p.error(n->source(), "'" + path + ".file' must name a .glb file");
+                        }
+                        std::u8string utf8;  // UTF-8, as [terrain] database is read
+                        utf8.reserve(v->size());
+                        for (const char c : *v) {
+                            utf8.push_back(static_cast<char8_t>(c));
+                        }
+                        m.file = std::filesystem::path(utf8);
+                    }
+                }
+                if (const auto* n = t.get("offset_m")) {
+                    if (auto v = number_fields<3>(p, *n, path + ".offset_m", {"x", "y", "z"})) {
+                        m.offset_m = {(*v)[0], (*v)[1], (*v)[2]};
+                    }
+                }
+                if (!config.terrain) {
+                    p.error(t.source(), "'" + path +
+                                            "' needs [terrain]: entity models are drawn with "
+                                            "the database's models");
+                }
+                config.entity_models.push_back(std::move(m));
+            }
         }
     }
 
@@ -928,6 +974,13 @@ ConfigResult load_display_config(const std::filesystem::path& file) {
     ConfigResult r = parse_display_config(text.str(), name);
     if (r.config && r.config->terrain && r.config->terrain->database.is_relative()) {
         r.config->terrain->database = file.parent_path() / r.config->terrain->database;
+    }
+    if (r.config) {
+        for (EntityModelConfig& m : r.config->entity_models) {
+            if (m.file.is_relative()) {
+                m.file = file.parent_path() / m.file;
+            }
+        }
     }
     return r;
 }

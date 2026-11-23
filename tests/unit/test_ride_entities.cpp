@@ -437,6 +437,8 @@ TEST(RideEntities, AnObserverViewLooksFromTheObserversEye) {
     fixed.pose.world_orientation = cam.to_ecef * body_to_ned(observer.pose.rotation);
     expect_same(out[0], ride(s, fixed, *snapshot), 1e-4F);
     expect_same(out[1], out[0], 0.0F);
+    EXPECT_TRUE(out[0].shows_entity_models);  // D-059
+    EXPECT_FALSE(ride(s, test_view(), *snapshot).shows_entity_models);
 
     // Gone: kept.
     const SceneView before = out[0];
@@ -449,6 +451,40 @@ TEST(RideEntities, AnObserverViewLooksFromTheObserversEye) {
     const test::AllocationCounter counter;
     for (int i = 0; i < 100; ++i) {
         (void)ride_entities(rig, *snapshot, out, LocalTime{}, 1.0 / 60.0);
+    }
+    EXPECT_EQ(counter.count(), 0U);
+}
+
+// D-059: the poses of the modelled entities that are active, as the views
+// take them (pose_at), as many as fit.
+TEST(RideEntities, EntityPosesAreTheModelledActiveOnes) {
+    const auto s = test_scene();
+    auto snapshot = std::make_unique<SceneSnapshot>();
+    EntityState a = entity_at(s, 10.0, 0.0, 30.0, {45.0, 0.0, 0.0});
+    a.id = 2;
+    EntityState b = entity_at(s, -20.0, 5.0, 10.0, {});
+    b.id = 5;
+    EntityState c = entity_at(s, 0.0, 0.0, 0.0, {});
+    c.id = 9;
+    c.active = false;
+    ASSERT_TRUE(snapshot->entities.push_back(a));
+    ASSERT_TRUE(snapshot->entities.push_back(b));
+    ASSERT_TRUE(snapshot->entities.push_back(c));
+    const std::vector<EntityModelConfig> models{{5, "b.glb", DVec3(0.0)},
+                                                {9, "c.glb", DVec3(0.0)},  // inactive
+                                                {4, "d.glb", DVec3(0.0)},  // none
+                                                {2, "a.glb", DVec3(0.0)}};
+    std::array<EntityPose, 4> out;
+    ASSERT_EQ(entity_poses(*snapshot, LocalTime{}, models, out), 2U);
+    EXPECT_EQ(out[0].entity, 5U);
+    EXPECT_EQ(out[0].ecef, b.cur.ecef);
+    EXPECT_EQ(out[1].entity, 2U);
+    EXPECT_EQ(out[1].ecef, a.cur.ecef);
+    EXPECT_EQ(out[1].to_ecef, a.cur.orientation);
+    EXPECT_EQ(entity_poses(*snapshot, LocalTime{}, models, std::span(out.data(), 1)), 1U);
+    const test::AllocationCounter counter;
+    for (int i = 0; i < 100; ++i) {
+        (void)entity_poses(*snapshot, LocalTime{}, models, out);
     }
     EXPECT_EQ(counter.count(), 0U);
 }

@@ -94,6 +94,17 @@ frustum = { left = -30.0, right = 30.0, top = 17.0, bottom = -17.0 }
 #   -360 to 360 (180: behind in tether, south of it in orbit);
 #   elevation_deg -10 to 89, above the entity's level.
 
+# The entity an observer watches, drawn (D-059): a model at an entity, in
+# observer channels only (a channel riding the entity doesn't draw it). Up to
+# 8; needs [terrain] (drawn with the database's models).
+# [[entity_model]]
+# entity = 0                      # the scene entity it's drawn at
+# file = "models/helicopter.glb"  # glTF binary (D-023: metres, +Y up, +Z its
+#                                 # front); relative to this file
+# offset_m = { x = 0.0, y = 0.0, z = 3.3 }   # the model's origin from the
+#                                 # entity's point, its body axes (x forward,
+#                                 # y right, z down)
+
 # A host program driving the scene (milestone 2): CIGI 3.3 over UDP. Leave
 # it out and nothing listens. The ports default to the usual CIGI pair
 # (the ICD names none); the host's settings must match.
