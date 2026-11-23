@@ -639,3 +639,9 @@ A particle stream's sender may have several readers: a simulator's out-the-windo
 - Without a group, nothing changes.
 
 **Checked:** the key read and checked (a unicast address, the control block, and a malformed one refused); an adapter joined to 239.255.77.99 receives a puff sent to the group (looped back to this machine) and one sent to its port by unicast; without the join, the group's datagram doesn't arrive (the test fails). Where the machine has no multicast route the test skips, saying so.
+
+## D-056 `fovea --check`: a config read and checked, nothing opened
+
+A system that installs Fovea on a machine it can't run Fovea on (a build machine checking an IG's config before copying it there) needs Fovea's own verdict on the file, not a copy of its rules. `fovea --check CONFIG` reads the config as Fovea at start does (every key, its type and range, a misspelt key named with its line), prints that it's good with what it holds (its channels, a host, particles), and exits: 0, or 1 with the errors. It opens nothing: no display, GPU, database or socket. So it runs on any machine, a Linux one over a Windows IG's config included; what only the IG's machine can say (its monitors, its database's path, its ports) is still checked when Fovea starts there.
+
+**Checked:** `config/channels.example.toml` is good with no display and no Vulkan driver (`App.CheckAcceptsAGoodConfig`); a config with a misspelt key fails (`App.CheckRefusesABadConfig`) and names the key and its line (`App.CheckNamesTheBadKey`).

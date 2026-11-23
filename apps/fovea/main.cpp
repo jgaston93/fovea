@@ -77,6 +77,7 @@ struct Options {
     bool clear = false;
     bool identify = false;
     bool list_monitors = false;
+    bool check = false;  // read and check the config, then exit (D-056)
 };
 
 // Longest --seconds accepted: a week, well inside every duration and timeout
@@ -132,6 +133,11 @@ std::optional<Options> parse_args(int argc, char** argv) {
     Options o;
     if (args.size() == 1 && args[0] == "--list-monitors") {
         o.list_monitors = true;
+        return o;
+    }
+    if (args.size() == 2 && args[0] == "--check" && !args[1].starts_with("--")) {
+        o.check = true;
+        o.config = std::string(args[1]);
         return o;
     }
     for (std::size_t i = 0; i < args.size(); ++i) {
@@ -193,7 +199,8 @@ int usage() {
         "       fovea --headless [--frames N] [--dump DIR] [--clear] <config.toml>\n"
         "       fovea --headless [--seconds N] [--dump DIR] [--stats FILE] [--overlay] "
         "<config with [host]>\n"
-        "       fovea --list-monitors\n");
+        "       fovea --list-monitors\n"
+        "       fovea --check <config.toml>   (read and check it, then exit)\n");
     return 2;
 }
 
@@ -919,6 +926,15 @@ int run(const Options& options) {
         return 1;
     }
     const fovea::DisplayConfig& config = *result.config;
+    if (options.check) {
+        // D-056: the file read and every key checked, nothing opened (no
+        // display, GPU, database or socket: the monitors, the database and
+        // the ports are checked when it starts).
+        std::printf("%s is good: %zu channel(s)%s%s\n", options.config.c_str(),
+                    config.channels.size(), config.host ? ", a host" : "",
+                    config.particles ? ", particles" : "");
+        return 0;
+    }
     if (options.headless || config.presenter == fovea::PresenterKind::offscreen) {
         // With a host, the host drives it (D-044): its loop, offscreen, for
         // --seconds or until a signal, the last frames written with --dump.

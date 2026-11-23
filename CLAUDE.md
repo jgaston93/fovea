@@ -19,6 +19,7 @@ cmake --preset debug && cmake --build --preset debug && ctest --preset debug
 #     setarch "$(uname -m)" -R ctest --preset tsan   (lavapipe isn't TSan-built either)
 ctest --preset debug -R 'Toolchain\.FloatingPointIsIeeeWithoutFastMath'   # one test
 ./build/debug/apps/fovea/fovea --list-monitors                            # monitors, in config index order
+./build/debug/apps/fovea/fovea --check config/<file>.toml                 # read and check a config, nothing opened (D-056)
 ./build/debug/apps/fovea/fovea --seconds 10 config/<file>.toml             # the reference scene on each channel
 ./build/debug/apps/fovea/fovea --seconds 15 --stats out.csv config/<file>.toml  # per-frame timing CSV + summary
 ./build/debug/apps/fovea/fovea --overlay config/<file>.toml                 # ImGui timing overlay, first channel

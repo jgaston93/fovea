@@ -127,6 +127,21 @@ add_test(NAME App.HeadlessDumpsEachChannel
 set_tests_properties(App.HeadlessDumpsEachChannel PROPERTIES
     ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver" TIMEOUT 60
     PASS_REGULAR_EXPRESSION "wrote headless-dump.left\\.png.*wrote headless-dump.center\\.png.*wrote headless-dump.right\\.png.*0 validation messages")
+# --check (D-056): the config read and checked, nothing opened (no display
+# or GPU), a good one said so; a bad one's error named, exit 1.
+add_test(NAME App.CheckAcceptsAGoodConfig
+    COMMAND fovea --check ${PROJECT_SOURCE_DIR}/config/channels.example.toml)
+set_tests_properties(App.CheckAcceptsAGoodConfig PROPERTIES
+    ENVIRONMENT "SDL_VIDEO_DRIVER=no-such-driver;VK_ICD_FILENAMES=/nonexistent;VK_DRIVER_FILES=/nonexistent"
+    TIMEOUT 20 PASS_REGULAR_EXPRESSION "channels.example.toml is good: 3 channel\\(s\\)")
+add_test(NAME App.CheckRefusesABadConfig
+    COMMAND fovea --check ${CMAKE_CURRENT_SOURCE_DIR}/data/check-bad.toml)
+set_tests_properties(App.CheckRefusesABadConfig PROPERTIES
+    TIMEOUT 20 WILL_FAIL TRUE)
+add_test(NAME App.CheckNamesTheBadKey
+    COMMAND fovea --check ${CMAKE_CURRENT_SOURCE_DIR}/data/check-bad.toml)
+set_tests_properties(App.CheckNamesTheBadKey PROPERTIES
+    TIMEOUT 20 PASS_REGULAR_EXPRESSION "check-bad.toml:[0-9]+.*particles.groups")
 # Headless with a host (D-044): driven over CIGI by the test host, the last
 # frame written (a host's tests, with no display).
 add_test(NAME App.HeadlessFollowsAHost
