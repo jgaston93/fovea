@@ -105,6 +105,12 @@ struct ParticlesConfig {
     std::uint16_t port = 0;  // required
     // The local address to listen on: all interfaces when unset.
     std::optional<std::uint32_t> listen_address;
+    // A multicast group to join (D-055), so several image generators read
+    // one sender's stream: then listen_address is the interface the group is
+    // joined on (unset: the system's choice), and the port is bound on every
+    // interface (as joining needs on Windows); unicast to the port is still
+    // taken. Unset: unicast only.
+    std::optional<std::uint32_t> group;
     // The most particles kept; each costs about 300 bytes of memory (three
     // published frames, the adapter's table and its index) and 64 of the
     // GPU's (a frame slot's buffer each, two slots).

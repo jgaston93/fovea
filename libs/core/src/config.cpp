@@ -319,8 +319,8 @@ std::optional<std::array<double, N>> number_fields(Parser& p, const toml::node& 
 
 void parse_particles(Parser& p, const toml::table& t, ParticlesConfig& out) {
     p.check_keys(t,
-                 {"port", "listen_address", "capacity", "fade_s", "extinction_m2_per_kg", "albedo",
-                  "ground_albedo", "forward_scattering", "detail", "detail_size", "swirl",
+                 {"port", "listen_address", "group", "capacity", "fade_s", "extinction_m2_per_kg",
+                  "albedo", "ground_albedo", "forward_scattering", "detail", "detail_size", "swirl",
                   "erosion", "self_shadowing", "slices", "light_buffer", "resolution", "renderer"},
                  "particles");
     if (const auto* n = t.get("self_shadowing")) {
@@ -364,6 +364,20 @@ void parse_particles(Parser& p, const toml::table& t, ParticlesConfig& out) {
                 p.error(n->source(),
                         "'particles.listen_address' must be an IPv4 address like 127.0.0.1 "
                         "(got \"" +
+                            *v + "\")");
+            }
+        }
+    }
+    if (const auto* n = t.get("group")) {
+        if (auto v = p.string(*n, "particles.group")) {
+            out.group = parse_ipv4(*v);
+            // 224.0.0.0/4 is multicast (RFC 5771); 224.0.0.0/24 is the local
+            // network's control block, not for a stream.
+            if (!out.group || (*out.group >> 28) != 0xE || (*out.group >> 8) == 0xE00000) {
+                out.group.reset();
+                p.error(n->source(),
+                        "'particles.group' must be a multicast IPv4 address, 224.0.1.0 to "
+                        "239.255.255.255 (got \"" +
                             *v + "\")");
             }
         }

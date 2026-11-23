@@ -37,6 +37,14 @@ public:
 
     std::uint16_t local_port() const { return local_port_; }
 
+    // Joins a multicast group (D-055) on the interface with local address
+    // `interface_address` (0: the system's choice), so datagrams sent to
+    // the group and this socket's port arrive here. Bind on every interface
+    // (address 0) to receive them on every system. Throws std::runtime_error
+    // if it can't (no multicast route, or no such interface).
+    void join_group(  // NOLINT(readability-make-member-function-const)
+        std::uint32_t group, std::uint32_t interface_address = 0);
+
     // The receive buffer the system granted: datagrams that arrive while it
     // is full are dropped. 4 MB is asked for; Linux caps it at twice
     // net.core.rmem_max (208 KB by default, so about 416 KB).

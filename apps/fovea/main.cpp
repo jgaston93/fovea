@@ -585,6 +585,7 @@ int run_loop(const Options& options, const fovea::DisplayConfig& config, fovea::
         fovea::PuffAdapterOptions puff_options;
         puff_options.port = pc.port;
         puff_options.address = pc.listen_address.value_or(0);
+        puff_options.group = pc.group.value_or(0);
         puff_options.geoid_height_m = config.host ? config.host->geoid_height_m : 0.0;
         puff_options.fade = std::chrono::duration<float>(static_cast<float>(pc.fade_s));
         try {
@@ -594,9 +595,13 @@ int run_loop(const Options& options, const fovea::DisplayConfig& config, fovea::
                                e.what());
             return 1;
         }
-        std::printf("particles: listening on %s (receive buffer %zu KB), up to %u kept\n",
-                    fovea::format_endpoint({puff_options.address, puff_adapter->port()}).c_str(),
-                    puff_adapter->receive_buffer_bytes() / 1024, unsigned{pc.capacity});
+        std::printf(
+            "particles: listening on %s%s%s (receive buffer %zu KB), up to %u kept\n",
+            fovea::format_endpoint({pc.group ? 0U : puff_options.address, puff_adapter->port()})
+                .c_str(),
+            pc.group ? ", group " : "",
+            pc.group ? fovea::format_endpoint({*pc.group, puff_adapter->port()}).c_str() : "",
+            puff_adapter->receive_buffer_bytes() / 1024, unsigned{pc.capacity});
         puff_thread =
             std::make_unique<fovea::PollThread>([a = puff_adapter.get()] { return a->poll(); });
         puff_thread->start();
